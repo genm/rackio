@@ -33,6 +33,7 @@ pub struct AppPaths {
     pub data_dir: PathBuf,
     pub state_dir: PathBuf,
     pub log_dir: PathBuf,
+    #[cfg(unix)]
     pub local_socket: PathBuf,
 }
 
@@ -51,6 +52,7 @@ pub fn app_paths() -> anyhow::Result<AppPaths> {
         },
         PathBuf::from,
     );
+    #[cfg(unix)]
     let local_socket = std::env::var_os("RACKIO_SOCKET")
         .map_or_else(|| state_dir.join("agent.sock"), PathBuf::from);
     let log_dir =
@@ -60,6 +62,7 @@ pub fn app_paths() -> anyhow::Result<AppPaths> {
         data_dir,
         state_dir,
         log_dir,
+        #[cfg(unix)]
         local_socket,
     })
 }
