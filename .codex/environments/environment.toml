@@ -1,0 +1,38 @@
+version = 1
+name = "tray-monitor"
+
+[setup]
+script = '''
+mise trust mise.toml
+mise run bootstrap
+'''
+
+[[actions]]
+name = "Agent Daemon"
+icon = "run"
+command = "mise run agent:daemon"
+
+[[actions]]
+name = "Desktop Dev"
+icon = "run"
+command = "mise run desktop:dev"
+
+[[actions]]
+name = "Frontend Dev"
+icon = "run"
+command = "mise run frontend:dev"
+
+[[actions]]
+name = "Doctor"
+icon = "debug"
+command = "mise run doctor"
+
+[[actions]]
+name = "Check"
+icon = "debug"
+command = "mise run check"
+
+[[actions]]
+name = "Component Test"
+icon = "debug"
+command = "mise exec -- pnpm test:ct"

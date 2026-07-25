@@ -1,32 +1,33 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 check:
-    cargo fmt --all -- --check
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
-    cargo nextest run --workspace
-    pnpm format:check
-    pnpm typecheck
-    pnpm lint
-    pnpm test
-    pnpm test:ct
-    pnpm build
+    mise run check
+
+bootstrap:
+    mise run bootstrap
+
+doctor:
+    mise run doctor
+
+doctor-relay:
+    mise run doctor:relay
 
 test-rust:
-    cargo nextest run --workspace
+    mise exec -- cargo nextest run --workspace
 
 coverage:
-    cargo llvm-cov nextest --workspace --lcov --output-path test-results/coverage/lcov.info
+    mise exec -- cargo llvm-cov nextest --workspace --lcov --output-path test-results/coverage/lcov.info
 
 dependencies:
-    cargo deny check
-    cargo machete
+    mise exec -- cargo deny check
+    mise exec -- cargo machete
 
 release-check:
-    cargo build --release -p tray-monitor-agent
-    scripts/check-release-binary-cloud-independence.sh
+    mise exec -- cargo build --release -p tray-monitor-agent
+    mise exec -- scripts/check-release-binary-cloud-independence.sh
 
 agent *args:
-    cargo run -p tray-monitor-agent -- {{args}}
+    mise exec -- cargo run -p tray-monitor-agent -- {{args}}
 
 desktop:
-    pnpm --filter @tray-monitor/desktop tauri dev
+    mise run desktop:dev

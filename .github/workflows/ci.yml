@@ -82,6 +82,8 @@ jobs:
         run: pnpm lint
       - name: Unit tests
         run: pnpm test
+      - name: Environment contract tests
+        run: pnpm test:env
       - name: Component tests
         run: pnpm test:ct
       - name: Production build

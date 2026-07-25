@@ -7,8 +7,6 @@
     "dev": "vite --host 127.0.0.1 --port 1420",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
-    "lint": "oxlint src playwright/index.ts vite.config.ts playwright-ct.config.ts",
-    "format": "oxfmt --check src playwright/index.ts playwright/index.html index.html vite.config.ts playwright-ct.config.ts package.json tsconfig.json src-tauri/capabilities/default.json src-tauri/tauri.conf.json",
     "test": "vitest run --reporter=json --outputFile=../../test-results/vitest.json",
     "test:ct": "playwright test --config=playwright-ct.config.ts",
     "tauri": "tauri"
@@ -28,8 +26,6 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.1.2",
     "happy-dom": "20.8.9",
-    "oxfmt": "0.18.0",
-    "oxlint": "1.32.0",
     "typescript": "5.9.3",
     "vite": "7.3.5",
     "vitest": "4.1.0"

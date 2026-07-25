@@ -1,12 +1,17 @@
+assert_lefthook_installed: true
+
 pre-commit:
   parallel: true
   commands:
     rustfmt:
       glob: "*.rs"
-      run: cargo fmt --all -- --check
+      run: mise exec -- cargo fmt --all -- --check
     clippy:
       glob: "{*.rs,Cargo.toml,Cargo.lock}"
-      run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      run: mise exec -- cargo clippy --workspace --all-targets --all-features -- -D warnings
     frontend:
-      glob: "apps/desktop/**/*.{ts,tsx,css,json}"
-      run: pnpm format:check && pnpm typecheck && pnpm lint && pnpm test
+      glob: "apps/desktop/**"
+      run: mise exec -- pnpm format:check && mise exec -- pnpm typecheck && mise exec -- pnpm lint && mise exec -- pnpm test
+    environment:
+      glob: "{mise.toml,justfile,lefthook.yml,package.json,scripts/*.mjs,.codex/environments/*.toml}"
+      run: mise exec -- pnpm test:env

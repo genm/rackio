@@ -15,3 +15,5 @@ node_modules/
 *.log
 *.tsbuildinfo
 .DS_Store
+lefthook-local.yml
+mise.local.toml

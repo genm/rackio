@@ -37,26 +37,26 @@ those constants can be removed without a private upstream fork.
 
 ## Quick start
 
-Prerequisites are declared in [`mise.toml`](mise.toml). After installing
-[`mise`](https://mise.jdx.dev/):
+Prerequisites and tasks are declared in [`mise.toml`](mise.toml). After
+installing [`mise`](https://mise.jdx.dev/):
 
 ```sh
-mise install
-pnpm install
-cargo run -p tray-monitor-agent -- daemon
+mise trust mise.toml
+mise run bootstrap
+mise run agent:daemon
 ```
 
 In a second terminal:
 
 ```sh
-cargo run -p tray-monitor-agent -- status
-cargo run -p tray-monitor-agent -- pairing create
+mise exec -- cargo run -p tray-monitor-agent -- status
+mise exec -- cargo run -p tray-monitor-agent -- pairing create
 ```
 
 Run the desktop frontend:
 
 ```sh
-pnpm --filter @tray-monitor/desktop dev
+mise run desktop:dev
 ```
 
 The daemon uses direct-only mode unless a relay is explicitly saved:
@@ -81,20 +81,13 @@ reserved example; replace it with the TLS hostname of your own relay.
 
 See [`docs/architecture.md`](docs/architecture.md) and
 [`docs/threat-model.md`](docs/threat-model.md) before changing transport or
-pairing behavior.
+pairing behavior. Development setup and platform prerequisites are in
+[`docs/development.md`](docs/development.md).
 
 ## Verification
 
 ```sh
-cargo nextest run --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-pnpm format:check
-pnpm typecheck
-pnpm test
-pnpm test:ct
-pnpm build
-cargo build --release -p tray-monitor-agent
-scripts/check-release-binary-cloud-independence.sh
+mise run check
 ```
 
 Machine-readable reports are written under `test-results/`. UI review evidence
