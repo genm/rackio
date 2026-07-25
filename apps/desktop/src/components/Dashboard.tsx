@@ -3,20 +3,26 @@ import { useState } from "react";
 import {
   machineDetailStateRegistry,
   nodeStateRegistry,
+  notificationStateRegistry,
   sshBootstrapStateRegistry,
+  traySurfaceStateRegistry,
   worstState,
 } from "../state-registry";
 import type {
   FleetSnapshot,
   FleetNode,
   MachineDetailState,
+  NotificationState,
+  NotificationThreshold,
   PairingStatus,
   SshBootstrapInput,
   SshBootstrapStatus,
   SshTarget,
+  TraySurfaceState,
 } from "../types";
 import { NodeCard } from "./NodeCard";
 import { MachineDetail } from "./MachineDetail";
+import { NotificationControls } from "./NotificationControls";
 import { SshBootstrapForm } from "./SshBootstrapForm";
 
 export function Dashboard({
@@ -24,21 +30,31 @@ export function Dashboard({
   pairing = { state: "idle" },
   sshBootstrap = sshBootstrapStateRegistry.editing,
   machineDetail = machineDetailStateRegistry.closed,
+  traySurface = traySurfaceStateRegistry.available,
+  notificationState = notificationStateRegistry.disabled,
   onPair = async () => undefined,
   onInspectSshHost = async () => undefined,
   onInstallViaSsh = async () => undefined,
   onViewHistory = async () => undefined,
   onCloseHistory = () => undefined,
+  onEnableNotifications = async () => undefined,
+  onDisableNotifications = () => undefined,
+  onNotificationThresholdChange = () => undefined,
 }: {
   snapshot: FleetSnapshot;
   pairing?: PairingStatus;
   sshBootstrap?: SshBootstrapStatus;
   machineDetail?: MachineDetailState;
+  traySurface?: TraySurfaceState;
+  notificationState?: NotificationState;
   onPair?: (bundle: string) => Promise<void>;
   onInspectSshHost?: (target: SshTarget) => Promise<void>;
   onInstallViaSsh?: (input: SshBootstrapInput) => Promise<void>;
   onViewHistory?: (node: FleetNode) => Promise<void>;
   onCloseHistory?: () => void;
+  onEnableNotifications?: () => Promise<void>;
+  onDisableNotifications?: () => void;
+  onNotificationThresholdChange?: (threshold: NotificationThreshold) => void;
 }) {
   const [pairingOpen, setPairingOpen] = useState(false);
   const [pairingMethod, setPairingMethod] = useState<"bundle" | "ssh">("bundle");
@@ -67,9 +83,17 @@ export function Dashboard({
             <h1>Rackio</h1>
           </div>
         </div>
-        <button type="button" className="pair-button" onClick={() => setPairingOpen(true)}>
-          <span aria-hidden="true">＋</span> Pair machine
-        </button>
+        <div className="topbar-actions">
+          <NotificationControls
+            status={notificationState}
+            onEnable={onEnableNotifications}
+            onDisable={onDisableNotifications}
+            onThresholdChange={onNotificationThresholdChange}
+          />
+          <button type="button" className="pair-button" onClick={() => setPairingOpen(true)}>
+            <span aria-hidden="true">＋</span> Pair machine
+          </button>
+        </div>
       </header>
       {pairingOpen ? (
         <div className="dialog-backdrop">
@@ -160,6 +184,12 @@ export function Dashboard({
         </div>
       ) : null}
       <MachineDetail detail={machineDetail} onClose={onCloseHistory} />
+      {traySurface.state === "unavailable" ? (
+        <section className="capability-banner" role="status">
+          <strong>Tray unavailable</strong>
+          <span>{traySurface.message}</span>
+        </section>
+      ) : null}
       <section className="summary" aria-label="Rack summary">
         <div>
           <strong>{snapshot.nodes.length}</strong>

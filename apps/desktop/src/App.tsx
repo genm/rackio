@@ -1,24 +1,50 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
+import { useEffect, useRef, useState } from "react";
 
 import { Dashboard } from "./components/Dashboard";
 import {
   machineDetailStateRegistry,
+  nodeStateRegistry,
   sshBootstrapStateRegistry,
   surfaceStateRegistry,
+  traySurfaceStateRegistry,
+  worstState,
 } from "./state-registry";
 import type {
   FleetNode,
   FleetSnapshot,
   HistoryPoint,
   MachineDetailState,
+  NodeState,
+  NotificationState,
+  NotificationThreshold,
   PairingStatus,
   SshBootstrapInput,
   SshBootstrapStatus,
   SshHostIdentity,
   SshProgress,
   SshTarget,
+  TraySurfaceState,
 } from "./types";
+
+const NOTIFICATION_THRESHOLD_KEY = "rackio.notification-threshold";
+const NOTIFICATIONS_ENABLED_KEY = "rackio.notifications-enabled";
+
+function initialNotificationState(): NotificationState {
+  const stored = window.localStorage.getItem(NOTIFICATION_THRESHOLD_KEY);
+  const threshold: NotificationThreshold =
+    stored === "warning" || stored === "degraded" || stored === "critical" || stored === "offline"
+      ? stored
+      : "critical";
+  return window.localStorage.getItem(NOTIFICATIONS_ENABLED_KEY) === "true"
+    ? { state: "requesting", threshold }
+    : { state: "disabled", threshold };
+}
 
 export default function App() {
   const [snapshot, setSnapshot] = useState<FleetSnapshot>(surfaceStateRegistry.daemonUnavailable);
@@ -29,6 +55,12 @@ export default function App() {
   const [machineDetail, setMachineDetail] = useState<MachineDetailState>(
     machineDetailStateRegistry.closed,
   );
+  const [traySurface, setTraySurface] = useState<TraySurfaceState>(
+    traySurfaceStateRegistry.available,
+  );
+  const [notificationState, setNotificationState] =
+    useState<NotificationState>(initialNotificationState);
+  const previousFleetState = useRef<NodeState | undefined>(undefined);
 
   const pairMachine = async (bundle: string) => {
     setPairing({ state: "submitting" });
@@ -116,6 +148,52 @@ export default function App() {
     }
   };
 
+  const enableNotifications = async () => {
+    const threshold = notificationState.threshold;
+    setNotificationState({ state: "requesting", threshold });
+    try {
+      const granted = (await isPermissionGranted()) || (await requestPermission()) === "granted";
+      if (!granted) {
+        setNotificationState({
+          state: "denied",
+          threshold,
+          message: "Notification permission was denied by the operating system.",
+        });
+        return;
+      }
+      setNotificationState({ state: "enabled", threshold });
+    } catch (error: unknown) {
+      setNotificationState({
+        state: "error",
+        threshold,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const setNotificationThreshold = (threshold: NotificationThreshold) => {
+    setNotificationState((current) => ({ ...current, threshold }));
+  };
+
+  useEffect(() => {
+    if (notificationState.state === "requesting") {
+      void enableNotifications();
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(NOTIFICATION_THRESHOLD_KEY, notificationState.threshold);
+    if (notificationState.state === "enabled") {
+      window.localStorage.setItem(NOTIFICATIONS_ENABLED_KEY, "true");
+    } else if (
+      notificationState.state === "disabled" ||
+      notificationState.state === "denied" ||
+      notificationState.state === "error"
+    ) {
+      window.localStorage.setItem(NOTIFICATIONS_ENABLED_KEY, "false");
+    }
+  }, [notificationState]);
+
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -142,17 +220,70 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (snapshot.daemon !== "connected") return;
+    const state =
+      snapshot.nodes.length === 0
+        ? "healthy"
+        : worstState(snapshot.nodes.map((node) => node.state));
+    void invoke("set_tray_state", { state })
+      .then(() => setTraySurface(traySurfaceStateRegistry.available))
+      .catch((error: unknown) =>
+        setTraySurface({
+          state: "unavailable",
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+  }, [snapshot]);
+
+  useEffect(() => {
+    if (snapshot.daemon !== "connected" || snapshot.nodes.length === 0) return;
+    const state = worstState(snapshot.nodes.map((node) => node.state));
+    const previous = previousFleetState.current;
+    previousFleetState.current = state;
+    if (
+      notificationState.state !== "enabled" ||
+      previous === undefined ||
+      previous === state ||
+      nodeStateRegistry[state].rank < nodeStateRegistry[notificationState.threshold].rank
+    ) {
+      return;
+    }
+    try {
+      sendNotification({
+        title: `Rackio · ${nodeStateRegistry[state].label}`,
+        body: `Your rack changed from ${nodeStateRegistry[previous].label} to ${nodeStateRegistry[state].label}.`,
+      });
+    } catch (error: unknown) {
+      setNotificationState({
+        state: "error",
+        threshold: notificationState.threshold,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [notificationState, snapshot]);
+
   return (
     <Dashboard
       snapshot={snapshot}
       pairing={pairing}
       sshBootstrap={sshBootstrap}
       machineDetail={machineDetail}
+      traySurface={traySurface}
+      notificationState={notificationState}
       onPair={pairMachine}
       onInspectSshHost={inspectSshHost}
       onInstallViaSsh={installViaSsh}
       onViewHistory={viewHistory}
       onCloseHistory={() => setMachineDetail(machineDetailStateRegistry.closed)}
+      onEnableNotifications={enableNotifications}
+      onDisableNotifications={() =>
+        setNotificationState({
+          state: "disabled",
+          threshold: notificationState.threshold,
+        })
+      }
+      onNotificationThresholdChange={setNotificationThreshold}
     />
   );
 }

@@ -538,11 +538,20 @@ async fn monitor_session(
     )
     .await
     .map_err(|_| RemoteFleetError::Timeout("watch metrics"))??;
+    let mut state_refresh = tokio::time::interval(Duration::from_secs(5));
+    state_refresh.tick().await;
 
     loop {
-        let response = tokio::time::timeout(STREAM_SILENCE_TIMEOUT, stream.next())
-            .await
-            .map_err(|_| RemoteFleetError::Timeout("metrics heartbeat"))??;
+        let response = tokio::select! {
+            response = tokio::time::timeout(STREAM_SILENCE_TIMEOUT, stream.next()) => {
+                response
+                    .map_err(|_| RemoteFleetError::Timeout("metrics heartbeat"))??
+            }
+            _ = state_refresh.tick() => {
+                refresh_remote_state(&client, record, &snapshots).await?;
+                continue;
+            }
+        };
         match response.body {
             Some(response::Body::MetricSample(sample)) => {
                 let sample = metric_sample(sample);
@@ -582,6 +591,33 @@ async fn monitor_session(
             _ => return Err(RemoteFleetError::UnexpectedResponse("metrics event")),
         }
     }
+}
+
+async fn refresh_remote_state(
+    client: &ClientConnection,
+    record: &RemoteMachineRecord,
+    snapshots: &AsyncRwLock<BTreeMap<String, RemoteMachineSnapshot>>,
+) -> Result<(), RemoteFleetError> {
+    let health = get_health(client).await?;
+    let (path, rtt_ms) = get_connection_path(client).await?;
+    let mut entries = snapshots.write().await;
+    let snapshot = entries
+        .entry(record.endpoint_id.clone())
+        .or_insert_with(|| RemoteMachineSnapshot::offline(record));
+    if snapshot.path != path {
+        tracing::info!(
+            endpoint_id = %record.endpoint_id,
+            previous_path = ?snapshot.path,
+            current_path = ?path,
+            rtt_ms,
+            "remote connection path changed"
+        );
+    }
+    snapshot.state = health.state;
+    snapshot.details = health.details;
+    snapshot.path = path;
+    snapshot.rtt_ms = Some(rtt_ms);
+    Ok(())
 }
 
 async fn connect_record(

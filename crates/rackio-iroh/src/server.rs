@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex as StdMutex},
+};
 
 use chrono::Utc;
 use iroh::{Endpoint, EndpointId, endpoint::Connection};
@@ -39,6 +42,8 @@ pub enum ServerError {
     Store(#[from] StoreError),
     #[error("pairing state lock is unavailable")]
     PairingStateUnavailable,
+    #[error("active connection state lock is unavailable")]
+    ActiveConnectionStateUnavailable,
 }
 
 pub struct NodeRuntime {
@@ -48,6 +53,48 @@ pub struct NodeRuntime {
     pub store: Mutex<MetricStore>,
     pub pairing: std::sync::Mutex<PairingManager>,
     pub peers: PeerRegistry,
+    pub active_connections: StdMutex<BTreeMap<String, BTreeMap<usize, Connection>>>,
+}
+
+impl NodeRuntime {
+    pub fn revoke_peer(&self, endpoint_id: &str) -> Result<bool, ServerError> {
+        let removed = self.peers.revoke(endpoint_id)?;
+        if removed {
+            let connections = self
+                .active_connections
+                .lock()
+                .map_err(|_| ServerError::ActiveConnectionStateUnavailable)?
+                .remove(endpoint_id)
+                .unwrap_or_default();
+            for connection in connections.into_values() {
+                connection.close(0_u32.into(), b"peer revoked");
+            }
+        }
+        Ok(removed)
+    }
+
+    fn register_connection(&self, connection: &Connection) -> Result<(), ServerError> {
+        self.active_connections
+            .lock()
+            .map_err(|_| ServerError::ActiveConnectionStateUnavailable)?
+            .entry(connection.remote_id().to_string())
+            .or_default()
+            .insert(connection.stable_id(), connection.clone());
+        Ok(())
+    }
+
+    fn unregister_connection(&self, connection: &Connection) {
+        let Ok(mut active) = self.active_connections.lock() else {
+            return;
+        };
+        let endpoint_id = connection.remote_id().to_string();
+        if let Some(connections) = active.get_mut(&endpoint_id) {
+            connections.remove(&connection.stable_id());
+            if connections.is_empty() {
+                active.remove(&endpoint_id);
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -74,7 +121,11 @@ impl RemoteServer {
             tokio::spawn(async move {
                 let result = async {
                     let connection = incoming.await?;
-                    handle_connection(connection, local_id, runtime).await
+                    runtime.register_connection(&connection)?;
+                    let result =
+                        handle_connection(connection.clone(), local_id, Arc::clone(&runtime)).await;
+                    runtime.unregister_connection(&connection);
+                    result
                 }
                 .await;
                 if let Err(error) = result {
@@ -474,6 +525,7 @@ mod tests {
             pairing: std::sync::Mutex::new(PairingManager::default()),
             peers: PeerRegistry::load(directory.path().join("peers.json"))
                 .unwrap_or_else(|error| panic!("{error}")),
+            active_connections: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         });
         let server = RemoteServer::new(server_endpoint.clone(), Arc::clone(&runtime));
         let server_task = tokio::spawn(server.run());
@@ -581,7 +633,18 @@ mod tests {
             Some(response::Body::Error(ref error)) if error.code == "permission_denied"
         ));
 
-        client.close();
+        assert!(
+            runtime
+                .revoke_peer(&client.local_id().to_string())
+                .unwrap_or_else(|error| panic!("{error}"))
+        );
+        let after_revoke = client
+            .request(&Request {
+                body: Some(request::Body::GetNodeInfo(current_version())),
+            })
+            .await;
+        assert!(after_revoke.is_err());
+
         server_endpoint.close().await;
         server_task.abort();
     }

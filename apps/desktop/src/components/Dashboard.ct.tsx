@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/experimental-ct-react";
 
 import type { FleetSnapshot } from "../types";
+import { traySurfaceStateRegistry } from "../state-registry";
 import { Dashboard } from "./Dashboard";
 
 const snapshot: FleetSnapshot = {
@@ -22,6 +23,7 @@ const snapshot: FleetSnapshot = {
     },
     {
       id: "node-2",
+      endpointId: "endpoint-node-2",
       name: "Home Server",
       os: "Linux · x86_64",
       state: "degraded",
@@ -92,4 +94,12 @@ test("shows daemon failure as an alert instead of an empty healthy fleet", async
     />,
   );
   await expect(component.getByRole("alert")).toContainText("Background monitoring is disconnected");
+});
+
+test("falls back to the normal window when tray integration is unavailable", async ({ mount }) => {
+  const component = await mount(
+    <Dashboard snapshot={snapshot} traySurface={traySurfaceStateRegistry.unavailable} />,
+  );
+  await expect(component.getByText("Tray unavailable")).toBeVisible();
+  await expect(component.getByText("Studio Mac")).toBeVisible();
 });

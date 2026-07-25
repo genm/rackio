@@ -43,6 +43,17 @@ export type MachineDetailState =
   | { state: "ready"; node: FleetNode; points: HistoryPoint[] }
   | { state: "error"; node: FleetNode; message: string };
 
+export type TraySurfaceState = { state: "available" } | { state: "unavailable"; message: string };
+
+export type NotificationThreshold = "warning" | "degraded" | "critical" | "offline";
+
+export type NotificationState =
+  | { state: "disabled"; threshold: NotificationThreshold }
+  | { state: "requesting"; threshold: NotificationThreshold }
+  | { state: "enabled"; threshold: NotificationThreshold }
+  | { state: "denied"; threshold: NotificationThreshold; message: string }
+  | { state: "error"; threshold: NotificationThreshold; message: string };
+
 export interface FleetSnapshot {
   daemon: "connected" | "unavailable";
   nodes: FleetNode[];

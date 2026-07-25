@@ -37,6 +37,7 @@ main {
 
 .topbar,
 .brand,
+.topbar-actions,
 .node-card header,
 .badges,
 .node-card footer {
@@ -155,6 +156,56 @@ main {
 
 .brand {
   gap: 13px;
+}
+
+.topbar-actions,
+.notification-controls {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.notification-controls {
+  position: relative;
+  padding: 4px 5px 4px 10px;
+  border: 1px solid #202b25;
+  border-radius: 9px;
+  background: #101612;
+}
+
+.notification-controls label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #7f8e85;
+  font-size: 10px;
+}
+
+.notification-controls select {
+  border: 0;
+  outline: none;
+  color: #cbd7d0;
+  background: transparent;
+  font: inherit;
+}
+
+.notification-toggle {
+  padding: 6px 8px;
+  font-size: 10px;
+}
+
+.notification-error {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 7px);
+  right: 0;
+  width: 280px;
+  padding: 9px 11px;
+  border: 1px solid #59312e;
+  border-radius: 8px;
+  color: #ff9a93;
+  background: #251613;
+  font-size: 11px;
 }
 
 h1,
@@ -425,6 +476,23 @@ h2 {
   background: #202b25;
 }
 
+.capability-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px 13px;
+  border: 1px solid #5d4f28;
+  border-radius: 9px;
+  color: #d8c987;
+  background: #211e13;
+  font-size: 12px;
+}
+
+.capability-banner span {
+  color: #b8aa73;
+}
+
 .summary > div,
 .summary > p {
   padding: 15px 17px;
@@ -610,6 +678,20 @@ h2 {
 
   .summary {
     grid-template-columns: repeat(3, 1fr);
+  }
+
+  .topbar {
+    align-items: flex-start;
+  }
+
+  .topbar-actions {
+    flex-direction: column-reverse;
+    align-items: flex-end;
+  }
+
+  .notification-controls {
+    flex-direction: column;
+    align-items: flex-end;
   }
 
   .summary p {

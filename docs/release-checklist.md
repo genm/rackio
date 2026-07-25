@@ -20,18 +20,18 @@ a local, same-host or single-platform check exists.
   - [ ] Linux reboot recovery on supported distributions
   - [ ] independent artifact signature/provenance verification
   - [ ] signed macOS package and Windows service installer
-- [ ] immediate teardown of active connections when a peer is revoked
+- [x] immediate teardown of active connections when a peer is revoked
 - [ ] five-minute mDNS advertisement lifecycle during pairing only
 - [ ] QR and file import/export for pairing bundles
 - [x] remote peer inventory and on-demand history in the desktop viewer
   - [x] pairing import, persisted remote inventory and live metrics
   - [x] on-demand 24-hour minute history with explicit empty/error states
-- [ ] dynamic tray icon reflects the fleet's current worst state
-- [ ] viewer heartbeat transitions nodes to stale at 10 seconds and offline at
+- [x] dynamic tray icon reflects the fleet's current worst state
+- [x] viewer heartbeat transitions nodes to stale at 10 seconds and offline at
       30 seconds
-- [ ] path migration and relay fallback/direct recovery emit structured events
-- [ ] OS notifications and user-configured alert rules
-- [ ] Linux desktop environments without tray support fall back to a normal
+- [x] path migration and relay fallback/direct recovery emit structured events
+- [x] OS notifications and user-configured severity threshold
+- [x] Linux desktop environments without tray support fall back to a normal
       window
 - [ ] remove `glib 0.18` from the Linux Tauri dependency graph or upgrade to an
       upstream Tauri/GTK stack that resolves `RUSTSEC-2024-0429`

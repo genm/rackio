@@ -3,7 +3,9 @@ import type {
   FleetSnapshot,
   MachineDetailState,
   NodeState,
+  NotificationState,
   SshBootstrapStatus,
+  TraySurfaceState,
 } from "./types";
 
 export const nodeStateRegistry: Record<NodeState, { label: string; rank: number; tone: string }> = {
@@ -104,6 +106,30 @@ export const machineDetailStateRegistry: Record<string, MachineDetailState> = {
     state: "error",
     node: detailFixtureNode,
     message: "History request timed out. Live monitoring continues.",
+  },
+};
+
+export const traySurfaceStateRegistry: Record<string, TraySurfaceState> = {
+  available: { state: "available" },
+  unavailable: {
+    state: "unavailable",
+    message: "System tray is unavailable in this desktop environment. Rackio remains open here.",
+  },
+};
+
+export const notificationStateRegistry: Record<string, NotificationState> = {
+  disabled: { state: "disabled", threshold: "critical" },
+  requesting: { state: "requesting", threshold: "critical" },
+  enabled: { state: "enabled", threshold: "critical" },
+  denied: {
+    state: "denied",
+    threshold: "critical",
+    message: "Notification permission was denied by the operating system.",
+  },
+  error: {
+    state: "error",
+    threshold: "critical",
+    message: "Rackio could not deliver an operating-system notification.",
   },
 };
 

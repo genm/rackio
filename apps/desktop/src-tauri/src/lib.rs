@@ -1,7 +1,8 @@
 mod ssh_bootstrap;
 
 use tauri::{
-    Manager,
+    AppHandle, Manager,
+    image::Image,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
 };
@@ -134,6 +135,57 @@ async fn machine_history(endpoint_id: String, hours: u16) -> Result<serde_json::
             })
             .collect(),
     ))
+}
+
+#[tauri::command]
+fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
+    let result = apply_tray_state(&app, &state);
+    drop((app, state));
+    result
+}
+
+fn apply_tray_state(app: &AppHandle, state: &str) -> Result<(), String> {
+    let (label, color) = match state {
+        "healthy" => ("Healthy", [84, 217, 139, 255]),
+        "warning" => ("Warning", [230, 189, 89, 255]),
+        "degraded" => ("Degraded", [230, 189, 89, 255]),
+        "stale" => ("Stale", [164, 173, 168, 255]),
+        "critical" => ("Critical", [255, 111, 103, 255]),
+        "offline" => ("Offline", [255, 111, 103, 255]),
+        "auth_error" => ("Authentication error", [255, 111, 103, 255]),
+        "incompatible" => ("Incompatible agent", [255, 111, 103, 255]),
+        _ => return Err(String::from("Unknown fleet state for tray icon.")),
+    };
+    let tray = app
+        .tray_by_id("main")
+        .ok_or_else(|| String::from("Rackio tray icon is unavailable."))?;
+    tray.set_icon(Some(state_icon(color)))
+        .map_err(|error| format!("Could not update the Rackio tray icon: {error}"))?;
+    tray.set_tooltip(Some(format!("Rackio · {label}")))
+        .map_err(|error| format!("Could not update the Rackio tray tooltip: {error}"))?;
+    #[cfg(target_os = "macos")]
+    tray.set_icon_as_template(false)
+        .map_err(|error| format!("Could not configure the Rackio tray icon: {error}"))?;
+    Ok(())
+}
+
+fn state_icon(color: [u8; 4]) -> Image<'static> {
+    const SIZE: usize = 22;
+    const SIZE_U32: u32 = 22;
+    const CENTER: isize = 10;
+    const RADIUS_SQUARED: isize = 49;
+    let mut rgba = vec![0_u8; SIZE * SIZE * 4];
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = isize::try_from(x).unwrap_or_default() - CENTER;
+            let dy = isize::try_from(y).unwrap_or_default() - CENTER;
+            if dx * dx + dy * dy <= RADIUS_SQUARED {
+                let offset = (y * SIZE + x) * 4;
+                rgba[offset..offset + 4].copy_from_slice(&color);
+            }
+        }
+    }
+    Image::new_owned(rgba, SIZE_U32, SIZE_U32)
 }
 
 fn machine_json(
@@ -305,13 +357,21 @@ pub fn run() {
             if let Some(icon) = app.default_window_icon() {
                 builder = builder.icon(icon.clone());
             }
-            builder.build(app)?;
+            if builder.build(app).is_err()
+                && let Some(window) = app.get_webview_window("main")
+            {
+                // A normal window is the explicit fallback on Linux desktops
+                // without a tray implementation.
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             fleet_snapshot,
             pair_machine,
             machine_history,
+            set_tray_state,
             ssh_bootstrap::ssh_inspect_host,
             ssh_bootstrap::ssh_bootstrap
         ])

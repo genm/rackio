@@ -161,6 +161,7 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         store: tokio::sync::Mutex::new(MetricStore::open(paths.data_dir.join("metrics.sqlite3"))?),
         pairing: std::sync::Mutex::new(PairingManager::default()),
         peers: PeerRegistry::load(paths.data_dir.join("peers.json"))?,
+        active_connections: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     });
     let server = RemoteServer::new(endpoint.clone(), Arc::clone(&runtime));
     let remote_fleet = RemoteFleet::load(
@@ -428,7 +429,7 @@ async fn handle_local(
             Ok(peers) => LocalResponse::success(peers),
             Err(error) => LocalResponse::failure(error),
         },
-        LocalCommand::PeerRevoke { endpoint_id } => match runtime.peers.revoke(&endpoint_id) {
+        LocalCommand::PeerRevoke { endpoint_id } => match runtime.revoke_peer(&endpoint_id) {
             Ok(removed) => LocalResponse::success(serde_json::json!({ "revoked": removed })),
             Err(error) => LocalResponse::failure(error),
         },

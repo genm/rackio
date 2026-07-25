@@ -36,10 +36,10 @@ NAT and mixed-OS release matrices.
 | --- | --- | --- |
 | Collector | CPU, memory, swap, disk, network rate, uptime, OS and architecture | GPU, temperature, processes, containers and logs are not implemented |
 | Local history | 2-second samples, SQLite WAL batches, raw/minute retention and 64 MiB pruning | Cross-machine long-term aggregation is intentionally absent |
-| Remote server | Endpoint authentication, allowlist authorization, node info, live metrics, health, path and bounded history protocol | Active connections are not immediately closed on revoke |
+| Remote server | Endpoint authentication, allowlist authorization, immediate revoke teardown, node info, live metrics, health, path and bounded history protocol | NAT and relay migration evidence remains incomplete |
 | Pairing | Five-minute, attempt-limited, single-use secret and copy/paste import | QR, file import/export and pairing-window mDNS |
-| Viewer daemon | Secret-free remote inventory, reconnect loop, persisted last-known snapshot, bounded remote history query and stale/offline derivation | Periodic health/path refresh and path-migration events |
-| Desktop | Local/remote cards, 24-hour remote history detail, bundle pairing, SSH bootstrap with host-key confirmation, and explicit direct/relayed/degraded/auth states | Notifications, dynamic tray health icon and Linux window fallback |
+| Viewer daemon | Secret-free remote inventory, reconnect loop, persisted last-known snapshot, bounded remote history query, periodic health/path refresh, structured path events and stale/offline derivation | NAT and relay migration evidence remains incomplete |
+| Desktop | Local/remote cards, 24-hour remote history detail, dynamic worst-state tray icon, configurable OS notifications, bundle pairing, SSH bootstrap, and explicit degraded states | QR/file pairing import and cross-platform packaging |
 | Linux packaging | Release archive builder, HTTPS or client-pushed archive install, checksum verification, hardened systemd unit and preserving/purge uninstaller | No signed public release; reboot and distribution coverage are not proven |
 | macOS | LaunchDaemon template | Signed/notarized package, ownership rollback and installer receipts |
 | Windows | Collector and remote endpoint code participate in workspace checks | Named-pipe IPC ACL, Windows Service and installer |
