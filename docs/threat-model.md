@@ -23,6 +23,9 @@ relay operators, DNS and all network traffic are untrusted.
 - Unknown peers and protocol-major mismatches fail closed.
 - Pairing secrets are random, short-lived, single-use, attempt-limited and never
   logged.
+- Pairing-window mDNS publishes only the endpoint ID and reachable addresses
+  under Rackio's private service name. It never publishes the Node ID, one-time
+  secret, permissions or metrics. Discovery is not an authentication factor.
 - Device identity is a random endpoint key plus a random UUID. Hostname, IP and
   MAC address are not identity.
 - direct-only mode configures no public relay, vendor DNS discovery, gateway
@@ -36,13 +39,10 @@ payloads. It can observe endpoint IDs involved in relay connections, connection
 times, source network addresses, duration and byte counts. Traffic analysis is
 out of scope for v1. Operators must document retention of relay access logs.
 
-## Known limitations before v1 release
+## Known release limitations
 
 - The current local IPC implementation is Unix-domain only and owner mode 0600.
   Windows named-pipe ACL enforcement is a release blocker.
-- Revoking a peer removes future authorization but does not yet track and close
-  every existing QUIC connection immediately.
-- mDNS pairing advertisement and its five-minute lifecycle are not implemented.
 - OS keystore integration is not complete. The private key is stored in a
   daemon-owned 0600 file inside a 0700 directory on Unix.
 - Relay endpoint allowlisting and token delivery need an operator-facing secret

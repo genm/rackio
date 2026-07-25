@@ -110,6 +110,7 @@ export default function App() {
           bundle: string;
           qrDataUrl?: string;
           qrError?: string;
+          lanWarning?: string;
         }>("create_pairing_share")),
       });
     } catch (error: unknown) {

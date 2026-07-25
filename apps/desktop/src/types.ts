@@ -69,7 +69,13 @@ export type PairingStatus =
 export type PairingShareState =
   | { state: "idle" }
   | { state: "loading" }
-  | { state: "ready"; bundle: string; qrDataUrl?: string; qrError?: string }
+  | {
+      state: "ready";
+      bundle: string;
+      qrDataUrl?: string;
+      qrError?: string;
+      lanWarning?: string;
+    }
   | { state: "error"; message: string };
 
 export interface SshTarget {

@@ -128,6 +128,11 @@ pub struct PairingManager {
 }
 
 impl PairingManager {
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.active.is_some()
+    }
+
     pub fn open(
         &mut self,
         node_id: Uuid,

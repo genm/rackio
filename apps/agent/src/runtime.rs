@@ -14,7 +14,7 @@ use rackio_core::{
     ProtocolVersion, SystemCollector,
 };
 use rackio_iroh::{
-    EndpointConfig, NodeRuntime, PairingManager, PeerRegistry, RemoteServer,
+    EndpointConfig, NodeRuntime, PairingManager, PairingMdnsState, PeerRegistry, RemoteServer,
     load_or_create_secret_key,
 };
 use serde::{Deserialize, Serialize};
@@ -99,6 +99,8 @@ pub struct LocalResponse {
     pub ok: bool,
     pub data: Option<serde_json::Value>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl LocalResponse {
@@ -108,6 +110,19 @@ impl LocalResponse {
                 ok: true,
                 data: Some(data),
                 error: None,
+                warnings: Vec::new(),
+            },
+            Err(error) => Self::failure(error),
+        }
+    }
+
+    fn success_with_warning<T: Serialize>(data: T, warning: impl std::fmt::Display) -> Self {
+        match serde_json::to_value(data) {
+            Ok(data) => Self {
+                ok: true,
+                data: Some(data),
+                error: None,
+                warnings: vec![warning.to_string()],
             },
             Err(error) => Self::failure(error),
         }
@@ -118,6 +133,7 @@ impl LocalResponse {
             ok: false,
             data: None,
             error: Some(error.to_string()),
+            warnings: Vec::new(),
         }
     }
 }
@@ -160,6 +176,7 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         latest: latest_rx,
         store: tokio::sync::Mutex::new(MetricStore::open(paths.data_dir.join("metrics.sqlite3"))?),
         pairing: std::sync::Mutex::new(PairingManager::default()),
+        pairing_mdns: Arc::new(PairingMdnsState::default()),
         peers: PeerRegistry::load(paths.data_dir.join("peers.json"))?,
         active_connections: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     });
@@ -395,24 +412,7 @@ async fn handle_local(
                 remotes: remote_fleet.snapshots().await,
             })
         }
-        LocalCommand::PairingCreate => {
-            let addresses = endpoint.addr().ip_addrs().copied().collect();
-            let relay_urls = match load_config(paths) {
-                Ok(config) => config.relay_url.into_iter().collect(),
-                Err(error) => return LocalResponse::failure(error),
-            };
-            match runtime.pairing.lock() {
-                Ok(mut pairing) => {
-                    let bundle =
-                        pairing.open(runtime.info.node_id, endpoint.id(), addresses, relay_urls);
-                    match bundle.encode() {
-                        Ok(encoded) => LocalResponse::success(encoded),
-                        Err(error) => LocalResponse::failure(error),
-                    }
-                }
-                Err(_) => LocalResponse::failure("pairing state lock is unavailable"),
-            }
-        }
+        LocalCommand::PairingCreate => create_pairing_bundle(paths, endpoint, runtime).await,
         LocalCommand::PairingImport { bundle } => {
             match remote_fleet.import_pairing(&bundle).await {
                 Ok(machine) => LocalResponse::success(machine),
@@ -445,6 +445,44 @@ async fn handle_local(
                 })),
                 Err(error) => LocalResponse::failure(error),
             }
+        }
+    }
+}
+
+async fn create_pairing_bundle(
+    paths: &AppPaths,
+    endpoint: &iroh::Endpoint,
+    runtime: &Arc<NodeRuntime>,
+) -> LocalResponse {
+    let addresses = endpoint.addr().ip_addrs().copied().collect();
+    let relay_urls = match load_config(paths) {
+        Ok(config) => config.relay_url.into_iter().collect(),
+        Err(error) => return LocalResponse::failure(error),
+    };
+    let encoded = match runtime.pairing.lock() {
+        Ok(mut pairing) => {
+            let bundle = pairing.open(runtime.info.node_id, endpoint.id(), addresses, relay_urls);
+            match bundle.encode() {
+                Ok(encoded) => encoded,
+                Err(error) => return LocalResponse::failure(error),
+            }
+        }
+        Err(_) => return LocalResponse::failure("pairing state lock is unavailable"),
+    };
+    match runtime.pairing_mdns.open(endpoint).await {
+        Ok(generation) => {
+            let pairing_mdns = Arc::clone(&runtime.pairing_mdns);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+                if pairing_mdns.close_if_generation(generation).await {
+                    tracing::info!("pairing mDNS advertisement expired");
+                }
+            });
+            LocalResponse::success(encoded)
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "pairing window opened without LAN advertisement");
+            LocalResponse::success_with_warning(encoded, error)
         }
     }
 }

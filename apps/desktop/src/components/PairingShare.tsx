@@ -73,6 +73,11 @@ export function PairingShare({
         Scan this QR code from the trusted viewer, or transfer the file directly. It expires after
         five minutes and works once.
       </p>
+      {status.lanWarning ? (
+        <p className="form-message warning-message" role="status">
+          LAN discovery is unavailable: {status.lanWarning} QR, file and copy transfer still work.
+        </p>
+      ) : null}
       {status.qrDataUrl ? (
         <img src={status.qrDataUrl} alt="One-time Rackio pairing QR code" />
       ) : (

@@ -36,3 +36,15 @@ test("keeps file and copy transfer available when a bundle cannot fit in a QR co
   await expect(component.getByRole("button", { name: "Save file" })).toBeVisible();
   await expect(component.getByRole("button", { name: "Copy bundle" })).toBeVisible();
 });
+
+test("surfaces LAN discovery degradation without disabling secure transfer", async ({ mount }) => {
+  const component = await mount(
+    <PairingShare
+      status={pairingShareStateRegistry.lanUnavailable}
+      onCreate={async () => undefined}
+    />,
+  );
+  await expect(component.getByRole("status")).toContainText("LAN discovery is unavailable");
+  await expect(component.getByAltText("One-time Rackio pairing QR code")).toBeVisible();
+  await expect(component.getByRole("button", { name: "Save file" })).toBeVisible();
+});

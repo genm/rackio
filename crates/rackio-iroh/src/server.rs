@@ -21,7 +21,8 @@ use thiserror::Error;
 use tokio::sync::{Mutex, RwLock, watch};
 
 use crate::{
-    PairingError, PairingManager, PeerPermissions, PeerRegistry, classify_connection, protocol,
+    PairingError, PairingManager, PairingMdnsState, PeerPermissions, PeerRegistry,
+    classify_connection, protocol,
 };
 
 const HISTORY_PAGE_SIZE: usize = 256;
@@ -52,6 +53,7 @@ pub struct NodeRuntime {
     pub latest: watch::Receiver<Option<MetricSample>>,
     pub store: Mutex<MetricStore>,
     pub pairing: std::sync::Mutex<PairingManager>,
+    pub pairing_mdns: Arc<PairingMdnsState>,
     pub peers: PeerRegistry,
     pub active_connections: StdMutex<BTreeMap<String, BTreeMap<usize, Connection>>>,
 }
@@ -217,11 +219,17 @@ async fn handle_pair(
         .await?;
         return Ok(());
     }
-    let verified = runtime
-        .pairing
-        .lock()
-        .map_err(|_| ServerError::PairingStateUnavailable)?
-        .verify_and_consume(&pair.one_time_secret);
+    let (verified, window_closed) = {
+        let mut pairing = runtime
+            .pairing
+            .lock()
+            .map_err(|_| ServerError::PairingStateUnavailable)?;
+        let verified = pairing.verify_and_consume(&pair.one_time_secret);
+        (verified, !pairing.is_open())
+    };
+    if window_closed {
+        runtime.pairing_mdns.close().await;
+    }
     if verified.is_err() {
         write_error(send, "pairing_rejected", "pairing request was rejected").await?;
         return Ok(());
@@ -482,7 +490,10 @@ mod tests {
     use tokio::sync::{RwLock, watch};
     use uuid::Uuid;
 
-    use crate::{ClientConnection, EndpointConfig, PairingManager, PeerRegistry, bind_endpoint};
+    use crate::{
+        ClientConnection, EndpointConfig, PairingManager, PairingMdnsState, PeerRegistry,
+        bind_endpoint,
+    };
 
     use super::{NodeRuntime, RemoteServer};
 
@@ -523,6 +534,7 @@ mod tests {
                 MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}")),
             ),
             pairing: std::sync::Mutex::new(PairingManager::default()),
+            pairing_mdns: Arc::new(PairingMdnsState::default()),
             peers: PeerRegistry::load(directory.path().join("peers.json"))
                 .unwrap_or_else(|error| panic!("{error}")),
             active_connections: std::sync::Mutex::new(std::collections::BTreeMap::new()),

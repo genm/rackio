@@ -37,7 +37,7 @@ NAT and mixed-OS release matrices.
 | Collector | CPU, memory, swap, disk, network rate, uptime, OS and architecture | GPU, temperature, processes, containers and logs are not implemented |
 | Local history | 2-second samples, SQLite WAL batches, raw/minute retention and 64 MiB pruning | Cross-machine long-term aggregation is intentionally absent |
 | Remote server | Endpoint authentication, allowlist authorization, immediate revoke teardown, node info, live metrics, health, path and bounded history protocol | NAT and relay migration evidence remains incomplete |
-| Pairing | Five-minute, attempt-limited, single-use secret, copy/paste import, local QR generation and private file import/export | Pairing-window mDNS |
+| Pairing | Five-minute, attempt-limited, single-use secret, window-scoped mDNS endpoint advertisement, copy/paste import, local QR generation and private file import/export | Cross-LAN pairing depends on transferred direct addresses or a configured self-hosted relay |
 | Viewer daemon | Secret-free remote inventory, reconnect loop, persisted last-known snapshot, bounded remote history query, periodic health/path refresh, structured path events and stale/offline derivation | NAT and relay migration evidence remains incomplete |
 | Desktop | Local/remote cards, 24-hour remote history detail, dynamic worst-state tray icon, configurable OS notifications, QR/file/bundle pairing, SSH bootstrap, and explicit degraded states | Cross-platform packaging |
 | Linux packaging | Release archive builder, HTTPS or client-pushed archive install, checksum verification, hardened systemd unit and preserving/purge uninstaller | No signed public release; reboot and distribution coverage are not proven |
@@ -97,9 +97,8 @@ rootless installer test.
 
 1. Finish a publishable Linux headless supply chain: reproducible artifacts,
    signature/provenance, SBOM, immutable hosting and reboot evidence.
-2. Add pairing-window mDNS without publishing the one-time secret.
-3. Run same-LAN, NAT, relay-outage and path-migration matrices.
-4. Finish macOS and Windows service/IPC packaging.
+2. Run same-LAN, NAT, relay-outage and path-migration matrices.
+3. Finish macOS and Windows service/IPC packaging.
 
 Do not move remote transport into Tauri to accelerate UI work. Keeping it in the
 daemon is what preserves collection and monitoring after tray exit or logout.

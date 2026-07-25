@@ -148,6 +148,13 @@ export const pairingShareStateRegistry: Record<string, PairingShareState> = {
     bundle: "rackio-pair:test-bundle-too-large-for-qr",
     qrError: "Pairing bundle is too large for a QR code.",
   },
+  lanUnavailable: {
+    state: "ready",
+    bundle: "rackio-pair:test-bundle",
+    qrDataUrl:
+      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyOSAyOSIgc2hhcGUtcmVuZGVyaW5nPSJjcmlzcEVkZ2VzIj48cmVjdCB3aWR0aD0iMjkiIGhlaWdodD0iMjkiIGZpbGw9IiNmM2Y2ZjEiLz48ZyBmaWxsPSIjMGIwZjBkIj48cGF0aCBkPSJNMiAyaDd2N0gyek0yMCAyaDd2N2gtN3pNMiAyMGg3djdIMnoiLz48cGF0aCBmaWxsPSIjZjNmNmYxIiBkPSJNNCA0aDN2M0g0ek0yMiA0aDN2M2gtM3pNNCAyMmgzdjNINHoiLz48cGF0aCBkPSJNMTEgMmgydjJoLTJ6TTE1IDJoM3YyaC0zek0xMSA2aDR2MmgtNHpNMTcgNWgydjVoLTJ6TTEwIDEwaDN2M2gtM3pNMTQgOWgydjJoLTJ6TTE4IDExaDN2MmgtM3pNMjIgMTBoNXYyaC01ek0yIDExaDJ2NUgyek01IDExaDR2Mkg1ek01IDE1aDJ2M0g1ek05IDE0aDN2Mkg5ek0xMyAxM2gydjVoLTJ6TTE2IDE1aDR2MmgtNHpNMjEgMTRoMnY1aC0yek0yNCAxM2gzdjNoLTN6TTEwIDE5aDJ2NGgtMnpNMTMgMjBoNHYyaC00ek0xOCAxOGgydjNoLTJ6TTIyIDIwaDV2MmgtNXpNMTIgMjRoM3YzaC0zek0xNiAyM2gydjRoLTJ6TTE5IDIyaDN2M2gtM3pNMjMgMjRoNHYzaC00eiIvPjwvZz48L3N2Zz4=",
+    lanWarning: "mDNS advertisement could not start: multicast is unavailable.",
+  },
   error: {
     state: "error",
     message: "The local agent could not open a pairing window.",

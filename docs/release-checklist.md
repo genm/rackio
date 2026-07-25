@@ -21,7 +21,7 @@ a local, same-host or single-platform check exists.
   - [ ] independent artifact signature/provenance verification
   - [ ] signed macOS package and Windows service installer
 - [x] immediate teardown of active connections when a peer is revoked
-- [ ] five-minute mDNS advertisement lifecycle during pairing only
+- [x] five-minute mDNS advertisement lifecycle during pairing only
 - [x] QR and private file import/export for pairing bundles
 - [x] remote peer inventory and on-demand history in the desktop viewer
   - [x] pairing import, persisted remote inventory and live metrics

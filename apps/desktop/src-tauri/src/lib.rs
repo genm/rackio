@@ -107,14 +107,21 @@ async fn create_pairing_share() -> Result<serde_json::Value, String> {
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| String::from("daemon pairing response did not contain a bundle"))?;
     let qr = pairing_qr_data_url(bundle);
+    let lan_warning = response
+        .get("warnings")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|warnings| warnings.first())
+        .and_then(serde_json::Value::as_str);
     Ok(match qr {
         Ok(qr_data_url) => serde_json::json!({
             "bundle": bundle,
             "qrDataUrl": qr_data_url,
+            "lanWarning": lan_warning,
         }),
         Err(error) => serde_json::json!({
             "bundle": bundle,
             "qrError": error,
+            "lanWarning": lan_warning,
         }),
     })
 }
