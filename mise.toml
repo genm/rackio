@@ -17,6 +17,7 @@ run = [
   "cargo fmt --all -- --check",
   "cargo clippy --workspace --all-targets --all-features -- -D warnings",
   "cargo nextest run --workspace",
+  "scripts/test-two-daemon-pairing.sh",
   "packaging/linux/install.test.sh",
   "pnpm format:check",
   "pnpm typecheck",
@@ -54,3 +55,7 @@ run = "pnpm --filter @rackio/desktop dev"
 [tasks."test:installer"]
 description = "Verify Linux release packaging, install, and checksum rejection"
 run = "packaging/linux/install.test.sh"
+
+[tasks."test:pairing"]
+description = "Verify two-daemon pairing, live metrics, reuse rejection, and reconnect"
+run = "scripts/test-two-daemon-pairing.sh"

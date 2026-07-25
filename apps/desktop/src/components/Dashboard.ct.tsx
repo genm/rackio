@@ -67,6 +67,7 @@ test("imports a one-time pairing bundle from the desktop", async ({ mount }) => 
   await dialog.getByLabel("Pairing bundle").fill("  rackio-pair:test-bundle  ");
   await dialog.getByRole("button", { name: /pair machine/i }).click();
   await expect.poll(() => submitted).toBe("rackio-pair:test-bundle");
+  await expect(dialog).not.toBeVisible();
 });
 
 test("keeps pairing rejection visible instead of adding a fake healthy machine", async ({

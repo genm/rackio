@@ -13,8 +13,9 @@ The following boundaries are non-negotiable:
 - Do not enable iroh public relays, vendor DNS discovery, or telemetry defaults.
 - Direct-only mode must not contact hosts other than configured peers.
 - Relay mode may contact only relay URLs explicitly configured by the user.
-- Version 1 is read-only. Do not add remote shell, process control, restart,
-  file access, or other remote mutation.
+- The P2P monitoring protocol is read-only. Product lifecycle operations such
+  as install, update, repair and uninstall use explicit local or SSH authority;
+  do not smuggle an arbitrary remote shell into the metrics protocol.
 - Authentication, authorization, protocol-major compatibility, and pairing
   must fail closed.
 - Never represent unsupported, unavailable, stale, or degraded data as zero or
@@ -109,4 +110,3 @@ Use a `BREAKING CHANGE:` footer or `!` for breaking changes. Keep the header at
 100 characters or fewer. `commitlint.config.mjs` is the policy source of truth;
 Lefthook enforces it locally and CI validates every commit in the submitted
 range. Do not bypass hooks.
-

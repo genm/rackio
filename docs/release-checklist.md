@@ -13,6 +13,10 @@ a local, same-host or single-platform check exists.
 - [ ] system service installers for Windows, macOS and Linux, including reboot
       recovery and desktop access to the local socket
   - [x] checksum-verified Linux systemd installer and rootless installer tests
+  - [x] SSH client-push implementation with host-key confirmation, no server
+        download, automatic pairing flow and visible failure states
+  - [ ] SSH bootstrap evidence against clean Linux hosts from macOS, Windows
+        and Linux clients
   - [ ] Linux reboot recovery on supported distributions
   - [ ] independent artifact signature/provenance verification
   - [ ] signed macOS package and Windows service installer

@@ -38,3 +38,35 @@ export type PairingStatus =
   | { state: "submitting" }
   | { state: "error"; message: string }
   | { state: "success"; machineName: string };
+
+export interface SshTarget {
+  host: string;
+  user: string;
+  port: number;
+  identityFile?: string;
+}
+
+export interface SshHostIdentity {
+  hostKeys: string[];
+  fingerprints: string[];
+}
+
+export interface SshBootstrapInput {
+  target: SshTarget;
+  acceptedHostKeys: string[];
+  archivePath: string;
+  checksumPath: string;
+}
+
+export interface SshProgress {
+  stage: string;
+  detail: string;
+}
+
+export type SshBootstrapStatus =
+  | { state: "editing" }
+  | { state: "checking_host" }
+  | ({ state: "confirming_host_key" } & SshHostIdentity)
+  | { state: "running"; stage: string; detail: string }
+  | { state: "failed"; message: string }
+  | { state: "completed"; machineName: string; remotePlatform: string };

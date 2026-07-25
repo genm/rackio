@@ -437,14 +437,24 @@ pub async fn request_local(
 ) -> anyhow::Result<LocalResponse> {
     use tokio::net::UnixStream;
 
-    let stream = UnixStream::connect(&paths.local_socket)
-        .await
-        .with_context(|| {
-            format!(
-                "daemon is not reachable at {}",
-                paths.local_socket.display()
-            )
-        })?;
+    let candidates = local_socket_candidates(paths, std::env::var_os("RACKIO_SOCKET").is_some());
+    let mut connected = None;
+    let mut errors = Vec::new();
+    for candidate in candidates {
+        match UnixStream::connect(&candidate).await {
+            Ok(stream) => {
+                connected = Some(stream);
+                break;
+            }
+            Err(error) => errors.push(format!("{}: {error}", candidate.display())),
+        }
+    }
+    let stream = connected.ok_or_else(|| {
+        anyhow!(
+            "daemon is not reachable at any local socket ({})",
+            errors.join("; ")
+        )
+    })?;
     let (read, mut write) = stream.into_split();
     let mut request = serde_json::to_vec(&command)?;
     request.push(b'\n');
@@ -455,6 +465,24 @@ pub async fn request_local(
         .await?
         .ok_or_else(|| anyhow!("daemon closed the local connection without a response"))?;
     Ok(serde_json::from_str(&line)?)
+}
+
+#[cfg(unix)]
+fn local_socket_candidates(paths: &AppPaths, explicit: bool) -> Vec<PathBuf> {
+    if explicit {
+        return vec![paths.local_socket.clone()];
+    }
+    let mut candidates = Vec::new();
+    // Installed services use a machine-wide socket; developer daemons retain
+    // their per-user socket as a fallback.
+    #[cfg(target_os = "linux")]
+    candidates.push(PathBuf::from("/run/rackio/agent.sock"));
+    #[cfg(target_os = "macos")]
+    candidates.push(PathBuf::from("/var/run/rackio/agent.sock"));
+    if !candidates.contains(&paths.local_socket) {
+        candidates.push(paths.local_socket.clone());
+    }
+    candidates
 }
 
 #[cfg(not(unix))]
@@ -569,12 +597,36 @@ fn init_logging(paths: &AppPaths) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::path::PathBuf;
+
     use super::validate_relay_url;
+    #[cfg(unix)]
+    use super::{AppPaths, local_socket_candidates};
 
     #[test]
     fn relay_url_validation_fails_closed() {
         assert!(validate_relay_url(Some("not a relay URL")).is_err());
         assert!(validate_relay_url(Some("https://relay.example.test")).is_ok());
         assert!(validate_relay_url(None).is_ok());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn explicit_socket_does_not_fall_back_to_another_daemon() {
+        let explicit = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .path()
+            .join("explicit.sock");
+        let paths = AppPaths {
+            config_dir: PathBuf::from("/unused/config"),
+            data_dir: PathBuf::from("/unused/data"),
+            state_dir: PathBuf::from("/unused/state"),
+            log_dir: PathBuf::from("/unused/log"),
+            local_socket: explicit.clone(),
+        };
+        let candidates = local_socket_candidates(&paths, true);
+
+        assert_eq!(candidates, vec![explicit]);
     }
 }

@@ -20,23 +20,27 @@ The source currently supports this development flow:
 5. stream remote metrics into the viewer daemon;
 6. expose local and remote snapshots to Tauri over local IPC;
 7. render state, metrics, connection path and RTT in the desktop rack.
+8. inspect and explicitly confirm an SSH host key, push a local Linux release
+   archive, verify and install it without server internet access, then import
+   the resulting one-time pairing bundle automatically.
 
-A two-daemon same-host smoke has exercised this flow: pairing produced one
-`lan_direct` remote machine with a live CPU sample, and importing the same
-bundle again failed. That is useful integration evidence, but it is not a
-substitute for the NAT and mixed-OS release matrices.
+A reusable two-daemon same-host smoke exercises this flow: pairing produces one
+`lan_direct` remote machine with a live CPU sample, importing the same bundle
+again fails, and restarting the viewer daemon reconnects from its secret-free
+record. That is useful integration evidence, but it is not a substitute for the
+NAT and mixed-OS release matrices.
 
 ## Capability matrix
 
 | Surface | Implemented now | Missing or incomplete |
 | --- | --- | --- |
-| Collector | CPU, memory, swap, disk, network rate, uptime, OS and architecture | GPU, temperature, processes, containers and logs are v1 non-goals |
+| Collector | CPU, memory, swap, disk, network rate, uptime, OS and architecture | GPU, temperature, processes, containers and logs are not implemented |
 | Local history | 2-second samples, SQLite WAL batches, raw/minute retention and 64 MiB pruning | Remote history is not connected to the desktop |
 | Remote server | Endpoint authentication, allowlist authorization, node info, live metrics, health, path and bounded history protocol | Active connections are not immediately closed on revoke |
 | Pairing | Five-minute, attempt-limited, single-use secret and copy/paste import | QR, file import/export and pairing-window mDNS |
 | Viewer daemon | Secret-free remote inventory, reconnect loop, live cache, CPU sparkline buffer and stale/offline derivation | Last remote metric snapshot is not persisted across viewer restarts |
-| Desktop | Local/remote cards, pairing dialog and explicit direct/relayed/degraded/auth states | Detail/history view, notifications, dynamic tray health icon and Linux window fallback |
-| Linux packaging | Release archive builder, checksum-verifying installer, hardened systemd unit and preserving/purge uninstaller | No signed public release; reboot and distribution coverage are not proven |
+| Desktop | Local/remote cards, bundle pairing, SSH bootstrap with host-key confirmation, and explicit direct/relayed/degraded/auth states | Detail/history view, notifications, dynamic tray health icon and Linux window fallback |
+| Linux packaging | Release archive builder, HTTPS or client-pushed archive install, checksum verification, hardened systemd unit and preserving/purge uninstaller | No signed public release; reboot and distribution coverage are not proven |
 | macOS | LaunchDaemon template | Signed/notarized package, ownership rollback and installer receipts |
 | Windows | Collector and remote endpoint code participate in workspace checks | Named-pipe IPC ACL, Windows Service and installer |
 | Relay | Version-pinned upstream relay container and configuration | Internet-exposure workflow, token delivery and NAT evidence |

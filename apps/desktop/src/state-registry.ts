@@ -1,4 +1,4 @@
-import type { ConnectionPath, FleetSnapshot, NodeState } from "./types";
+import type { ConnectionPath, FleetSnapshot, NodeState, SshBootstrapStatus } from "./types";
 
 export const nodeStateRegistry: Record<NodeState, { label: string; rank: number; tone: string }> = {
   healthy: { label: "Healthy", rank: 0, tone: "good" },
@@ -30,6 +30,30 @@ export const surfaceStateRegistry: Record<string, FleetSnapshot> = {
     daemon: "unavailable",
     nodes: [],
     message: "The background agent is not reachable.",
+  },
+};
+
+export const sshBootstrapStateRegistry: Record<string, SshBootstrapStatus> = {
+  editing: { state: "editing" },
+  checkingHost: { state: "checking_host" },
+  confirmingHostKey: {
+    state: "confirming_host_key",
+    hostKeys: ["[server.test]:22 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestFixtureOnly"],
+    fingerprints: ["256 SHA256:fixtureFingerprint server.test (ED25519)"],
+  },
+  installing: {
+    state: "running",
+    stage: "installing",
+    detail: "Verifying the archive and installing the systemd service",
+  },
+  failed: {
+    state: "failed",
+    message: "SSH authentication failed. Check the user, key, and server policy.",
+  },
+  completed: {
+    state: "completed",
+    machineName: "Home Server",
+    remotePlatform: "Linux x86_64",
   },
 };
 

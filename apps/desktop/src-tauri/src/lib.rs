@@ -1,3 +1,5 @@
+mod ssh_bootstrap;
+
 use tauri::{
     Manager,
     menu::{Menu, MenuItem},
@@ -262,7 +264,12 @@ pub fn run() {
             builder.build(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![fleet_snapshot, pair_machine])
+        .invoke_handler(tauri::generate_handler![
+            fleet_snapshot,
+            pair_machine,
+            ssh_bootstrap::ssh_inspect_host,
+            ssh_bootstrap::ssh_bootstrap
+        ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| panic!("failed to run Rackio desktop: {error}"));
 }

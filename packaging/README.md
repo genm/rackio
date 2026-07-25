@@ -56,6 +56,20 @@ Verify the normal install and checksum-rejection paths without root or systemd:
 mise run test:installer
 ```
 
+The desktop SSH bootstrap does not ask the server to download from the release
+host. It confirms the server host key, uploads the archive and checksum from the
+client, then invokes the same installer implementation:
+
+```sh
+sudo sh install.sh \
+  --archive rackio-v0.1.0-x86_64-unknown-linux-gnu.tar.gz \
+  --checksum rackio-v0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+```
+
+SSH bootstrap requires key or agent authentication and non-interactive root
+access (`root` login or passwordless `sudo`) so the desktop never captures or
+stores an SSH password. A host-key change after confirmation fails closed.
+
 Uninstall preserves identity, pairing records, configuration, history and logs
 by default. `--purge` explicitly removes those directories:
 

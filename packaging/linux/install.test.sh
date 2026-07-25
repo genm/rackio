@@ -29,8 +29,28 @@ test -x "$install_root/usr/local/bin/rackio"
 test -x "$install_root/usr/local/lib/rackio/uninstall.sh"
 test -f "$install_root/etc/systemd/system/rackio.service"
 
+# A second install is the normal upgrade/recovery path and must be idempotent.
+RACKIO_INSTALL_ROOT="$install_root" \
+RACKIO_SKIP_SERVICE=1 \
+_RACKIO_TEST_OS=Linux \
+_RACKIO_TEST_ARCH=x86_64 \
+  sh "$repo_root/install.sh" \
+  --version 0.1.0 \
+  --releases-url "file://$test_root/releases" >/dev/null
+
+asset="$test_root/releases/v0.1.0/rackio-v0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+local_install_root="$test_root/local-root"
+RACKIO_INSTALL_ROOT="$local_install_root" \
+RACKIO_SKIP_SERVICE=1 \
+_RACKIO_TEST_OS=Linux \
+_RACKIO_TEST_ARCH=x86_64 \
+  sh "$repo_root/install.sh" \
+  --archive "$asset" \
+  --checksum "$asset.sha256" >/dev/null
+test -x "$local_install_root/usr/local/bin/rackio"
+
 printf 'invalid checksum\n' \
-  >"$test_root/releases/v0.1.0/rackio-v0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256"
+  >"$asset.sha256"
 if RACKIO_INSTALL_ROOT="$test_root/rejected" \
   RACKIO_SKIP_SERVICE=1 \
   _RACKIO_TEST_OS=Linux \
@@ -43,4 +63,4 @@ if RACKIO_INSTALL_ROOT="$test_root/rejected" \
 fi
 test ! -e "$test_root/rejected/usr/local/bin/rackio"
 
-printf '{"ok":true,"normal_install":true,"checksum_rejection":true}\n'
+printf '{"ok":true,"normal_install":true,"idempotent_reinstall":true,"local_archive_install":true,"checksum_rejection":true}\n'

@@ -10,7 +10,8 @@ fi
 
 matches="$(
   LC_ALL=C strings "$binary_path" |
-    grep -E 'relay\.n0\.iroh\.link|staging-relay\.n0\.iroh\.link|dns\.iroh\.link' ||
+    grep -Eo 'relay\.n0\.iroh\.link|staging-relay\.n0\.iroh\.link|dns\.iroh\.link' |
+    sort -u ||
     true
 )"
 

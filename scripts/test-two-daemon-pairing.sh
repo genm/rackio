@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+integration_root="$(mktemp -d "${TMPDIR:-/tmp}/rackio-two-daemon.XXXXXX")"
+viewer_pid=""
+server_pid=""
+
+cleanup() {
+  status=$?
+  if [[ -n "$viewer_pid" ]]; then
+    kill "$viewer_pid" 2>/dev/null || true
+    wait "$viewer_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$server_pid" ]]; then
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+  fi
+  if [[ "$status" -ne 0 ]]; then
+    evidence="$repo_root/test-results/two-daemon"
+    mkdir -p "$evidence"
+    cp "$integration_root"/*.log "$evidence/" 2>/dev/null || true
+  fi
+  rm -rf "$integration_root"
+  exit "$status"
+}
+trap cleanup EXIT HUP INT TERM
+
+command -v jq >/dev/null 2>&1 || {
+  echo "two-daemon pairing test requires jq" >&2
+  exit 2
+}
+
+mkdir -p \
+  "$integration_root/viewer/config" \
+  "$integration_root/viewer/data" \
+  "$integration_root/viewer/state" \
+  "$integration_root/viewer/log" \
+  "$integration_root/server/config" \
+  "$integration_root/server/data" \
+  "$integration_root/server/state" \
+  "$integration_root/server/log"
+
+cargo build -p rackio-agent >/dev/null
+binary="$repo_root/target/debug/rackio"
+viewer_socket="$integration_root/viewer.sock"
+server_socket="$integration_root/server.sock"
+
+viewer() {
+  env \
+    RACKIO_CONFIG_DIR="$integration_root/viewer/config" \
+    RACKIO_DATA_DIR="$integration_root/viewer/data" \
+    RACKIO_STATE_DIR="$integration_root/viewer/state" \
+    RACKIO_LOG_DIR="$integration_root/viewer/log" \
+    RACKIO_SOCKET="$viewer_socket" \
+    "$binary" "$@"
+}
+
+server() {
+  env \
+    RACKIO_CONFIG_DIR="$integration_root/server/config" \
+    RACKIO_DATA_DIR="$integration_root/server/data" \
+    RACKIO_STATE_DIR="$integration_root/server/state" \
+    RACKIO_LOG_DIR="$integration_root/server/log" \
+    RACKIO_SOCKET="$server_socket" \
+    "$binary" "$@"
+}
+
+start_viewer() {
+  viewer daemon >>"$integration_root/viewer.log" 2>&1 &
+  viewer_pid=$!
+}
+
+start_server() {
+  server daemon >>"$integration_root/server.log" 2>&1 &
+  server_pid=$!
+}
+
+wait_for_command() {
+  description="$1"
+  shift
+  for _ in {1..20}; do
+    if "$@" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "timed out waiting for $description" >&2
+  return 1
+}
+
+wait_for_remote_sample() {
+  for _ in {1..24}; do
+    fleet="$(viewer fleet 2>/dev/null || true)"
+    if [[ -n "$fleet" ]] &&
+      [[ "$(jq -r '.data.remotes | length' <<<"$fleet")" == "1" ]] &&
+      [[ "$(jq -r '.data.remotes[0].latest.cpu_percent != null' <<<"$fleet")" == "true" ]]; then
+      printf '%s' "$fleet"
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "remote metric sample did not arrive within six seconds" >&2
+  return 1
+}
+
+start_viewer
+start_server
+wait_for_command "viewer daemon" viewer status
+wait_for_command "monitored daemon" server status
+
+bundle="$(server pairing create | jq -r '.data')"
+imported="$(viewer pairing import "$bundle")"
+[[ "$(jq -r '.ok' <<<"$imported")" == "true" ]]
+fleet="$(wait_for_remote_sample)"
+[[ "$(jq -r '.data.remotes[0].path' <<<"$fleet")" == "lan_direct" ]]
+
+if viewer pairing import "$bundle" >/dev/null 2>&1; then
+  echo "the same pairing bundle was accepted twice" >&2
+  exit 1
+fi
+if rg -q 'one_time_secret' "$integration_root/viewer/data/monitored-machines.json"; then
+  echo "the viewer persisted a one-time pairing secret" >&2
+  exit 1
+fi
+
+kill "$viewer_pid"
+wait "$viewer_pid" 2>/dev/null || true
+viewer_pid=""
+start_viewer
+wait_for_command "restarted viewer daemon" viewer status
+restarted_fleet="$(wait_for_remote_sample)"
+
+printf '%s\n' "$(jq -n \
+  --arg path "$(jq -r '.data.remotes[0].path' <<<"$restarted_fleet")" \
+  '{
+    pairing: true,
+    remote_metric: true,
+    reused_bundle_rejected: true,
+    viewer_restart_reconnected: true,
+    path: $path
+  }')"

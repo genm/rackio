@@ -80,6 +80,9 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo nextest run --workspace
+      - name: Exercise two-daemon pairing and reconnect
+        if: runner.os == 'Linux'
+        run: scripts/test-two-daemon-pairing.sh
       - name: Capture failure diagnostics
         if: failure()
         shell: bash

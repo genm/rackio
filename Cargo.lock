@@ -4353,11 +4353,13 @@ name = "rackio-desktop"
 version = "0.1.0"
 dependencies = [
  "directories",
+ "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",
  "tauri-plugin-notification",
+ "tempfile",
  "tokio",
 ]
 

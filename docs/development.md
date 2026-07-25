@@ -48,6 +48,7 @@ mise run doctor:relay
 mise run agent:daemon
 mise run desktop:dev
 mise run frontend:dev
+mise run test:pairing
 mise run test:installer
 mise run check
 ```
@@ -63,6 +64,10 @@ are stored in the same ignored directory.
 `test:installer` builds a synthetic Linux release archive, installs it under an
 isolated temporary root and verifies checksum rejection. It does not modify the
 host systemd configuration.
+
+`test:pairing` executes the isolated two-daemon smoke below, including viewer
+restart and reconnect. It writes daemon logs under `test-results/two-daemon/`
+only when the smoke fails.
 
 ## Two-daemon pairing smoke
 

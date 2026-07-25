@@ -18,10 +18,12 @@ tauri-build.workspace = true
 
 [dependencies]
 directories.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
 tauri-plugin-autostart.workspace = true
 tauri-plugin-notification.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 
 [lints]

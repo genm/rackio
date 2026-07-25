@@ -6,6 +6,8 @@ VERSION="${RACKIO_VERSION:-latest}"
 RELEASES_URL="${RACKIO_RELEASES_URL:-$DEFAULT_RELEASES_URL}"
 INSTALL_ROOT="${RACKIO_INSTALL_ROOT:-}"
 SKIP_SERVICE="${RACKIO_SKIP_SERVICE:-0}"
+LOCAL_ARCHIVE=""
+LOCAL_CHECKSUM=""
 
 usage() {
   cat <<'EOF'
@@ -13,14 +15,18 @@ Install the Rackio headless agent and systemd service.
 
 Usage:
   install.sh [--version VERSION] [--releases-url URL]
+  install.sh --archive FILE --checksum FILE
 
 Environment:
   RACKIO_VERSION       Version to install (default: latest)
   RACKIO_RELEASES_URL  Static release root
 
-The installer downloads and verifies an immutable release archive before it
+The installer downloads and verifies a versioned release archive before it
 requests root privileges. RACKIO_INSTALL_ROOT and RACKIO_SKIP_SERVICE are only
 for repository integration tests.
+
+The archive form is used by Rackio's SSH bootstrap. It performs the same
+verification and installation without requiring internet access on the server.
 EOF
 }
 
@@ -41,6 +47,16 @@ while [ "$#" -gt 0 ]; do
       RELEASES_URL="$2"
       shift 2
       ;;
+    --archive)
+      [ "$#" -ge 2 ] || fail "--archive requires a value"
+      LOCAL_ARCHIVE="$2"
+      shift 2
+      ;;
+    --checksum)
+      [ "$#" -ge 2 ] || fail "--checksum requires a value"
+      LOCAL_CHECKSUM="$2"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -51,8 +67,16 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
+if [ -n "$LOCAL_ARCHIVE" ] || [ -n "$LOCAL_CHECKSUM" ]; then
+  [ -n "$LOCAL_ARCHIVE" ] && [ -n "$LOCAL_CHECKSUM" ] ||
+    fail "--archive and --checksum must be provided together"
+  [ -f "$LOCAL_ARCHIVE" ] || fail "local release archive is missing"
+  [ -f "$LOCAL_CHECKSUM" ] || fail "local release checksum is missing"
+  VERSION="local"
+else
+  command -v curl >/dev/null 2>&1 || fail "curl is required"
+fi
 
 if [ -n "$INSTALL_ROOT" ]; then
   TEST_OS="${_RACKIO_TEST_OS:-$(uname -s)}"
@@ -69,17 +93,20 @@ case "$TEST_ARCH" in
   *) fail "unsupported Linux architecture: $TEST_ARCH" ;;
 esac
 
-RELEASES_URL="${RELEASES_URL%/}"
-if [ "$VERSION" = "latest" ]; then
-  VERSION="$(curl --proto '=https' --tlsv1.2 -fsSL "$RELEASES_URL/latest.txt" 2>/dev/null || true)"
-  [ -n "$VERSION" ] || fail "could not resolve the latest Rackio version"
+if [ -n "$LOCAL_ARCHIVE" ]; then
+  ASSET="rackio-local-${TARGET}.tar.gz"
+else
+  RELEASES_URL="${RELEASES_URL%/}"
+  if [ "$VERSION" = "latest" ]; then
+    VERSION="$(curl --proto '=https' --tlsv1.2 -fsSL "$RELEASES_URL/latest.txt" 2>/dev/null || true)"
+    [ -n "$VERSION" ] || fail "could not resolve the latest Rackio version"
+  fi
+  case "$VERSION" in
+    *[!0-9A-Za-z._-]*|'') fail "invalid version: $VERSION" ;;
+  esac
+  ASSET="rackio-v${VERSION}-${TARGET}.tar.gz"
+  BASE_URL="$RELEASES_URL/v${VERSION}"
 fi
-case "$VERSION" in
-  *[!0-9A-Za-z._-]*|'') fail "invalid version: $VERSION" ;;
-esac
-
-ASSET="rackio-v${VERSION}-${TARGET}.tar.gz"
-BASE_URL="$RELEASES_URL/v${VERSION}"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rackio-install.XXXXXX")"
 cleanup() {
   rm -rf "$TEMP_DIR"
@@ -99,8 +126,13 @@ download() {
   esac
 }
 
-download "$BASE_URL/$ASSET" "$TEMP_DIR/$ASSET"
-download "$BASE_URL/$ASSET.sha256" "$TEMP_DIR/$ASSET.sha256"
+if [ -n "$LOCAL_ARCHIVE" ]; then
+  cp "$LOCAL_ARCHIVE" "$TEMP_DIR/$ASSET"
+  cp "$LOCAL_CHECKSUM" "$TEMP_DIR/$ASSET.sha256"
+else
+  download "$BASE_URL/$ASSET" "$TEMP_DIR/$ASSET"
+  download "$BASE_URL/$ASSET.sha256" "$TEMP_DIR/$ASSET.sha256"
+fi
 
 verify_checksum() {
   expected="$(awk 'NR == 1 { print $1 }' "$TEMP_DIR/$ASSET.sha256")"
@@ -150,6 +182,15 @@ run_root() {
 BIN_PATH="$(root_path /usr/local/bin/rackio)"
 LIB_DIR="$(root_path /usr/local/lib/rackio)"
 UNIT_PATH="$(root_path /etc/systemd/system/rackio.service)"
+
+if [ "$SKIP_SERVICE" != "1" ]; then
+  command -v systemctl >/dev/null 2>&1 || fail "systemd is required by this installer"
+  command -v getent >/dev/null 2>&1 || fail "getent is required by this installer"
+  command -v groupadd >/dev/null 2>&1 || fail "groupadd is required by this installer"
+  command -v useradd >/dev/null 2>&1 || fail "useradd is required by this installer"
+  command -v usermod >/dev/null 2>&1 || fail "usermod is required by this installer"
+fi
+
 run_root install -d -m 0755 "$(dirname "$BIN_PATH")" "$LIB_DIR" "$(dirname "$UNIT_PATH")"
 run_root install -m 0755 "$TEMP_DIR/extracted/rackio" "$BIN_PATH"
 run_root install -m 0755 "$TEMP_DIR/extracted/uninstall.sh" "$LIB_DIR/uninstall.sh"
@@ -161,8 +202,6 @@ if [ "$SKIP_SERVICE" = "1" ]; then
   exit 0
 fi
 
-command -v systemctl >/dev/null 2>&1 || fail "systemd is required by this installer"
-command -v getent >/dev/null 2>&1 || fail "getent is required by this installer"
 if ! getent group rackio-viewers >/dev/null 2>&1; then
   run_root groupadd --system rackio-viewers
 fi
