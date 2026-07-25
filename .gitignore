@@ -5,9 +5,11 @@
 # Node.js and pnpm
 node_modules/
 /.pnpm-store/
+pnpm-debug.log*
 *.tsbuildinfo
 
-# Desktop build output
+# Build and release output
+/dist/
 /apps/desktop/dist/
 /apps/desktop/src-tauri/gen/
 /apps/desktop/.cache/
@@ -23,8 +25,17 @@ node_modules/
 
 # Runtime state
 *.db
+*.db-journal
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-shm
+*.sqlite3-wal
 *.log
 *.pid
 *.sock
