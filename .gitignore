@@ -1,0 +1,17 @@
+/target/
+node_modules/
+/.pnpm-store/
+/apps/desktop/dist/
+/apps/desktop/src-tauri/gen/
+/apps/desktop/test-results/
+/apps/desktop/playwright-report/
+/apps/desktop/.cache/
+/apps/desktop/playwright/.cache/
+/test-results/
+/output/
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.tsbuildinfo
+.DS_Store

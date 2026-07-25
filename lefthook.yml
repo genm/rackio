@@ -1,0 +1,12 @@
+pre-commit:
+  parallel: true
+  commands:
+    rustfmt:
+      glob: "*.rs"
+      run: cargo fmt --all -- --check
+    clippy:
+      glob: "{*.rs,Cargo.toml,Cargo.lock}"
+      run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+    frontend:
+      glob: "apps/desktop/**/*.{ts,tsx,css,json}"
+      run: pnpm format:check && pnpm typecheck && pnpm lint && pnpm test

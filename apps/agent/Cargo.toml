@@ -1,0 +1,31 @@
+[package]
+name = "tray-monitor-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tray-monitor"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+directories.workspace = true
+iroh.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+tray-monitor-core = { version = "0.1.0", path = "../../crates/monitor-core" }
+tray-monitor-iroh = { version = "0.1.0", path = "../../crates/monitor-iroh" }
+uuid.workspace = true
+
+[lints]
+workspace = true

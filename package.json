@@ -1,0 +1,20 @@
+{
+  "name": "tray-monitor-workspace",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "build": "pnpm --filter @tray-monitor/desktop build",
+    "format:check": "pnpm --filter @tray-monitor/desktop format",
+    "typecheck": "pnpm --filter @tray-monitor/desktop typecheck",
+    "lint": "pnpm --filter @tray-monitor/desktop lint",
+    "test": "pnpm --filter @tray-monitor/desktop test",
+    "test:ct": "pnpm --filter @tray-monitor/desktop test:ct"
+  },
+  "pnpm": {
+    "minimumReleaseAge": 4320,
+    "onlyBuiltDependencies": [
+      "@tauri-apps/cli",
+      "esbuild"
+    ]
+  }
+}

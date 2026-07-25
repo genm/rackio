@@ -1,0 +1,155 @@
+syntax = "proto3";
+
+package tray_monitor.v1;
+
+message ProtocolVersion {
+  uint32 major = 1;
+  uint32 minor = 2;
+}
+
+enum CapabilityState {
+  CAPABILITY_STATE_UNSPECIFIED = 0;
+  CAPABILITY_STATE_SUPPORTED = 1;
+  CAPABILITY_STATE_UNSUPPORTED = 2;
+  CAPABILITY_STATE_PERMISSION_DENIED = 3;
+}
+
+message MetricCapability {
+  string name = 1;
+  CapabilityState state = 2;
+  optional string detail = 3;
+}
+
+message NodeInfo {
+  string node_id = 1;
+  string endpoint_id = 2;
+  string display_name = 3;
+  string os = 4;
+  string architecture = 5;
+  string agent_version = 6;
+  ProtocolVersion protocol = 7;
+  repeated MetricCapability capabilities = 8;
+}
+
+message DiskMetric {
+  string mount = 1;
+  uint64 total_bytes = 2;
+  uint64 used_bytes = 3;
+}
+
+message NetworkMetric {
+  uint64 received_bytes_per_second = 1;
+  uint64 sent_bytes_per_second = 2;
+}
+
+message CollectorError {
+  string source = 1;
+  CapabilityState kind = 2;
+  string message = 3;
+}
+
+message MetricSample {
+  int64 timestamp_ms = 1;
+  uint64 sequence = 2;
+  optional float cpu_percent = 3;
+  optional uint64 memory_used_bytes = 4;
+  optional uint64 memory_total_bytes = 5;
+  optional uint64 swap_used_bytes = 6;
+  optional uint64 swap_total_bytes = 7;
+  repeated DiskMetric disks = 8;
+  optional NetworkMetric network = 9;
+  uint64 uptime_seconds = 10;
+  repeated CollectorError errors = 11;
+}
+
+enum NodeState {
+  NODE_STATE_UNSPECIFIED = 0;
+  NODE_STATE_HEALTHY = 1;
+  NODE_STATE_WARNING = 2;
+  NODE_STATE_CRITICAL = 3;
+  NODE_STATE_STALE = 4;
+  NODE_STATE_OFFLINE = 5;
+  NODE_STATE_AUTH_ERROR = 6;
+  NODE_STATE_INCOMPATIBLE = 7;
+  NODE_STATE_DEGRADED = 8;
+}
+
+enum ConnectionPath {
+  CONNECTION_PATH_UNSPECIFIED = 0;
+  CONNECTION_PATH_LAN_DIRECT = 1;
+  CONNECTION_PATH_WAN_DIRECT = 2;
+  CONNECTION_PATH_RELAYED = 3;
+  CONNECTION_PATH_UNKNOWN = 4;
+}
+
+message ConnectionDetails {
+  ConnectionPath path = 1;
+  uint64 rtt_ms = 2;
+}
+
+message HealthSnapshot {
+  NodeState state = 1;
+  bool collector_degraded = 2;
+  bool storage_degraded = 3;
+  bool remote_listener_degraded = 4;
+  repeated string details = 5;
+}
+
+message HistoryQuery {
+  int64 from_ms = 1;
+  int64 to_ms = 2;
+  enum Resolution {
+    RESOLUTION_UNSPECIFIED = 0;
+    RESOLUTION_RAW = 1;
+    RESOLUTION_MINUTE = 2;
+  }
+  Resolution resolution = 3;
+  ProtocolVersion protocol = 4;
+}
+
+message PairRequest {
+  string one_time_secret = 1;
+  string viewer_endpoint_id = 2;
+}
+
+message PairResponse {
+  bool accepted = 1;
+  string node_id = 2;
+  string endpoint_id = 3;
+}
+
+message Request {
+  oneof body {
+    ProtocolVersion get_node_info = 1;
+    ProtocolVersion watch_metrics = 2;
+    HistoryQuery query_history = 3;
+    ProtocolVersion get_health = 4;
+    ProtocolVersion get_connection_path = 5;
+    PairRequest pair = 6;
+  }
+}
+
+message Response {
+  oneof body {
+    NodeInfo node_info = 1;
+    MetricSample metric_sample = 2;
+    HealthSnapshot health = 3;
+    ConnectionDetails connection_path = 4;
+    PairResponse pair = 5;
+    ErrorResponse error = 6;
+    Heartbeat heartbeat = 7;
+    StreamComplete stream_complete = 8;
+  }
+}
+
+message ErrorResponse {
+  string code = 1;
+  string message = 2;
+}
+
+message Heartbeat {
+  int64 timestamp_ms = 1;
+  uint64 sequence = 2;
+}
+
+message StreamComplete {}

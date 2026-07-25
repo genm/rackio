@@ -1,0 +1,28 @@
+[package]
+name = "tray-monitor-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "tray_monitor_desktop"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "tray-monitor-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+directories.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tauri-plugin-autostart.workspace = true
+tauri-plugin-notification.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

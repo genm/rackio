@@ -1,0 +1,24 @@
+[tools]
+node = "24.15.0"
+pnpm = "10.33.0"
+rust = "1.92.0"
+"cargo:cargo-deny" = "0.20.2"
+"cargo:cargo-llvm-cov" = "0.8.7"
+"cargo:cargo-machete" = "0.9.2"
+"cargo:cargo-nextest" = "0.9.140"
+actionlint = "1.7.12"
+trivy = "0.72.0"
+
+[tasks.check]
+description = "Run repository quality gates"
+run = [
+  "cargo fmt --all -- --check",
+  "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+  "cargo nextest run --workspace",
+  "pnpm format:check",
+  "pnpm typecheck",
+  "pnpm lint",
+  "pnpm test",
+  "pnpm test:ct",
+  "pnpm build",
+]

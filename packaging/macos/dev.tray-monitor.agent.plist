@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>dev.tray-monitor.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/local/bin/tray-monitor</string>
+      <string>daemon</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>TRAY_MONITOR_CONFIG_DIR</key>
+      <string>/Library/Preferences/TrayMonitor</string>
+      <key>TRAY_MONITOR_DATA_DIR</key>
+      <string>/Library/Application Support/TrayMonitor</string>
+      <key>TRAY_MONITOR_STATE_DIR</key>
+      <string>/Library/Logs/TrayMonitor</string>
+      <key>TRAY_MONITOR_SOCKET</key>
+      <string>/var/run/tray-monitor/agent.sock</string>
+      <key>TRAY_MONITOR_SHARED_SOCKET</key>
+      <string>1</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Library/Logs/TrayMonitor/launchd.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Library/Logs/TrayMonitor/launchd.stderr.log</string>
+  </dict>
+</plist>

@@ -1,0 +1,28 @@
+services:
+  relay:
+    build:
+      context: .
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "7824:7824/udp"
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - "./config.toml:/etc/iroh-relay/config.toml:ro"
+      - "./certs:/certs:ro"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9090/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

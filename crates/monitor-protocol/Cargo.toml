@@ -1,0 +1,19 @@
+[package]
+name = "tray-monitor-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+prost.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[build-dependencies]
+prost-build = "0.14.4"
+protoc-bin-vendored = "3.2.0"
+
+[lints]
+workspace = true
