@@ -1,0 +1,71 @@
+name: Bug report
+description: Report reproducible incorrect or degraded Rackio behavior.
+title: "[Bug] "
+labels:
+  - type:bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. Do not include secrets, pairing bundles, live metric payloads, or routable addresses. Report security vulnerabilities privately as described in `SECURITY.md`.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is wrong, and what user-visible impact does it have?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Rackio version or commit
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, architecture, install method, desktop environment, and network path when relevant.
+      placeholder: |
+        OS and architecture:
+        Install method:
+        Desktop environment:
+        Direct or relayed path:
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest deterministic sequence that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Include visible error or degraded state. Do not replace a failure with a summary such as "nothing happened."
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Attach sanitized logs, screenshots, machine-readable reports, or packet topology. Remove secrets and routable addresses.
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Regression
+      options:
+        - Unknown
+        - Yes, this worked before
+        - No, this has never worked
+    validations:
+      required: true

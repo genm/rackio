@@ -1,0 +1,112 @@
+[
+  {
+    "name": "type:bug",
+    "color": "d73a4a",
+    "description": "Confirmed or reported incorrect behavior"
+  },
+  {
+    "name": "type:feature",
+    "color": "a2eeef",
+    "description": "New user-visible capability or product behavior"
+  },
+  {
+    "name": "type:documentation",
+    "color": "0075ca",
+    "description": "Documentation-only work"
+  },
+  {
+    "name": "type:release",
+    "color": "5319e7",
+    "description": "Release gate, packaging, or publication work"
+  },
+  {
+    "name": "type:security",
+    "color": "b60205",
+    "description": "Security hardening or review work; not public vulnerability reports"
+  },
+  {
+    "name": "area:agent",
+    "color": "c5def5",
+    "description": "Daemon, collector, history, alerts, or CLI"
+  },
+  {
+    "name": "area:desktop",
+    "color": "c5def5",
+    "description": "Tauri shell, tray, notifications, or React viewer"
+  },
+  {
+    "name": "area:p2p",
+    "color": "c5def5",
+    "description": "iroh transport, pairing, relay, discovery, or protocol"
+  },
+  {
+    "name": "area:packaging",
+    "color": "c5def5",
+    "description": "Installer, service, artifact, signing, or update packaging"
+  },
+  {
+    "name": "area:ci",
+    "color": "c5def5",
+    "description": "Continuous integration and automated verification"
+  },
+  {
+    "name": "area:governance",
+    "color": "c5def5",
+    "description": "Repository, community, and release governance"
+  },
+  {
+    "name": "platform:linux",
+    "color": "fef2c0",
+    "description": "Linux-specific work or evidence"
+  },
+  {
+    "name": "platform:macos",
+    "color": "fef2c0",
+    "description": "macOS-specific work or evidence"
+  },
+  {
+    "name": "platform:windows",
+    "color": "fef2c0",
+    "description": "Windows-specific work or evidence"
+  },
+  {
+    "name": "priority:p0",
+    "color": "b60205",
+    "description": "Release or security blocker requiring immediate attention"
+  },
+  {
+    "name": "priority:p1",
+    "color": "d93f0b",
+    "description": "Important near-term work"
+  },
+  {
+    "name": "priority:p2",
+    "color": "fbca04",
+    "description": "Useful work without immediate urgency"
+  },
+  {
+    "name": "status:blocked",
+    "color": "000000",
+    "description": "Cannot proceed until a named dependency or authority is available"
+  },
+  {
+    "name": "status:needs-evidence",
+    "color": "e4e669",
+    "description": "Implementation exists but required reviewable evidence is incomplete"
+  },
+  {
+    "name": "status:needs-design",
+    "color": "d4c5f9",
+    "description": "Requires an accepted product or technical design"
+  },
+  {
+    "name": "good first issue",
+    "color": "7057ff",
+    "description": "Scoped work suitable for a first contribution"
+  },
+  {
+    "name": "help wanted",
+    "color": "008672",
+    "description": "Maintainers welcome external help"
+  }
+]

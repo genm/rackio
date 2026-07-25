@@ -13,15 +13,15 @@ only after its evidence has been reviewed.
 
 | Order | ID | Work item | Depends on | Suggested labels |
 | --- | --- | --- | --- | --- |
-| 1 | REL-01 | Create and secure the public GitHub repository | — | `release`, `governance` |
-| 2 | REL-02 | Resolve the Linux Tauri/GTK security blocker | — | `security`, `linux`, `desktop` |
-| 3 | REL-03 | Verify and sign the Linux service release | REL-01 | `release`, `linux`, `packaging` |
-| 4 | REL-04 | Verify and sign the macOS service release | REL-01 | `release`, `macos`, `packaging` |
-| 5 | REL-05 | Verify and sign the Windows service release | REL-01 | `release`, `windows`, `packaging` |
-| 6 | REL-06 | Execute the direct, NAT, and relay network matrix | REL-03 | `network`, `p2p`, `test` |
-| 7 | REL-07 | Prove privacy and relay payload opacity | REL-06 | `security`, `privacy`, `test` |
-| 8 | REL-08 | Execute mixed-OS product and resource acceptance | REL-03, REL-04, REL-05, REL-06 | `release`, `performance`, `test` |
-| 9 | REL-09 | Complete independent security review and release decision | REL-02 through REL-08 | `security`, `release` |
+| 1 | REL-01 | Create and secure the public GitHub repository | — | `type:release`, `area:governance`, `priority:p0` |
+| 2 | REL-02 | Resolve the Linux Tauri/GTK security blocker | — | `type:security`, `area:desktop`, `platform:linux`, `priority:p0` |
+| 3 | REL-03 | Verify and sign the Linux service release | REL-01 | `type:release`, `area:packaging`, `platform:linux`, `status:needs-evidence` |
+| 4 | REL-04 | Verify and sign the macOS service release | REL-01 | `type:release`, `area:packaging`, `platform:macos`, `status:needs-evidence` |
+| 5 | REL-05 | Verify and sign the Windows service release | REL-01 | `type:release`, `area:packaging`, `platform:windows`, `status:needs-evidence` |
+| 6 | REL-06 | Execute the direct, NAT, and relay network matrix | REL-03 | `type:release`, `area:p2p`, `status:needs-evidence` |
+| 7 | REL-07 | Prove privacy and relay payload opacity | REL-06 | `type:security`, `area:p2p`, `status:needs-evidence` |
+| 8 | REL-08 | Execute mixed-OS product and resource acceptance | REL-03, REL-04, REL-05, REL-06 | `type:release`, `status:needs-evidence` |
+| 9 | REL-09 | Complete independent security review and release decision | REL-02 through REL-08 | `type:security`, `area:governance`, `priority:p0` |
 
 ## REL-01: Create and secure the public GitHub repository
 

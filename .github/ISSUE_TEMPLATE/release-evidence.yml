@@ -2,7 +2,7 @@ name: Release evidence
 description: Track one issue-sized item from docs/backlog.md and attach reviewable release evidence.
 title: "[REL-XX] "
 labels:
-  - release
+  - type:release
 body:
   - type: markdown
     attributes:

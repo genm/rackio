@@ -21,6 +21,8 @@ For a handoff-oriented view of completed and partial behavior, read
 there is not release-complete until [`docs/release-checklist.md`](docs/release-checklist.md)
 has the required evidence. Remaining work is organized into issue-sized,
 dependency-ordered items in [`docs/backlog.md`](docs/backlog.md).
+Contribution workflow, issue ownership, and release evidence conventions are in
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## What works
 
