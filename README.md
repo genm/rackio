@@ -44,10 +44,10 @@ Windows integration evidence, the upstream Linux Tauri/GTK
 release blockers in
 [`docs/release-checklist.md`](docs/release-checklist.md).
 
-The current upstream `iroh 1.0.3` code also leaves vendor relay hostname
-constants in the linked agent binary despite the fail-closed runtime
-configuration. The release binary check deliberately blocks publication until
-those constants can be removed without a private upstream fork.
+The release build disables iroh default features, bypasses every vendor relay
+mode, and contains no upstream public relay or discovery hostname. The
+fail-closed binary scan verifies that property without maintaining an upstream
+fork.
 
 ## Quick start
 
@@ -105,8 +105,9 @@ verifies its SHA-256 digest before executing it, installs the hardened systemd
 unit, starts the daemon, and requires a successful local health check.
 
 `rackio.genm.dev` is the stable distribution URL, not an active service implied
-by this source tree. Public artifacts remain intentionally blocked by the iroh
-binary-hostname release check described above. See
+by this source tree. Public artifacts remain intentionally blocked until the
+remaining signed cross-platform and NAT evidence in the release checklist
+exists. See
 [`packaging/README.md`](packaging/README.md) for the artifact contract and
 rootless installer test.
 
@@ -136,7 +137,7 @@ Machine-readable reports are written under `test-results/`. UI review evidence
 is written under `output/playwright/`.
 
 `just release-check` combines the release build and cloud-independence binary
-scan. It currently fails for the upstream-hostname blocker described above.
+scan. It must pass before any release artifact is published.
 
 ## License
 

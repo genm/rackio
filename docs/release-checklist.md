@@ -7,6 +7,18 @@ Implementation progress without complete release evidence is summarized in
 [`current-state.md`](current-state.md). Keep a top-level box unchecked when only
 a local, same-host or single-platform check exists.
 
+## Public repository identity
+
+- [ ] obtain documented clearance for the `Rackio` name or choose a distinct
+      public name before publishing the source repository
+  - an existing [Rackio Framework](https://github.com/rack-io/rackio-framework)
+    repository and [Rackio package](https://pypi.org/project/Rackio/) use the
+    same name in adjacent automation, control and monitoring contexts
+- [ ] create the intended public remote, then enable private vulnerability
+      reporting and required CI checks before accepting contributions
+- [x] scan the complete Git history for committed secrets locally and in
+      security CI
+
 ## Functional blockers
 
 - [ ] Windows named-pipe IPC with explicit ACL and caller verification
@@ -63,25 +75,27 @@ duration, packet loss and relay byte count.
 ## Privacy and security
 
 - [ ] direct-only packet capture has no peer-external DNS, HTTP or QUIC
-- [ ] binary scan contains no upstream public relay/discovery hostname defaults;
+- [x] binary scan contains no upstream public relay/discovery hostname defaults;
       run `just release-check`
 - [ ] relay cannot decode application protobuf frames
-- [ ] logs contain no key, pairing secret or metric payload
-- [ ] revoked, unknown and expired identities fail closed
+- [x] logs contain no key, pairing secret or metric payload
+- [x] revoked, unknown and expired identities fail closed
 - [ ] dependency, license, SBOM and vulnerability reports are clean
+  - [x] Rust dependency notices are generated from the `deny.toml` policy,
+        checked against `Cargo.lock`, and included in service artifacts
+  - [ ] include JavaScript dependency notices before distributing a desktop
+        bundle containing frontend dependencies
 - [ ] independent security review completed
 
 `cargo deny` contains one scoped exception for `RUSTSEC-2024-0429`. It is an
 upstream Linux Tauri/GTK dependency, not accepted release risk: Linux artifacts
 must not be published while the functional blocker above remains open.
 
-The exact `iroh 1.0.3` dependency currently embeds its production and staging
-relay hostname constants in the linked agent even when the application builds
-an endpoint from the `Minimal` preset and configures only disabled or
-self-hosted relays. Runtime source-policy checks pass, but the release-binary
-check above intentionally fails. Do not publish an agent artifact until an
-upstream release makes those defaults removable without maintaining a private
-fork, or the architecture is changed and the check passes.
+The exact `iroh 1.0.3` dependency is built without default features. Rackio
+clears relay transports for direct-only operation and constructs only the
+custom relay variant when a self-hosted URL is configured. This keeps the
+upstream production and staging relay constants out of the final LTO binary;
+the artifact scan above guards against regression.
 
 ## Product acceptance
 
@@ -89,6 +103,10 @@ fork, or the architecture is changed and the check passes.
 - [ ] normal metric freshness stays below 3 seconds
 - [ ] stale at 10 seconds and offline at 30 seconds
 - [ ] average daemon CPU below 1% and RSS below 40 MiB
+  - [ ] `mise run benchmark:agent` passes on each supported OS and its
+        `test-results/resource-benchmark.json` evidence is attached
+  - [ ] the active-peer profile is also measured; the automated
+        `idle_direct_only` profile does not cover network traffic
 - [ ] normal traffic below 2 KiB/s per active peer
 - [ ] tray exit, logout and reboot do not stop collection
 - [ ] storage failure, notification denial and relay outage stay visible

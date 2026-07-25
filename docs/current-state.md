@@ -88,8 +88,8 @@ curl --proto '=https' --tlsv1.2 -LsSf https://rackio.genm.dev/install.sh | sh
 ```
 
 That URL is a target interface, not a claim that artifacts are live. Publication
-remains blocked by [`release-checklist.md`](release-checklist.md), including the
-upstream iroh hostname scan and independent artifact signature/provenance. See
+remains blocked by the outstanding signed cross-platform, reboot and NAT
+evidence in [`release-checklist.md`](release-checklist.md). See
 [`../packaging/README.md`](../packaging/README.md) for the archive contract and
 rootless installer test.
 
