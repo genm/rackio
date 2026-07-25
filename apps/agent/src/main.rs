@@ -36,10 +36,6 @@ enum Command {
         command: RelayCommand,
     },
     Doctor,
-    Service {
-        #[command(subcommand)]
-        command: ServiceCommand,
-    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -58,14 +54,6 @@ enum PeerCommand {
 enum RelayCommand {
     /// Set a self-hosted relay URL, or pass `direct-only` to remove it.
     Set { url: String },
-}
-
-#[derive(Debug, Subcommand)]
-enum ServiceCommand {
-    Install,
-    Start,
-    Stop,
-    Uninstall,
 }
 
 #[tokio::main]
@@ -116,17 +104,6 @@ async fn main() -> anyhow::Result<()> {
             print_response(request_local(&paths, LocalCommand::RelaySet { relay_url }).await?)?;
         }
         Command::Doctor => print_response(request_local(&paths, LocalCommand::Doctor).await?)?,
-        Command::Service { command } => {
-            let action = match command {
-                ServiceCommand::Install => "install",
-                ServiceCommand::Start => "start",
-                ServiceCommand::Stop => "stop",
-                ServiceCommand::Uninstall => "uninstall",
-            };
-            anyhow::bail!(
-                "service {action} is package-manager owned; use packaging/README.md for this OS"
-            );
-        }
     }
     Ok(())
 }
