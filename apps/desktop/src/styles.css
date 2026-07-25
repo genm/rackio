@@ -305,13 +305,48 @@ h2 {
 
 .method-tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 4px;
   margin-top: 18px;
   padding: 4px;
   border: 1px solid #26332c;
   border-radius: 10px;
   background: #0b100d;
+}
+
+.file-import {
+  margin-top: 12px;
+}
+
+.pairing-share {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.pairing-share > p {
+  color: #99a69f;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.pairing-share > img {
+  width: min(260px, 100%);
+  margin: 0 auto;
+  padding: 10px;
+  border-radius: 10px;
+  background: #f3f6f1;
+}
+
+.bundle-preview {
+  max-height: 80px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid #2e3d35;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+  background: #0b100d;
+  font-size: 10px;
 }
 
 .method-tabs button {

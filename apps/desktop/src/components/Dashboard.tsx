@@ -4,6 +4,7 @@ import {
   machineDetailStateRegistry,
   nodeStateRegistry,
   notificationStateRegistry,
+  pairingShareStateRegistry,
   sshBootstrapStateRegistry,
   traySurfaceStateRegistry,
   worstState,
@@ -15,6 +16,7 @@ import type {
   NotificationState,
   NotificationThreshold,
   PairingStatus,
+  PairingShareState,
   SshBootstrapInput,
   SshBootstrapStatus,
   SshTarget,
@@ -23,6 +25,7 @@ import type {
 import { NodeCard } from "./NodeCard";
 import { MachineDetail } from "./MachineDetail";
 import { NotificationControls } from "./NotificationControls";
+import { PairingShare } from "./PairingShare";
 import { SshBootstrapForm } from "./SshBootstrapForm";
 
 export function Dashboard({
@@ -32,6 +35,7 @@ export function Dashboard({
   machineDetail = machineDetailStateRegistry.closed,
   traySurface = traySurfaceStateRegistry.available,
   notificationState = notificationStateRegistry.disabled,
+  pairingShare = pairingShareStateRegistry.idle,
   onPair = async () => undefined,
   onInspectSshHost = async () => undefined,
   onInstallViaSsh = async () => undefined,
@@ -40,6 +44,7 @@ export function Dashboard({
   onEnableNotifications = async () => undefined,
   onDisableNotifications = () => undefined,
   onNotificationThresholdChange = () => undefined,
+  onCreatePairingShare = async () => undefined,
 }: {
   snapshot: FleetSnapshot;
   pairing?: PairingStatus;
@@ -47,6 +52,7 @@ export function Dashboard({
   machineDetail?: MachineDetailState;
   traySurface?: TraySurfaceState;
   notificationState?: NotificationState;
+  pairingShare?: PairingShareState;
   onPair?: (bundle: string) => Promise<void>;
   onInspectSshHost?: (target: SshTarget) => Promise<void>;
   onInstallViaSsh?: (input: SshBootstrapInput) => Promise<void>;
@@ -55,9 +61,10 @@ export function Dashboard({
   onEnableNotifications?: () => Promise<void>;
   onDisableNotifications?: () => void;
   onNotificationThresholdChange?: (threshold: NotificationThreshold) => void;
+  onCreatePairingShare?: () => Promise<void>;
 }) {
   const [pairingOpen, setPairingOpen] = useState(false);
-  const [pairingMethod, setPairingMethod] = useState<"bundle" | "ssh">("bundle");
+  const [pairingMethod, setPairingMethod] = useState<"bundle" | "share" | "ssh">("bundle");
   const [bundle, setBundle] = useState("");
   const fleetState =
     snapshot.nodes.length > 0 ? worstState(snapshot.nodes.map((node) => node.state)) : "healthy";
@@ -72,6 +79,11 @@ export function Dashboard({
     } catch {
       // The owning App surfaces the rejected operation through pairing state.
     }
+  };
+  const importPairingFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file === undefined) return;
+    setBundle((await file.text()).trim());
   };
   return (
     <main>
@@ -124,6 +136,14 @@ export function Dashboard({
               >
                 Install over SSH
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={pairingMethod === "share"}
+                onClick={() => setPairingMethod("share")}
+              >
+                Share this machine
+              </button>
             </div>
             {pairingMethod === "bundle" ? (
               <>
@@ -143,6 +163,10 @@ export function Dashboard({
                     spellCheck={false}
                     autoFocus
                   />
+                  <label className="file-import">
+                    Or import a pairing file
+                    <input type="file" accept=".txt,text/plain" onChange={importPairingFile} />
+                  </label>
                   {pairing.state === "error" ? (
                     <p className="form-message error-message" role="alert">
                       {pairing.message}
@@ -172,13 +196,15 @@ export function Dashboard({
                   </div>
                 </form>
               </>
-            ) : (
+            ) : pairingMethod === "ssh" ? (
               <SshBootstrapForm
                 status={sshBootstrap}
                 onInspect={onInspectSshHost}
                 onInstall={onInstallViaSsh}
                 onCancel={() => setPairingOpen(false)}
               />
+            ) : (
+              <PairingShare status={pairingShare} onCreate={onCreatePairingShare} />
             )}
           </section>
         </div>

@@ -17,12 +17,15 @@ path = "src/main.rs"
 tauri-build.workspace = true
 
 [dependencies]
+base64.workspace = true
 chrono.workspace = true
 directories.workspace = true
+qrcode.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
 tauri-plugin-autostart.workspace = true
+tauri-plugin-dialog.workspace = true
 tauri-plugin-notification.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

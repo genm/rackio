@@ -37,9 +37,9 @@ NAT and mixed-OS release matrices.
 | Collector | CPU, memory, swap, disk, network rate, uptime, OS and architecture | GPU, temperature, processes, containers and logs are not implemented |
 | Local history | 2-second samples, SQLite WAL batches, raw/minute retention and 64 MiB pruning | Cross-machine long-term aggregation is intentionally absent |
 | Remote server | Endpoint authentication, allowlist authorization, immediate revoke teardown, node info, live metrics, health, path and bounded history protocol | NAT and relay migration evidence remains incomplete |
-| Pairing | Five-minute, attempt-limited, single-use secret and copy/paste import | QR, file import/export and pairing-window mDNS |
+| Pairing | Five-minute, attempt-limited, single-use secret, copy/paste import, local QR generation and private file import/export | Pairing-window mDNS |
 | Viewer daemon | Secret-free remote inventory, reconnect loop, persisted last-known snapshot, bounded remote history query, periodic health/path refresh, structured path events and stale/offline derivation | NAT and relay migration evidence remains incomplete |
-| Desktop | Local/remote cards, 24-hour remote history detail, dynamic worst-state tray icon, configurable OS notifications, bundle pairing, SSH bootstrap, and explicit degraded states | QR/file pairing import and cross-platform packaging |
+| Desktop | Local/remote cards, 24-hour remote history detail, dynamic worst-state tray icon, configurable OS notifications, QR/file/bundle pairing, SSH bootstrap, and explicit degraded states | Cross-platform packaging |
 | Linux packaging | Release archive builder, HTTPS or client-pushed archive install, checksum verification, hardened systemd unit and preserving/purge uninstaller | No signed public release; reboot and distribution coverage are not proven |
 | macOS | LaunchDaemon template | Signed/notarized package, ownership rollback and installer receipts |
 | Windows | Collector and remote endpoint code participate in workspace checks | Named-pipe IPC ACL, Windows Service and installer |
@@ -74,9 +74,9 @@ monitoring requires a second explicit pairing.
 - A viewer-daemon restart retains remote identity, connection information and
   the last-known metric snapshot without permanently replicating remote history.
 
-Remote health and connection path are read when a monitoring session is
-established. Periodic in-session refresh and structured path-migration events
-remain release work.
+Remote health and connection path are refreshed during a monitoring session.
+Path changes, relay fallback and direct recovery are emitted as structured
+events and surfaced without presenting relayed traffic as direct.
 
 ## Distribution status
 
@@ -97,7 +97,7 @@ rootless installer test.
 
 1. Finish a publishable Linux headless supply chain: reproducible artifacts,
    signature/provenance, SBOM, immutable hosting and reboot evidence.
-2. Add periodic health/path refresh, path-migration events and tray state.
+2. Add pairing-window mDNS without publishing the one-time secret.
 3. Run same-LAN, NAT, relay-outage and path-migration matrices.
 4. Finish macOS and Windows service/IPC packaging.
 

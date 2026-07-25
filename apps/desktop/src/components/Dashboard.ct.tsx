@@ -87,6 +87,26 @@ test("keeps pairing rejection visible instead of adding a fake healthy machine",
   await expect(component.getByText("Home Server")).toBeVisible();
 });
 
+test("imports a pairing bundle from a local file", async ({ mount }) => {
+  let submitted = "";
+  const component = await mount(
+    <Dashboard
+      snapshot={snapshot}
+      onPair={async (bundle) => {
+        submitted = bundle;
+      }}
+    />,
+  );
+  await component.getByRole("button", { name: /pair machine/i }).click();
+  await component.getByLabel("Or import a pairing file").setInputFiles({
+    name: "rackio-pairing-bundle.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("  rackio-pair:file-bundle  \n"),
+  });
+  await component.getByRole("dialog").getByRole("button", { name: "Pair machine" }).click();
+  await expect.poll(() => submitted).toBe("rackio-pair:file-bundle");
+});
+
 test("shows daemon failure as an alert instead of an empty healthy fleet", async ({ mount }) => {
   const component = await mount(
     <Dashboard

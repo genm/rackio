@@ -1,5 +1,8 @@
 mod ssh_bootstrap;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use qrcode::{QrCode, render::svg};
+use std::{fs::OpenOptions, io::Write, path::PathBuf};
 use tauri::{
     AppHandle, Manager,
     image::Image,
@@ -92,6 +95,69 @@ async fn pair_machine(bundle: String) -> Result<serde_json::Value, String> {
         .get("data")
         .cloned()
         .ok_or_else(|| String::from("daemon pairing response did not contain data"))
+}
+
+#[tauri::command]
+async fn create_pairing_share() -> Result<serde_json::Value, String> {
+    let response = daemon_request(serde_json::json!({ "command": "pairing_create" }))
+        .await
+        .map_err(|error| error.to_string())?;
+    let bundle = response
+        .get("data")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| String::from("daemon pairing response did not contain a bundle"))?;
+    let qr = pairing_qr_data_url(bundle);
+    Ok(match qr {
+        Ok(qr_data_url) => serde_json::json!({
+            "bundle": bundle,
+            "qrDataUrl": qr_data_url,
+        }),
+        Err(error) => serde_json::json!({
+            "bundle": bundle,
+            "qrError": error,
+        }),
+    })
+}
+
+#[tauri::command]
+fn save_pairing_bundle(path: PathBuf, bundle: String) -> Result<(), String> {
+    if !bundle.starts_with("rackio-pair:") || bundle.len() > 16 * 1024 {
+        return Err(String::from("refusing to save an invalid pairing bundle"));
+    }
+    if path.as_os_str().is_empty() {
+        return Err(String::from("pairing bundle path cannot be empty"));
+    }
+
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|error| format!("failed to open the pairing bundle file: {error}"))?;
+    let mut contents = bundle.into_bytes();
+    contents.push(b'\n');
+    file.write_all(&contents)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("failed to save the pairing bundle: {error}"))
+}
+
+fn pairing_qr_data_url(bundle: &str) -> Result<String, String> {
+    let code = QrCode::new(bundle.as_bytes())
+        .map_err(|error| format!("Pairing bundle is too large for a QR code: {error}"))?;
+    let svg = code
+        .render::<svg::Color>()
+        .min_dimensions(240, 240)
+        .dark_color(svg::Color("#0b0f0d"))
+        .light_color(svg::Color("#f3f6f1"))
+        .build();
+    Ok(format!(
+        "data:image/svg+xml;base64,{}",
+        STANDARD.encode(svg)
+    ))
 }
 
 #[tauri::command]
@@ -332,6 +398,7 @@ async fn daemon_request(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
@@ -370,6 +437,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             fleet_snapshot,
             pair_machine,
+            create_pairing_share,
+            save_pairing_bundle,
             machine_history,
             set_tray_state,
             ssh_bootstrap::ssh_inspect_host,
@@ -377,4 +446,51 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| panic!("failed to run Rackio desktop: {error}"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pairing_qr_data_url, save_pairing_bundle};
+
+    #[test]
+    fn pairing_qr_is_generated_locally_as_an_svg_data_url() {
+        let result = pairing_qr_data_url("rackio-pair:test-bundle")
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(result.starts_with("data:image/svg+xml;base64,"));
+    }
+
+    #[test]
+    fn an_oversized_bundle_does_not_produce_a_misleading_qr_code() {
+        let result = pairing_qr_data_url(&"x".repeat(10_000));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn pairing_bundle_export_is_private_and_round_trips() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = directory.path().join("pairing.txt");
+        save_pairing_bundle(path.clone(), String::from("rackio-pair:test"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let saved = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(saved, "rackio-pair:test\n");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(path)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn invalid_pairing_bundle_is_not_written() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = directory.path().join("pairing.txt");
+        let result = save_pairing_bundle(path.clone(), String::from("not-a-pairing-bundle"));
+        assert!(result.is_err());
+        assert!(!path.exists());
+    }
 }

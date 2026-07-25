@@ -66,6 +66,12 @@ export type PairingStatus =
   | { state: "error"; message: string }
   | { state: "success"; machineName: string };
 
+export type PairingShareState =
+  | { state: "idle" }
+  | { state: "loading" }
+  | { state: "ready"; bundle: string; qrDataUrl?: string; qrError?: string }
+  | { state: "error"; message: string };
+
 export interface SshTarget {
   host: string;
   user: string;

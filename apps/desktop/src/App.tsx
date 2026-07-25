@@ -10,6 +10,7 @@ import { Dashboard } from "./components/Dashboard";
 import {
   machineDetailStateRegistry,
   nodeStateRegistry,
+  pairingShareStateRegistry,
   sshBootstrapStateRegistry,
   surfaceStateRegistry,
   traySurfaceStateRegistry,
@@ -24,6 +25,7 @@ import type {
   NotificationState,
   NotificationThreshold,
   PairingStatus,
+  PairingShareState,
   SshBootstrapInput,
   SshBootstrapStatus,
   SshHostIdentity,
@@ -49,6 +51,9 @@ function initialNotificationState(): NotificationState {
 export default function App() {
   const [snapshot, setSnapshot] = useState<FleetSnapshot>(surfaceStateRegistry.daemonUnavailable);
   const [pairing, setPairing] = useState<PairingStatus>({ state: "idle" });
+  const [pairingShare, setPairingShare] = useState<PairingShareState>(
+    pairingShareStateRegistry.idle,
+  );
   const [sshBootstrap, setSshBootstrap] = useState<SshBootstrapStatus>(
     sshBootstrapStateRegistry.editing,
   );
@@ -91,6 +96,25 @@ export default function App() {
     } catch (error: unknown) {
       setSshBootstrap({
         state: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const createPairingShare = async () => {
+    setPairingShare({ state: "loading" });
+    try {
+      setPairingShare({
+        state: "ready",
+        ...(await invoke<{
+          bundle: string;
+          qrDataUrl?: string;
+          qrError?: string;
+        }>("create_pairing_share")),
+      });
+    } catch (error: unknown) {
+      setPairingShare({
+        state: "error",
         message: error instanceof Error ? error.message : String(error),
       });
     }
@@ -267,11 +291,13 @@ export default function App() {
     <Dashboard
       snapshot={snapshot}
       pairing={pairing}
+      pairingShare={pairingShare}
       sshBootstrap={sshBootstrap}
       machineDetail={machineDetail}
       traySurface={traySurface}
       notificationState={notificationState}
       onPair={pairMachine}
+      onCreatePairingShare={createPairingShare}
       onInspectSshHost={inspectSshHost}
       onInstallViaSsh={installViaSsh}
       onViewHistory={viewHistory}
