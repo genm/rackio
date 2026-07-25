@@ -120,6 +120,11 @@ pub struct PipeSecurity {
     administrators_sid: Vec<u8>,
 }
 
+// SAFETY: this type has unique ownership of a LocalAlloc security descriptor
+// and its SID buffers. Windows permits LocalFree on a different thread, and
+// the type is deliberately not Sync, so no descriptor is shared concurrently.
+unsafe impl Send for PipeSecurity {}
+
 impl PipeSecurity {
     pub fn for_local_group(group_name: &str) -> io::Result<Self> {
         let viewer_group_sid = lookup_account_sid(group_name)?;
