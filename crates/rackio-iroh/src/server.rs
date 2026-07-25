@@ -2,12 +2,10 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use iroh::{Endpoint, EndpointId, endpoint::Connection};
-use thiserror::Error;
-use tokio::sync::{Mutex, RwLock, watch};
-use tray_monitor_core::{
+use rackio_core::{
     HealthSnapshot, HistoryResolution, MetricSample, MetricStore, NodeInfo, StoreError,
 };
-use tray_monitor_protocol::{
+use rackio_protocol::{
     FrameError, compatible, read_frame,
     v1::{
         ErrorResponse, Heartbeat, HistoryQuery, PairResponse, Request, Response, StreamComplete,
@@ -15,6 +13,8 @@ use tray_monitor_protocol::{
     },
     write_frame,
 };
+use thiserror::Error;
+use tokio::sync::{Mutex, RwLock, watch};
 
 use crate::{
     PairingError, PairingManager, PeerPermissions, PeerRegistry, classify_connection, protocol,
@@ -154,7 +154,7 @@ async fn handle_pair(
     remote_id: EndpointId,
     local_id: EndpointId,
     runtime: &NodeRuntime,
-    pair: &tray_monitor_protocol::v1::PairRequest,
+    pair: &rackio_protocol::v1::PairRequest,
 ) -> Result<(), ServerError> {
     if pair.viewer_endpoint_id != remote_id.to_string() {
         write_error(
@@ -328,7 +328,7 @@ async fn require_permission(
 
 async fn version_is_compatible(
     send: &mut iroh::endpoint::SendStream,
-    version: &tray_monitor_protocol::v1::ProtocolVersion,
+    version: &rackio_protocol::v1::ProtocolVersion,
 ) -> Result<bool, FrameError> {
     if compatible(version) {
         Ok(true)
@@ -404,16 +404,16 @@ async fn write_error(
 mod tests {
     use std::sync::Arc;
 
-    use tokio::sync::{RwLock, watch};
-    use tray_monitor_core::{
+    use rackio_core::{
         HealthSnapshot, MetricStore, NodeInfo, NodeState, ProtocolVersion as CoreProtocolVersion,
     };
-    use tray_monitor_protocol::{
+    use rackio_protocol::{
         current_version,
         v1::{
             HistoryQuery, PairRequest, ProtocolVersion, Request, history_query, request, response,
         },
     };
+    use tokio::sync::{RwLock, watch};
     use uuid::Uuid;
 
     use crate::{ClientConnection, EndpointConfig, PairingManager, PeerRegistry, bind_endpoint};
@@ -521,7 +521,7 @@ mod tests {
         assert!(matches!(
             connection_path.body,
             Some(response::Body::ConnectionPath(ref details))
-                if details.path == tray_monitor_protocol::v1::ConnectionPath::LanDirect as i32
+                if details.path == rackio_protocol::v1::ConnectionPath::LanDirect as i32
         ));
 
         let incompatible_history = client
@@ -566,7 +566,7 @@ mod tests {
             Some(response::Body::Error(ref error)) if error.code == "permission_denied"
         ));
 
-        client.close().await;
+        client.close();
         server_endpoint.close().await;
         server_task.abort();
     }

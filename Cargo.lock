@@ -4312,6 +4312,88 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
+name = "rackio-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "directories",
+ "iroh",
+ "rackio-core",
+ "rackio-iroh",
+ "rackio-protocol",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "rackio-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "thiserror 2.0.19",
+ "uuid",
+]
+
+[[package]]
+name = "rackio-desktop"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-notification",
+ "tokio",
+]
+
+[[package]]
+name = "rackio-iroh"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "iroh",
+ "rackio-core",
+ "rackio-protocol",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "rackio-protocol"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "prost-build",
+ "protoc-bin-vendored",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
 name = "rand"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6195,86 +6277,6 @@ dependencies = [
  "serde",
  "thiserror 2.0.19",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "tray-monitor-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "directories",
- "iroh",
- "serde",
- "serde_json",
- "sysinfo",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "tray-monitor-core",
- "tray-monitor-iroh",
- "uuid",
-]
-
-[[package]]
-name = "tray-monitor-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "rusqlite",
- "serde",
- "serde_json",
- "sysinfo",
- "thiserror 2.0.19",
- "uuid",
-]
-
-[[package]]
-name = "tray-monitor-desktop"
-version = "0.1.0"
-dependencies = [
- "directories",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-notification",
- "tokio",
-]
-
-[[package]]
-name = "tray-monitor-iroh"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "iroh",
- "rand 0.9.5",
- "serde",
- "serde_json",
- "subtle",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "tray-monitor-core",
- "tray-monitor-protocol",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "tray-monitor-protocol"
-version = "0.1.0"
-dependencies = [
- "prost",
- "prost-build",
- "protoc-bin-vendored",
- "thiserror 2.0.19",
- "tokio",
 ]
 
 [[package]]

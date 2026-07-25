@@ -1,5 +1,10 @@
 assert_lefthook_installed: true
 
+commit-msg:
+  commands:
+    conventional-commit:
+      run: mise exec -- pnpm exec commitlint --edit "{1}"
+
 pre-commit:
   parallel: true
   commands:
@@ -13,5 +18,5 @@ pre-commit:
       glob: "apps/desktop/**"
       run: mise exec -- pnpm format:check && mise exec -- pnpm typecheck && mise exec -- pnpm lint && mise exec -- pnpm test
     environment:
-      glob: "{mise.toml,justfile,lefthook.yml,package.json,scripts/*.mjs,.codex/environments/*.toml}"
+      glob: "{mise.toml,justfile,lefthook.yml,commitlint.config.mjs,package.json,scripts/*.mjs,.codex/environments/*.toml}"
       run: mise exec -- pnpm test:env

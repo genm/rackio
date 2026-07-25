@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>dev.rackio.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/local/bin/rackio</string>
+      <string>daemon</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>RACKIO_CONFIG_DIR</key>
+      <string>/Library/Preferences/Rackio</string>
+      <key>RACKIO_DATA_DIR</key>
+      <string>/Library/Application Support/Rackio</string>
+      <key>RACKIO_STATE_DIR</key>
+      <string>/Library/Logs/Rackio</string>
+      <key>RACKIO_SOCKET</key>
+      <string>/var/run/rackio/agent.sock</string>
+      <key>RACKIO_SHARED_SOCKET</key>
+      <string>1</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Library/Logs/Rackio/launchd.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Library/Logs/Rackio/launchd.stderr.log</string>
+  </dict>
+</plist>

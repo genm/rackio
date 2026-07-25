@@ -1,10 +1,11 @@
+mod remote;
 mod runtime;
 
 use clap::{Parser, Subcommand};
 use runtime::{LocalCommand, app_paths, request_local, run_daemon};
 
 #[derive(Debug, Parser)]
-#[command(name = "tray-monitor", version, about = "P2P system monitor agent")]
+#[command(name = "rackio", version, about = "P2P system monitor agent")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -14,6 +15,7 @@ struct Cli {
 enum Command {
     Daemon,
     Status,
+    Fleet,
     Pairing {
         #[command(subcommand)]
         command: PairingCommand,
@@ -36,6 +38,7 @@ enum Command {
 #[derive(Debug, Subcommand)]
 enum PairingCommand {
     Create,
+    Import { bundle: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -64,9 +67,17 @@ async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Daemon => run_daemon(paths).await?,
         Command::Status => print_response(request_local(&paths, LocalCommand::Status).await?)?,
+        Command::Fleet => {
+            print_response(request_local(&paths, LocalCommand::FleetSnapshot).await?)?;
+        }
         Command::Pairing {
             command: PairingCommand::Create,
         } => print_response(request_local(&paths, LocalCommand::PairingCreate).await?)?,
+        Command::Pairing {
+            command: PairingCommand::Import { bundle },
+        } => {
+            print_response(request_local(&paths, LocalCommand::PairingImport { bundle }).await?)?;
+        }
         Command::Peer {
             command: PeerCommand::List,
         } => print_response(request_local(&paths, LocalCommand::PeerList).await?)?,

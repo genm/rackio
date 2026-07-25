@@ -4,13 +4,13 @@ use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey, TransportAddr,
     endpoint::{Connection, PortmapperConfig, presets},
 };
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
-use tray_monitor_core::ConnectionPath;
-use tray_monitor_protocol::{
+use rackio_core::ConnectionPath;
+use rackio_protocol::{
     FrameError,
     v1::{Request, Response},
 };
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EndpointConfig {
@@ -39,6 +39,8 @@ pub enum TransportError {
     StreamClosed(#[from] iroh::endpoint::ClosedStream),
     #[error("protocol frame failed: {0}")]
     Frame(#[from] FrameError),
+    #[error("remote request failed with {code}: {message}")]
+    Remote { code: String, message: String },
 }
 
 pub async fn bind_endpoint(
@@ -64,7 +66,7 @@ pub async fn bind_endpoint(
     // iroh's vendor DNS discovery or public relay map.
     Ok(Endpoint::builder(presets::Minimal)
         .secret_key(secret_key)
-        .alpns(vec![tray_monitor_protocol::ALPN.to_vec()])
+        .alpns(vec![rackio_protocol::ALPN.to_vec()])
         .relay_mode(relay_mode)
         .portmapper_config(PortmapperConfig::Disabled)
         .bind()
@@ -117,7 +119,9 @@ fn is_private_or_local(address: IpAddr) -> bool {
 
 #[derive(Debug)]
 pub struct ClientConnection {
-    endpoint: Endpoint,
+    // Keep the shared endpoint alive without owning its daemon-wide shutdown.
+    _endpoint: Endpoint,
+    local_id: EndpointId,
     connection: Connection,
 }
 
@@ -126,11 +130,11 @@ impl ClientConnection {
         endpoint: Endpoint,
         address: EndpointAddr,
     ) -> Result<Self, TransportError> {
-        let connection = endpoint
-            .connect(address, tray_monitor_protocol::ALPN)
-            .await?;
+        let local_id = endpoint.id();
+        let connection = endpoint.connect(address, rackio_protocol::ALPN).await?;
         Ok(Self {
-            endpoint,
+            _endpoint: endpoint,
+            local_id,
             connection,
         })
     }
@@ -142,7 +146,7 @@ impl ClientConnection {
 
     #[must_use]
     pub fn local_id(&self) -> EndpointId {
-        self.endpoint.id()
+        self.local_id
     }
 
     #[must_use]
@@ -151,15 +155,30 @@ impl ClientConnection {
     }
 
     pub async fn request(&self, request: &Request) -> Result<Response, TransportError> {
-        let (mut send, mut receive) = self.connection.open_bi().await?;
-        tray_monitor_protocol::write_frame(&mut send, request).await?;
-        send.finish()?;
-        Ok(tray_monitor_protocol::read_frame(&mut receive).await?)
+        let mut responses = self.stream(request).await?;
+        responses.next().await
     }
 
-    pub async fn close(self) {
+    pub async fn stream(&self, request: &Request) -> Result<ResponseStream, TransportError> {
+        let (mut send, receive) = self.connection.open_bi().await?;
+        rackio_protocol::write_frame(&mut send, request).await?;
+        send.finish()?;
+        Ok(ResponseStream { receive })
+    }
+
+    pub fn close(self) {
         self.connection.close(0_u32.into(), b"client shutdown");
-        self.endpoint.close().await;
+    }
+}
+
+#[derive(Debug)]
+pub struct ResponseStream {
+    receive: iroh::endpoint::RecvStream,
+}
+
+impl ResponseStream {
+    pub async fn next(&mut self) -> Result<Response, TransportError> {
+        Ok(rackio_protocol::read_frame(&mut self.receive).await?)
     }
 }
 
@@ -189,7 +208,7 @@ mod tests {
             }
         });
         let outgoing = client
-            .connect(server_address, tray_monitor_protocol::ALPN)
+            .connect(server_address, rackio_protocol::ALPN)
             .await
             .unwrap_or_else(|error| panic!("{error}"));
         let incoming = accept.await.unwrap_or_else(|error| panic!("{error}"));

@@ -36,15 +36,12 @@ pub struct PairingBundle {
 impl PairingBundle {
     pub fn encode(&self) -> Result<String, PairingError> {
         let bytes = serde_json::to_vec(self)?;
-        Ok(format!(
-            "tray-monitor-pair:{}",
-            URL_SAFE_NO_PAD.encode(bytes)
-        ))
+        Ok(format!("rackio-pair:{}", URL_SAFE_NO_PAD.encode(bytes)))
     }
 
     pub fn decode(encoded: &str) -> Result<Self, PairingError> {
         let payload = encoded
-            .strip_prefix("tray-monitor-pair:")
+            .strip_prefix("rackio-pair:")
             .ok_or(PairingError::InvalidBundle)?;
         let bytes = URL_SAFE_NO_PAD
             .decode(payload)

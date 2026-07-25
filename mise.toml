@@ -17,6 +17,7 @@ run = [
   "cargo fmt --all -- --check",
   "cargo clippy --workspace --all-targets --all-features -- -D warnings",
   "cargo nextest run --workspace",
+  "packaging/linux/install.test.sh",
   "pnpm format:check",
   "pnpm typecheck",
   "pnpm lint",
@@ -40,12 +41,16 @@ run = "node scripts/environment-doctor.mjs --json --require-relay"
 
 [tasks."agent:daemon"]
 description = "Run the monitoring agent in the foreground"
-run = "cargo run -p tray-monitor-agent -- daemon"
+run = "cargo run -p rackio-agent -- daemon"
 
 [tasks."desktop:dev"]
 description = "Run the Tauri desktop application in development mode"
-run = "pnpm --filter @tray-monitor/desktop tauri dev"
+run = "pnpm --filter @rackio/desktop tauri dev"
 
 [tasks."frontend:dev"]
 description = "Run only the browser frontend in development mode"
-run = "pnpm --filter @tray-monitor/desktop dev"
+run = "pnpm --filter @rackio/desktop dev"
+
+[tasks."test:installer"]
+description = "Verify Linux release packaging, install, and checksum rejection"
+run = "packaging/linux/install.test.sh"

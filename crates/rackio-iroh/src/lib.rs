@@ -10,8 +10,8 @@ pub use pairing::{
 };
 pub use server::{NodeRuntime, RemoteServer, ServerError};
 pub use transport::{
-    ClientConnection, ConnectionDetails, EndpointConfig, TransportError, bind_endpoint,
-    classify_connection,
+    ClientConnection, ConnectionDetails, EndpointConfig, ResponseStream, TransportError,
+    bind_endpoint, classify_connection,
 };
 
-pub use tray_monitor_protocol::ALPN;
+pub use rackio_protocol::ALPN;

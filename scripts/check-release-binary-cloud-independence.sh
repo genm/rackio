@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-binary_path="${1:-target/release/tray-monitor}"
+binary_path="${1:-target/release/rackio}"
 
 if [ ! -f "$binary_path" ]; then
   printf '{"check":"release_binary_cloud_independence","status":"error","reason":"binary_not_found","path":"%s"}\n' "$binary_path" >&2

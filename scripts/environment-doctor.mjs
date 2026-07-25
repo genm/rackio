@@ -124,7 +124,7 @@ function gitHookCheck() {
 function playwrightCheck() {
   const result = run("pnpm", [
     "--filter",
-    "@tray-monitor/desktop",
+    "@rackio/desktop",
     "exec",
     "playwright",
     "install",

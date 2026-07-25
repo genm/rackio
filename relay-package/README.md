@@ -7,12 +7,12 @@ This directory packages the upstream `iroh-relay` binary at exact version
 
 1. Copy `config.example.toml` to `config.toml`.
 2. Replace the example endpoint allowlist with the exact IDs printed by
-   `tray-monitor status`.
+   `rackio status`.
 3. Mount a valid TLS certificate and private key under `certs/`.
 4. Open TCP 80/443 and UDP 7824. Keep metrics port 9090 bound to localhost or a
    private management network.
 5. Run `docker compose up --build -d`.
-6. Configure each agent with `tray-monitor relay set
+6. Configure each agent with `rackio relay set
    https://relay.example.test` and restart it.
 
 The reserved hostname above is documentation only. Use a hostname on the

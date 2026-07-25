@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/monitor-core",
-  "crates/monitor-protocol",
-  "crates/monitor-iroh",
+  "crates/rackio-core",
+  "crates/rackio-protocol",
+  "crates/rackio-iroh",
   "apps/agent",
   "apps/desktop/src-tauri",
 ]

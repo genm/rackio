@@ -33,7 +33,7 @@ run("install workspace dependencies", "pnpm", ["install", "--frozen-lockfile"]);
 run("fetch locked Rust dependencies", "cargo", ["fetch", "--locked"]);
 run("install Playwright Chromium", "pnpm", [
   "--filter",
-  "@tray-monitor/desktop",
+  "@rackio/desktop",
   "exec",
   "playwright",
   "install",

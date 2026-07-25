@@ -1,31 +1,77 @@
 # Service packaging
 
 The agent is designed to outlive the tray and user login. The templates in this
-directory define that process boundary, but installers are not yet automated.
+directory define that process boundary.
 
 ## Linux system service
 
-The installer must create a non-login `tray-monitor` user and a
-`tray-monitor-viewers` group, add authorized desktop users to that group, copy
-the binary and unit, then enable the service:
+[`../install.sh`](../install.sh) automates the Linux headless installation. It
+downloads a versioned release archive from
+`https://rackio.genm.dev/releases`, verifies its SHA-256 digest before executing
+the binary, creates a non-login `rackio` user and `rackio-viewers` group,
+installs the binary and unit, enables the service, and fails unless both
+systemd and the local daemon health check succeed.
 
 ```sh
-sudo useradd --system --home-dir /var/lib/tray-monitor --shell /usr/sbin/nologin tray-monitor
-sudo groupadd --system tray-monitor-viewers
-sudo usermod --append --groups tray-monitor-viewers "$USER"
-sudo install -m 0755 target/release/tray-monitor /usr/local/bin/tray-monitor
-sudo install -m 0644 packaging/linux/tray-monitor.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now tray-monitor.service
+curl --proto '=https' --tlsv1.2 -LsSf https://rackio.genm.dev/install.sh | sh
+```
+
+This is the target public interface. The source tree does not imply that the
+URL or a supported release is currently live. An auditable alternative must be
+published alongside it:
+
+```sh
+curl --proto '=https' --tlsv1.2 -O https://rackio.genm.dev/install.sh
+less install.sh
+sh install.sh
 ```
 
 Log out and back in after the group change. The systemd runtime directory and
 0660 socket gate desktop access; the agent also requires Unix peer credentials
 to be available for every accepted local connection.
 
+The release archive contract is:
+
+```text
+releases/
+├── latest.txt
+└── v<VERSION>/
+    ├── rackio-v<VERSION>-<TARGET>.tar.gz
+    └── rackio-v<VERSION>-<TARGET>.tar.gz.sha256
+```
+
+Each archive contains `rackio`, `rackio.service`, `uninstall.sh`, and both
+license files. Build it from an already compiled binary:
+
+```sh
+packaging/linux/package-release.sh \
+  target/release/rackio \
+  0.1.0 \
+  x86_64-unknown-linux-gnu
+```
+
+Verify the normal install and checksum-rejection paths without root or systemd:
+
+```sh
+mise run test:installer
+```
+
+Uninstall preserves identity, pairing records, configuration, history and logs
+by default. `--purge` explicitly removes those directories:
+
+```sh
+sudo /usr/local/lib/rackio/uninstall.sh
+sudo /usr/local/lib/rackio/uninstall.sh --purge
+```
+
+SHA-256 fetched from the same HTTPS origin protects against transfer corruption
+and mismatched artifacts, but does not independently protect against compromise
+of that origin. Public release publication must additionally provide signed
+provenance or artifact attestation; it remains blocked by `just release-check`.
+
 ## macOS LaunchDaemon
 
-The final package installer must create `/var/run/tray-monitor` with an
+The final package installer must create `/var/run/rackio` with an
 installer-owned viewer group and mode 2770, create the data/log directories,
 install the binary, and load the plist under `/Library/LaunchDaemons`.
 

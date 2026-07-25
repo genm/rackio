@@ -1,19 +1,49 @@
+# Rust
 /target/
+*.profraw
+
+# Node.js and pnpm
 node_modules/
 /.pnpm-store/
+*.tsbuildinfo
+
+# Desktop build output
 /apps/desktop/dist/
 /apps/desktop/src-tauri/gen/
-/apps/desktop/test-results/
-/apps/desktop/playwright-report/
 /apps/desktop/.cache/
 /apps/desktop/playwright/.cache/
+
+# Tests, coverage, and visual evidence
+/apps/desktop/test-results/
+/apps/desktop/playwright-report/
 /test-results/
 /output/
+/coverage/
+*.lcov
+
+# Runtime state
 *.db
 *.db-shm
 *.db-wal
 *.log
-*.tsbuildinfo
-.DS_Store
+*.pid
+*.sock
+
+# Local relay configuration and certificates
+/relay-package/config.toml
+/relay-package/certs/
+
+# Local tools and secrets
+.env
+.env.*
 lefthook-local.yml
 mise.local.toml
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini

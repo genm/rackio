@@ -1,0 +1,42 @@
+[Unit]
+Description=Rackio P2P metrics agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rackio
+Group=rackio-viewers
+ExecStart=/usr/local/bin/rackio daemon
+Restart=on-failure
+RestartSec=5s
+UMask=0007
+ConfigurationDirectory=rackio
+ConfigurationDirectoryMode=0750
+StateDirectory=rackio
+StateDirectoryMode=0750
+LogsDirectory=rackio
+LogsDirectoryMode=0750
+RuntimeDirectory=rackio
+RuntimeDirectoryMode=0770
+Environment=RACKIO_CONFIG_DIR=/etc/rackio
+Environment=RACKIO_DATA_DIR=/var/lib/rackio
+Environment=RACKIO_STATE_DIR=/var/lib/rackio/state
+Environment=RACKIO_LOG_DIR=/var/log/rackio
+Environment=RACKIO_SOCKET=/run/rackio/agent.sock
+Environment=RACKIO_SHARED_SOCKET=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/etc/rackio /var/lib/rackio /var/log/rackio /run/rackio
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,5 @@
 [package]
-name = "tray-monitor-iroh"
+name = "rackio-iroh"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,8 +17,8 @@ tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tray-monitor-core = { version = "0.1.0", path = "../monitor-core" }
-tray-monitor-protocol = { version = "0.1.0", path = "../monitor-protocol" }
+rackio-core = { version = "0.1.0", path = "../rackio-core" }
+rackio-protocol = { version = "0.1.0", path = "../rackio-protocol" }
 uuid.workspace = true
 zeroize.workspace = true
 

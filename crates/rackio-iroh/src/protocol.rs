@@ -1,5 +1,5 @@
-use tray_monitor_core as core;
-use tray_monitor_protocol::v1 as wire;
+use rackio_core as core;
+use rackio_protocol::v1 as wire;
 
 pub(crate) fn metric_sample(sample: &core::MetricSample) -> wire::MetricSample {
     wire::MetricSample {

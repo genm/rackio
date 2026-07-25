@@ -46,8 +46,42 @@ test("shows relay and degraded state without disguising them as direct health", 
   await expect(server).toBeVisible();
   await expect(server.getByText("Relayed", { exact: true })).toBeVisible();
   await expect(server.getByText("Degraded", { exact: true })).toBeVisible();
-  await expect(component.getByRole("button", { name: /pair node/i })).toBeDisabled();
+  await expect(component.getByRole("button", { name: /pair machine/i })).toBeEnabled();
   await component.screenshot({ path: "../../output/playwright/dashboard.png" });
+});
+
+test("imports a one-time pairing bundle from the desktop", async ({ mount }) => {
+  let submitted = "";
+  const component = await mount(
+    <Dashboard
+      snapshot={snapshot}
+      onPair={async (bundle) => {
+        submitted = bundle;
+      }}
+    />,
+  );
+  await component.getByRole("button", { name: /pair machine/i }).click();
+  const dialog = component.getByRole("dialog", { name: /pair a machine/i });
+  await expect(dialog).toBeVisible();
+  await dialog.screenshot({ path: "../../output/playwright/pair-machine.png" });
+  await dialog.getByLabel("Pairing bundle").fill("  rackio-pair:test-bundle  ");
+  await dialog.getByRole("button", { name: /pair machine/i }).click();
+  await expect.poll(() => submitted).toBe("rackio-pair:test-bundle");
+});
+
+test("keeps pairing rejection visible instead of adding a fake healthy machine", async ({
+  mount,
+}) => {
+  const component = await mount(
+    <Dashboard
+      snapshot={snapshot}
+      pairing={{ state: "error", message: "pairing failed: pairing window has expired" }}
+    />,
+  );
+  await component.getByRole("button", { name: /pair machine/i }).click();
+  await expect(component.getByRole("alert")).toContainText("pairing window has expired");
+  await expect(component.getByText("Studio Mac")).toBeVisible();
+  await expect(component.getByText("Home Server")).toBeVisible();
 });
 
 test("shows daemon failure as an alert instead of an empty healthy fleet", async ({ mount }) => {

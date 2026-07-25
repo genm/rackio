@@ -48,6 +48,7 @@ mise run doctor:relay
 mise run agent:daemon
 mise run desktop:dev
 mise run frontend:dev
+mise run test:installer
 mise run check
 ```
 
@@ -58,6 +59,28 @@ a required check and fails until the self-hosted relay runtime is ready.
 Environment contract tests write JUnit XML to
 `test-results/environment-doctor.junit.xml`. Rust, Vitest and Playwright reports
 are stored in the same ignored directory.
+
+`test:installer` builds a synthetic Linux release archive, installs it under an
+isolated temporary root and verifies checksum rejection. It does not modify the
+host systemd configuration.
+
+## Two-daemon pairing smoke
+
+Pairing, reconnect and remote-snapshot changes need two isolated sets of
+`RACKIO_CONFIG_DIR`, `RACKIO_DATA_DIR`, `RACKIO_STATE_DIR` and `RACKIO_SOCKET`
+values. Each daemon must have its own identity and socket. The minimum smoke is:
+
+1. start both daemons;
+2. create a bundle on the monitored daemon;
+3. import it on the viewer daemon;
+4. poll `rackio fleet` until one remote metric sample is present;
+5. assert the selected path is truthful (`lan_direct` for a same-host fixture);
+6. assert importing the same bundle again fails;
+7. stop both daemons and remove only their isolated temporary roots.
+
+Never use the developer's normal Rackio directories for this smoke. Passing it
+is not NAT or relay evidence; record those separately against
+[`release-checklist.md`](release-checklist.md).
 
 ## Troubleshooting
 

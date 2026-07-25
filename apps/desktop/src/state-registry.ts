@@ -25,7 +25,7 @@ export const connectionPathRegistry: Record<
 };
 
 export const surfaceStateRegistry: Record<string, FleetSnapshot> = {
-  empty: { daemon: "connected", nodes: [], message: "No peers paired yet." },
+  empty: { daemon: "connected", nodes: [], message: "No machines paired yet." },
   daemonUnavailable: {
     daemon: "unavailable",
     nodes: [],

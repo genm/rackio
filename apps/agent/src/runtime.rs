@@ -9,38 +9,41 @@ use std::{
 use anyhow::{Context, anyhow};
 use chrono::Utc;
 use directories::ProjectDirs;
+use rackio_core::{
+    CapabilityState, HealthSnapshot, MetricCapability, MetricStore, NodeInfo, NodeState,
+    ProtocolVersion, SystemCollector,
+};
+use rackio_iroh::{
+    EndpointConfig, NodeRuntime, PairingManager, PeerRegistry, RemoteServer,
+    load_or_create_secret_key,
+};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     sync::{RwLock, watch},
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
-use tray_monitor_core::{
-    CapabilityState, HealthSnapshot, MetricCapability, MetricStore, NodeInfo, NodeState,
-    ProtocolVersion, SystemCollector,
-};
-use tray_monitor_iroh::{
-    EndpointConfig, NodeRuntime, PairingManager, PeerRegistry, RemoteServer,
-    load_or_create_secret_key,
-};
 use uuid::Uuid;
+
+use crate::remote::{RemoteFleet, RemoteMachineSnapshot};
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
     pub state_dir: PathBuf,
+    pub log_dir: PathBuf,
     pub local_socket: PathBuf,
 }
 
 pub fn app_paths() -> anyhow::Result<AppPaths> {
-    let dirs = ProjectDirs::from("dev", "tray-monitor", "tray-monitor")
+    let dirs = ProjectDirs::from("dev", "rackio", "rackio")
         .ok_or_else(|| anyhow!("OS application directories are unavailable"))?;
-    let config_dir = std::env::var_os("TRAY_MONITOR_CONFIG_DIR")
+    let config_dir = std::env::var_os("RACKIO_CONFIG_DIR")
         .map_or_else(|| dirs.config_dir().to_path_buf(), PathBuf::from);
-    let data_dir = std::env::var_os("TRAY_MONITOR_DATA_DIR")
+    let data_dir = std::env::var_os("RACKIO_DATA_DIR")
         .map_or_else(|| dirs.data_local_dir().to_path_buf(), PathBuf::from);
-    let state_dir = std::env::var_os("TRAY_MONITOR_STATE_DIR").map_or_else(
+    let state_dir = std::env::var_os("RACKIO_STATE_DIR").map_or_else(
         || {
             dirs.state_dir()
                 .unwrap_or_else(|| dirs.data_local_dir())
@@ -48,12 +51,15 @@ pub fn app_paths() -> anyhow::Result<AppPaths> {
         },
         PathBuf::from,
     );
-    let local_socket = std::env::var_os("TRAY_MONITOR_SOCKET")
+    let local_socket = std::env::var_os("RACKIO_SOCKET")
         .map_or_else(|| state_dir.join("agent.sock"), PathBuf::from);
+    let log_dir =
+        std::env::var_os("RACKIO_LOG_DIR").map_or_else(|| state_dir.join("logs"), PathBuf::from);
     Ok(AppPaths {
         config_dir,
         data_dir,
         state_dir,
+        log_dir,
         local_socket,
     })
 }
@@ -67,7 +73,9 @@ struct AgentConfig {
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum LocalCommand {
     Status,
+    FleetSnapshot,
     PairingCreate,
+    PairingImport { bundle: String },
     PeerList,
     PeerRevoke { endpoint_id: String },
     RelaySet { relay_url: Option<String> },
@@ -108,8 +116,14 @@ struct StatusPayload {
     endpoint_id: String,
     direct_addresses: Vec<String>,
     relay_url: Option<String>,
-    latest: Option<tray_monitor_core::MetricSample>,
+    latest: Option<rackio_core::MetricSample>,
     health: HealthSnapshot,
+}
+
+#[derive(Debug, Serialize)]
+struct FleetPayload {
+    local: StatusPayload,
+    remotes: Vec<RemoteMachineSnapshot>,
 }
 
 pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
@@ -118,7 +132,7 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
 
     let config = load_config(&paths)?;
     let secret = load_or_create_secret_key(&paths.data_dir.join("identity.key"))?;
-    let endpoint = tray_monitor_iroh::bind_endpoint(
+    let endpoint = rackio_iroh::bind_endpoint(
         secret,
         &EndpointConfig {
             relay_urls: config.relay_url.clone().into_iter().collect(),
@@ -137,6 +151,11 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         peers: PeerRegistry::load(paths.data_dir.join("peers.json"))?,
     });
     let server = RemoteServer::new(endpoint.clone(), Arc::clone(&runtime));
+    let remote_fleet = RemoteFleet::load(
+        endpoint.clone(),
+        paths.data_dir.join("monitored-machines.json"),
+    )?;
+    remote_fleet.start()?;
 
     tracing::info!(
         endpoint_id = %endpoint.id(),
@@ -146,7 +165,12 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
 
     let mut sampler = tokio::spawn(sample_loop(Arc::clone(&runtime), latest_tx));
     let mut remote = tokio::spawn(server.run());
-    let mut local = tokio::spawn(run_local_server(paths.clone(), endpoint.clone(), runtime));
+    let mut local = tokio::spawn(run_local_server(
+        paths.clone(),
+        endpoint.clone(),
+        runtime,
+        remote_fleet,
+    ));
 
     let result = tokio::select! {
         signal = tokio::signal::ctrl_c() => signal.map_err(anyhow::Error::from),
@@ -172,7 +196,7 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
 
 async fn sample_loop(
     runtime: Arc<NodeRuntime>,
-    latest: watch::Sender<Option<tray_monitor_core::MetricSample>>,
+    latest: watch::Sender<Option<rackio_core::MetricSample>>,
 ) {
     let mut collector = SystemCollector::new();
     tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
@@ -245,6 +269,7 @@ async fn run_local_server(
     paths: AppPaths,
     endpoint: iroh::Endpoint,
     runtime: Arc<NodeRuntime>,
+    remote_fleet: RemoteFleet,
 ) -> anyhow::Result<()> {
     use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
     use tokio::net::UnixListener;
@@ -259,7 +284,7 @@ async fn run_local_server(
         Err(error) => return Err(error.into()),
     }
     let listener = UnixListener::bind(&paths.local_socket)?;
-    let shared = std::env::var_os("TRAY_MONITOR_SHARED_SOCKET").is_some();
+    let shared = std::env::var_os("RACKIO_SHARED_SOCKET").is_some();
     fs::set_permissions(
         &paths.local_socket,
         fs::Permissions::from_mode(if shared { 0o660 } else { 0o600 }),
@@ -273,12 +298,15 @@ async fn run_local_server(
         let paths = paths.clone();
         let endpoint = endpoint.clone();
         let runtime = Arc::clone(&runtime);
+        let remote_fleet = remote_fleet.clone();
         tokio::spawn(async move {
             let (read, mut write) = stream.into_split();
             let mut lines = BufReader::new(read).lines();
             let response = match lines.next_line().await {
                 Ok(Some(line)) => match serde_json::from_str::<LocalCommand>(&line) {
-                    Ok(command) => handle_local(&paths, &endpoint, &runtime, command).await,
+                    Ok(command) => {
+                        handle_local(&paths, &endpoint, &runtime, &remote_fleet, command).await
+                    }
                     Err(error) => LocalResponse::failure(error),
                 },
                 Ok(None) => LocalResponse::failure("empty local request"),
@@ -297,6 +325,7 @@ async fn run_local_server(
     _paths: AppPaths,
     _endpoint: iroh::Endpoint,
     _runtime: Arc<NodeRuntime>,
+    _remote_fleet: RemoteFleet,
 ) -> anyhow::Result<()> {
     anyhow::bail!("Windows named-pipe local IPC is not available in this development build")
 }
@@ -305,6 +334,7 @@ async fn handle_local(
     paths: &AppPaths,
     endpoint: &iroh::Endpoint,
     runtime: &Arc<NodeRuntime>,
+    remote_fleet: &RemoteFleet,
     command: LocalCommand,
 ) -> LocalResponse {
     match command {
@@ -328,6 +358,30 @@ async fn handle_local(
                 health,
             })
         }
+        LocalCommand::FleetSnapshot => {
+            let relay_url = match load_config(paths) {
+                Ok(config) => config.relay_url,
+                Err(error) => return LocalResponse::failure(error),
+            };
+            let latest = runtime.latest.borrow().clone();
+            let health = runtime.health.read().await.clone();
+            let local = StatusPayload {
+                node: runtime.info.clone(),
+                endpoint_id: endpoint.id().to_string(),
+                direct_addresses: endpoint
+                    .addr()
+                    .ip_addrs()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
+                relay_url,
+                latest,
+                health,
+            };
+            LocalResponse::success(FleetPayload {
+                local,
+                remotes: remote_fleet.snapshots().await,
+            })
+        }
         LocalCommand::PairingCreate => {
             let addresses = endpoint.addr().ip_addrs().copied().collect();
             let relay_urls = match load_config(paths) {
@@ -344,6 +398,12 @@ async fn handle_local(
                     }
                 }
                 Err(_) => LocalResponse::failure("pairing state lock is unavailable"),
+            }
+        }
+        LocalCommand::PairingImport { bundle } => {
+            match remote_fleet.import_pairing(&bundle).await {
+                Ok(machine) => LocalResponse::success(machine),
+                Err(error) => LocalResponse::failure(error),
             }
         }
         LocalCommand::PeerList => match runtime.peers.list() {
@@ -436,7 +496,12 @@ fn healthy() -> HealthSnapshot {
 }
 
 fn create_directories(paths: &AppPaths) -> anyhow::Result<()> {
-    for path in [&paths.config_dir, &paths.data_dir, &paths.state_dir] {
+    for path in [
+        &paths.config_dir,
+        &paths.data_dir,
+        &paths.state_dir,
+        &paths.log_dir,
+    ] {
         fs::create_dir_all(path)?;
     }
     Ok(())
@@ -493,8 +558,8 @@ fn load_or_create_node_id(path: &Path) -> anyhow::Result<Uuid> {
 }
 
 fn init_logging(paths: &AppPaths) -> anyhow::Result<()> {
-    fs::create_dir_all(paths.state_dir.join("logs"))?;
-    let file = tracing_appender::rolling::daily(paths.state_dir.join("logs"), "agent.jsonl");
+    fs::create_dir_all(&paths.log_dir)?;
+    let file = tracing_appender::rolling::daily(&paths.log_dir, "agent.jsonl");
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(tracing_subscriber::fmt::layer().json().with_writer(file))

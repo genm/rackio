@@ -1,12 +1,12 @@
 [package]
-name = "tray-monitor-agent"
+name = "rackio-agent"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "tray-monitor"
+name = "rackio"
 path = "src/main.rs"
 
 [dependencies]
@@ -23,8 +23,10 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
-tray-monitor-core = { version = "0.1.0", path = "../../crates/monitor-core" }
-tray-monitor-iroh = { version = "0.1.0", path = "../../crates/monitor-iroh" }
+rackio-core = { version = "0.1.0", path = "../../crates/rackio-core" }
+rackio-iroh = { version = "0.1.0", path = "../../crates/rackio-iroh" }
+rackio-protocol = { version = "0.1.0", path = "../../crates/rackio-protocol" }
+thiserror.workspace = true
 uuid.workspace = true
 
 [lints]

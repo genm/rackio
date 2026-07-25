@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Tray Monitor",
+  "productName": "Rackio",
   "version": "0.1.0",
-  "identifier": "dev.tray-monitor.desktop",
+  "identifier": "dev.rackio.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Tray Monitor",
+        "title": "Rackio",
         "width": 980,
         "height": 720,
         "minWidth": 720,

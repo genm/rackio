@@ -1,17 +1,20 @@
 {
-  "name": "tray-monitor-workspace",
+  "name": "rackio-workspace",
   "private": true,
   "scripts": {
-    "build": "pnpm --filter @tray-monitor/desktop build",
-    "format": "oxfmt apps/desktop/src apps/desktop/playwright/index.ts apps/desktop/playwright/index.html apps/desktop/index.html apps/desktop/vite.config.ts apps/desktop/playwright-ct.config.ts apps/desktop/package.json apps/desktop/tsconfig.json apps/desktop/src-tauri/capabilities/default.json apps/desktop/src-tauri/tauri.conf.json scripts/*.mjs package.json",
-    "format:check": "oxfmt --check apps/desktop/src apps/desktop/playwright/index.ts apps/desktop/playwright/index.html apps/desktop/index.html apps/desktop/vite.config.ts apps/desktop/playwright-ct.config.ts apps/desktop/package.json apps/desktop/tsconfig.json apps/desktop/src-tauri/capabilities/default.json apps/desktop/src-tauri/tauri.conf.json scripts/*.mjs package.json",
-    "typecheck": "pnpm --filter @tray-monitor/desktop typecheck",
-    "lint": "oxlint apps/desktop/src apps/desktop/playwright/index.ts apps/desktop/vite.config.ts apps/desktop/playwright-ct.config.ts scripts/*.mjs",
+    "build": "pnpm --filter @rackio/desktop build",
+    "commitlint": "commitlint",
+    "format": "oxfmt apps/desktop/src apps/desktop/playwright/index.ts apps/desktop/playwright/index.html apps/desktop/index.html apps/desktop/vite.config.ts apps/desktop/playwright-ct.config.ts apps/desktop/package.json apps/desktop/tsconfig.json apps/desktop/src-tauri/capabilities/default.json apps/desktop/src-tauri/tauri.conf.json commitlint.config.mjs scripts/*.mjs package.json",
+    "format:check": "oxfmt --check apps/desktop/src apps/desktop/playwright/index.ts apps/desktop/playwright/index.html apps/desktop/index.html apps/desktop/vite.config.ts apps/desktop/playwright-ct.config.ts apps/desktop/package.json apps/desktop/tsconfig.json apps/desktop/src-tauri/capabilities/default.json apps/desktop/src-tauri/tauri.conf.json commitlint.config.mjs scripts/*.mjs package.json",
+    "typecheck": "pnpm --filter @rackio/desktop typecheck",
+    "lint": "oxlint apps/desktop/src apps/desktop/playwright/index.ts apps/desktop/vite.config.ts apps/desktop/playwright-ct.config.ts commitlint.config.mjs scripts/*.mjs",
     "test:env": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/environment-doctor.junit.xml scripts/environment-doctor.test.mjs",
-    "test": "pnpm --filter @tray-monitor/desktop test",
-    "test:ct": "pnpm --filter @tray-monitor/desktop test:ct"
+    "test": "pnpm --filter @rackio/desktop test",
+    "test:ct": "pnpm --filter @rackio/desktop test:ct"
   },
   "devDependencies": {
+    "@commitlint/cli": "21.2.1",
+    "@commitlint/config-conventional": "21.2.0",
     "oxfmt": "0.18.0",
     "oxlint": "1.32.0"
   },

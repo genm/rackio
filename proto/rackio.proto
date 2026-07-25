@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package tray_monitor.v1;
+package rackio.v1;
 
 message ProtocolVersion {
   uint32 major = 1;

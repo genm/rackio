@@ -3,10 +3,31 @@ import { useEffect, useState } from "react";
 
 import { Dashboard } from "./components/Dashboard";
 import { surfaceStateRegistry } from "./state-registry";
-import type { FleetSnapshot } from "./types";
+import type { FleetSnapshot, PairingStatus } from "./types";
 
 export default function App() {
   const [snapshot, setSnapshot] = useState<FleetSnapshot>(surfaceStateRegistry.daemonUnavailable);
+  const [pairing, setPairing] = useState<PairingStatus>({ state: "idle" });
+
+  const pairMachine = async (bundle: string) => {
+    setPairing({ state: "submitting" });
+    try {
+      const machine = await invoke<{ node?: { display_name?: string } }>("pair_machine", {
+        bundle,
+      });
+      setPairing({
+        state: "success",
+        machineName: machine.node?.display_name ?? "Machine",
+      });
+      const value = await invoke<FleetSnapshot>("fleet_snapshot");
+      setSnapshot(value);
+    } catch (error: unknown) {
+      setPairing({
+        state: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -34,5 +55,5 @@ export default function App() {
     };
   }, []);
 
-  return <Dashboard snapshot={snapshot} />;
+  return <Dashboard snapshot={snapshot} pairing={pairing} onPair={pairMachine} />;
 }

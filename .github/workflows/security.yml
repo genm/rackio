@@ -58,14 +58,14 @@ jobs:
           scan-type: fs
           scan-ref: .
           format: cyclonedx
-          output: tray-monitor.cdx.json
+          output: rackio.cdx.json
           exit-code: "0"
       - name: Upload SBOM
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: tray-monitor-sbom
-          path: tray-monitor.cdx.json
+          name: rackio-sbom
+          path: rackio.cdx.json
           retention-days: 7
       - name: Reject upstream relay or discovery defaults in application source
         run: |

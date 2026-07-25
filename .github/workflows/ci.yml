@@ -13,6 +13,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  commits:
+    name: Conventional Commits
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.33.0
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.15.0
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Validate pull request commits
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: pnpm commitlint --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
+      - name: Validate pushed commits
+        if: github.event_name == 'push'
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
+            ROOT_SHA="$(git rev-list --max-parents=0 "$HEAD_SHA")"
+            git show --no-patch --format=%B "$ROOT_SHA" | pnpm commitlint
+            if [[ "$ROOT_SHA" != "$HEAD_SHA" ]]; then
+              pnpm commitlint --from "$ROOT_SHA" --to "$HEAD_SHA" --verbose
+            fi
+          else
+            pnpm commitlint --from "$BEFORE_SHA" --to "$HEAD_SHA" --verbose
+          fi
+
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -73,7 +114,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Install component-test browser
-        run: pnpm --filter @tray-monitor/desktop exec playwright install --with-deps chromium
+        run: pnpm --filter @rackio/desktop exec playwright install --with-deps chromium
       - name: Format
         run: pnpm format:check
       - name: Typecheck

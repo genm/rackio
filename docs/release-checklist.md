@@ -3,15 +3,25 @@
 No build is a v1 release candidate until every unchecked item has evidence
 attached to a release issue.
 
+Implementation progress without complete release evidence is summarized in
+[`current-state.md`](current-state.md). Keep a top-level box unchecked when only
+a local, same-host or single-platform check exists.
+
 ## Functional blockers
 
 - [ ] Windows named-pipe IPC with explicit ACL and caller verification
 - [ ] system service installers for Windows, macOS and Linux, including reboot
       recovery and desktop access to the local socket
+  - [x] checksum-verified Linux systemd installer and rootless installer tests
+  - [ ] Linux reboot recovery on supported distributions
+  - [ ] independent artifact signature/provenance verification
+  - [ ] signed macOS package and Windows service installer
 - [ ] immediate teardown of active connections when a peer is revoked
 - [ ] five-minute mDNS advertisement lifecycle during pairing only
 - [ ] QR and file import/export for pairing bundles
 - [ ] remote peer inventory and on-demand history in the desktop viewer
+  - [x] pairing import, persisted remote inventory and live metrics
+  - [ ] on-demand remote history
 - [ ] dynamic tray icon reflects the fleet's current worst state
 - [ ] viewer heartbeat transitions nodes to stale at 10 seconds and offline at
       30 seconds

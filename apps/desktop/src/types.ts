@@ -32,3 +32,9 @@ export interface FleetSnapshot {
   nodes: FleetNode[];
   message?: string;
 }
+
+export type PairingStatus =
+  | { state: "idle" }
+  | { state: "submitting" }
+  | { state: "error"; message: string }
+  | { state: "success"; machineName: string };

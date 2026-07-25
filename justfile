@@ -23,11 +23,14 @@ dependencies:
     mise exec -- cargo machete
 
 release-check:
-    mise exec -- cargo build --release -p tray-monitor-agent
+    mise exec -- cargo build --release -p rackio-agent
     mise exec -- scripts/check-release-binary-cloud-independence.sh
 
+test-installer:
+    packaging/linux/install.test.sh
+
 agent *args:
-    mise exec -- cargo run -p tray-monitor-agent -- {{args}}
+    mise exec -- cargo run -p rackio-agent -- {{args}}
 
 desktop:
     mise run desktop:dev
