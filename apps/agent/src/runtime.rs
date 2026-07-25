@@ -19,7 +19,7 @@ use rackio_iroh::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     sync::{RwLock, watch},
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
@@ -363,13 +363,29 @@ async fn run_local_server(
         let mut next_options = ServerOptions::new();
         next_options.reject_remote_clients(true);
         let next = security.create_server(&next_options, &pipe_name)?;
-        if let Err(error) = security.verify_client(&server) {
+        let mut first_byte = [0_u8; 1];
+        match tokio::time::timeout(Duration::from_secs(2), server.read_exact(&mut first_byte)).await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, "local named-pipe caller closed before authorization");
+                server = next;
+                continue;
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "local named-pipe caller timed out before authorization");
+                server = next;
+                continue;
+            }
+        }
+        if let Err(error) = security.verify_client_after_read(&server) {
             tracing::warn!(error = %error, "rejected unauthorized local named-pipe caller");
             server = next;
             continue;
         }
-        tokio::spawn(serve_local_stream(
+        tokio::spawn(serve_local_stream_prefixed(
             server,
+            first_byte.to_vec(),
             paths.clone(),
             endpoint.clone(),
             Arc::clone(&runtime),
@@ -398,8 +414,21 @@ async fn serve_local_stream<S>(
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    serve_local_stream_prefixed(stream, Vec::new(), paths, endpoint, runtime, remote_fleet).await;
+}
+
+async fn serve_local_stream_prefixed<S>(
+    stream: S,
+    prefix: Vec<u8>,
+    paths: AppPaths,
+    endpoint: iroh::Endpoint,
+    runtime: Arc<NodeRuntime>,
+    remote_fleet: RemoteFleet,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let (read, mut write) = tokio::io::split(stream);
-    let mut lines = BufReader::new(read).lines();
+    let mut lines = BufReader::new(std::io::Cursor::new(prefix).chain(read)).lines();
     let response = match lines.next_line().await {
         Ok(Some(line)) => match serde_json::from_str::<LocalCommand>(&line) {
             Ok(command) => handle_local(&paths, &endpoint, &runtime, &remote_fleet, command).await,

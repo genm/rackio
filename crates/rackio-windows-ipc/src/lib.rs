@@ -157,11 +157,14 @@ impl PipeSecurity {
         }
     }
 
-    pub fn verify_client(&self, pipe: &NamedPipeServer) -> io::Result<()> {
+    /// Verifies the token associated with the most recent read from `pipe`.
+    pub fn verify_client_after_read(&self, pipe: &NamedPipeServer) -> io::Result<()> {
         let handle = pipe.as_raw_handle() as HANDLE;
         // Inspect the security context attached to this pipe connection
         // directly. Reopening a process by PID introduces a race with client
         // exit and can fail even when the pipe token itself is queryable.
+        // Windows requires the server to read data before impersonation so it
+        // can bind the check to the client that supplied that data.
         // SAFETY: `handle` is a live connected named-pipe server handle.
         if unsafe { ImpersonateNamedPipeClient(handle) } == 0 {
             return Err(io::Error::last_os_error());
