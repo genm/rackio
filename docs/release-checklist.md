@@ -9,11 +9,8 @@ a local, same-host or single-platform check exists.
 
 ## Public repository identity
 
-- [ ] obtain documented clearance for the `Rackio` name or choose a distinct
-      public name before publishing the source repository
-  - an existing [Rackio Framework](https://github.com/rack-io/rackio-framework)
-    repository and [Rackio package](https://pypi.org/project/Rackio/) use the
-    same name in adjacent automation, control and monitoring contexts
+- [x] accept `Rackio` as the public name after reviewing the inactive,
+      functionally distinct Python project with the same name
 - [ ] create the intended public remote, then enable private vulnerability
       reporting and required CI checks before accepting contributions
 - [x] scan the complete Git history for committed secrets locally and in
