@@ -2,6 +2,10 @@
 
 **Your machines, one rack.**
 
+> [!WARNING]
+> Rackio is under active development and has no supported production release
+> yet. Source code and development builds are provided for evaluation only.
+
 Rackio is a cloud-independent, peer-to-peer system monitor for groups of
 machines. Each machine collects and owns its own metrics. Trusted viewers
 connect directly over QUIC; a self-hosted relay is optional when NAT traversal
