@@ -1,0 +1,10 @@
+[package]
+name = "rackio-windows-ipc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+tokio.workspace = true
+windows-sys.workspace = true

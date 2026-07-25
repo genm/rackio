@@ -41,8 +41,10 @@ out of scope for v1. Operators must document retention of relay access logs.
 
 ## Known release limitations
 
-- The current local IPC implementation is Unix-domain only and owner mode 0600.
-  Windows named-pipe ACL enforcement is a release blocker.
+- Unix local IPC requires OS peer credentials and a mode-0600 or viewer-group
+  socket. Windows local IPC rejects remote pipe clients, grants access only to
+  LocalSystem, administrators and the `Rackio Viewers` local group, then
+  independently verifies the connected process token.
 - OS keystore integration is not complete. The private key is stored in a
   daemon-owned 0600 file inside a 0700 directory on Unix.
 - Relay endpoint allowlisting and token delivery need an operator-facing secret

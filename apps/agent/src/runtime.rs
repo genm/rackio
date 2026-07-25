@@ -329,35 +329,88 @@ async fn run_local_server(
         let endpoint = endpoint.clone();
         let runtime = Arc::clone(&runtime);
         let remote_fleet = remote_fleet.clone();
-        tokio::spawn(async move {
-            let (read, mut write) = stream.into_split();
-            let mut lines = BufReader::new(read).lines();
-            let response = match lines.next_line().await {
-                Ok(Some(line)) => match serde_json::from_str::<LocalCommand>(&line) {
-                    Ok(command) => {
-                        handle_local(&paths, &endpoint, &runtime, &remote_fleet, command).await
-                    }
-                    Err(error) => LocalResponse::failure(error),
-                },
-                Ok(None) => LocalResponse::failure("empty local request"),
-                Err(error) => LocalResponse::failure(error),
-            };
-            if let Ok(mut bytes) = serde_json::to_vec(&response) {
-                bytes.push(b'\n');
-                let _ = write.write_all(&bytes).await;
-            }
-        });
+        tokio::spawn(serve_local_stream(
+            stream,
+            paths,
+            endpoint,
+            runtime,
+            remote_fleet,
+        ));
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+async fn run_local_server(
+    paths: AppPaths,
+    endpoint: iroh::Endpoint,
+    runtime: Arc<NodeRuntime>,
+    remote_fleet: RemoteFleet,
+) -> anyhow::Result<()> {
+    use rackio_windows_ipc::{PipeSecurity, VIEWER_GROUP_NAME, configured_pipe_name};
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let security = PipeSecurity::for_local_group(VIEWER_GROUP_NAME)
+        .context("Rackio viewer-group pipe ACL initialization failed")?;
+    let pipe_name = configured_pipe_name()?;
+    let mut first_options = ServerOptions::new();
+    first_options
+        .first_pipe_instance(true)
+        .reject_remote_clients(true);
+    let mut server = security.create_server(&first_options, &pipe_name)?;
+    loop {
+        server.connect().await?;
+        let mut next_options = ServerOptions::new();
+        next_options.reject_remote_clients(true);
+        let next = security.create_server(&next_options, &pipe_name)?;
+        if let Err(error) = security.verify_client(&server) {
+            tracing::warn!(error = %error, "rejected unauthorized local named-pipe caller");
+            server = next;
+            continue;
+        }
+        tokio::spawn(serve_local_stream(
+            server,
+            paths.clone(),
+            endpoint.clone(),
+            Arc::clone(&runtime),
+            remote_fleet.clone(),
+        ));
+        server = next;
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 async fn run_local_server(
     _paths: AppPaths,
     _endpoint: iroh::Endpoint,
     _runtime: Arc<NodeRuntime>,
     _remote_fleet: RemoteFleet,
 ) -> anyhow::Result<()> {
-    anyhow::bail!("Windows named-pipe local IPC is not available in this development build")
+    anyhow::bail!("local IPC is unsupported on this platform")
+}
+
+async fn serve_local_stream<S>(
+    stream: S,
+    paths: AppPaths,
+    endpoint: iroh::Endpoint,
+    runtime: Arc<NodeRuntime>,
+    remote_fleet: RemoteFleet,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let (read, mut write) = tokio::io::split(stream);
+    let mut lines = BufReader::new(read).lines();
+    let response = match lines.next_line().await {
+        Ok(Some(line)) => match serde_json::from_str::<LocalCommand>(&line) {
+            Ok(command) => handle_local(&paths, &endpoint, &runtime, &remote_fleet, command).await,
+            Err(error) => LocalResponse::failure(error),
+        },
+        Ok(None) => LocalResponse::failure("empty local request"),
+        Err(error) => LocalResponse::failure(error),
+    };
+    if let Ok(mut bytes) = serde_json::to_vec(&response) {
+        bytes.push(b'\n');
+        let _ = write.write_all(&bytes).await;
+    }
 }
 
 async fn handle_local(
@@ -551,19 +604,40 @@ fn local_socket_candidates(paths: &AppPaths, explicit: bool) -> Vec<PathBuf> {
     #[cfg(target_os = "linux")]
     candidates.push(PathBuf::from("/run/rackio/agent.sock"));
     #[cfg(target_os = "macos")]
-    candidates.push(PathBuf::from("/var/run/rackio/agent.sock"));
+    candidates.push(PathBuf::from(
+        "/Library/Application Support/Rackio/run/agent.sock",
+    ));
     if !candidates.contains(&paths.local_socket) {
         candidates.push(paths.local_socket.clone());
     }
     candidates
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub async fn request_local(
+    _paths: &AppPaths,
+    command: LocalCommand,
+) -> anyhow::Result<LocalResponse> {
+    let pipe_name = rackio_windows_ipc::configured_pipe_name()?;
+    let stream = rackio_windows_ipc::connect_client(&pipe_name).await?;
+    let (read, mut write) = tokio::io::split(stream);
+    let mut request = serde_json::to_vec(&command)?;
+    request.push(b'\n');
+    write.write_all(&request).await?;
+    let mut lines = BufReader::new(read).lines();
+    let line = lines
+        .next_line()
+        .await?
+        .ok_or_else(|| anyhow!("daemon closed the local connection without a response"))?;
+    Ok(serde_json::from_str(&line)?)
+}
+
+#[cfg(not(any(unix, windows)))]
 pub async fn request_local(
     _paths: &AppPaths,
     _command: LocalCommand,
 ) -> anyhow::Result<LocalResponse> {
-    anyhow::bail!("Windows named-pipe local IPC is not available in this development build")
+    anyhow::bail!("local IPC is unsupported on this platform")
 }
 
 fn node_info(node_id: Uuid) -> NodeInfo {

@@ -85,17 +85,62 @@ provenance or artifact attestation; it remains blocked by `just release-check`.
 
 ## macOS LaunchDaemon
 
-The final package installer must create `/var/run/rackio` with an
-installer-owned viewer group and mode 2770, create the data/log directories,
-install the binary, and load the plist under `/Library/LaunchDaemons`.
+The pkg scripts create a dedicated `_rackio` daemon account and
+`_rackio-viewers` group, create the data/log/runtime directories, install the
+binary and load the plist under `/Library/LaunchDaemons`.
 
-Do not manually copy this template into production yet: the signed pkg,
-dedicated local group, ownership rollback and uninstall receipts remain release
-work.
+Release package creation fails unless `RACKIO_INSTALLER_IDENTITY` names a
+Developer ID Installer certificate. When `RACKIO_NOTARY_PROFILE` is set, the
+builder waits for Apple notarization, staples the ticket and validates it:
 
-## Windows
+```sh
+RACKIO_APPLICATION_IDENTITY="Developer ID Application: Example (TEAMID)" \
+RACKIO_INSTALLER_IDENTITY="Developer ID Installer: Example (TEAMID)" \
+RACKIO_NOTARY_PROFILE=rackio-notary \
+  packaging/macos/package-release.sh \
+  target/aarch64-apple-darwin/release/rackio \
+  0.1.0 \
+  aarch64-apple-darwin
+```
 
-Windows Service registration is intentionally not packaged yet. The Rust agent
-can collect and serve P2P traffic on Windows, but named-pipe IPC with an explicit
-ACL is still a release blocker. Shipping a service before that boundary exists
-would leave the tray disconnected or encourage an insecure fallback.
+The uninstaller preserves identity, configuration and history unless
+`--purge` is explicit:
+
+```sh
+sudo /usr/local/lib/rackio/uninstall.sh
+sudo /usr/local/lib/rackio/uninstall.sh --purge
+```
+
+## Windows Service
+
+The Windows archive contains `rackio.exe` and the preserving uninstaller.
+Run the installer from an elevated PowerShell:
+
+```powershell
+.\packaging\windows\install.ps1 `
+  -Archive .\rackio-v0.1.0-x86_64-pc-windows-msvc.zip `
+  -Checksum .\rackio-v0.1.0-x86_64-pc-windows-msvc.zip.sha256
+```
+
+It verifies SHA-256 before extraction, creates the `Rackio Viewers` local
+group, installs an automatic LocalSystem service with recovery actions, applies
+explicit filesystem ACLs, starts the service and requires a successful secured
+named-pipe health check. Sign out and back in after the first install so the
+non-elevated tray token contains its new viewer-group membership.
+
+Named-pipe access is enforced twice: its DACL grants only LocalSystem,
+administrators and `Rackio Viewers`, and the server rejects remote clients then
+checks the connected process token. Build the archive on Windows with a
+code-signing certificate installed in the certificate store:
+
+```powershell
+$env:RACKIO_SIGNTOOL_CERT_SHA1 = "CERTIFICATE_THUMBPRINT"
+.\packaging\windows\package-release.ps1 `
+  -Binary .\target\release\rackio.exe `
+  -Version 0.1.0 `
+  -Target x86_64-pc-windows-msvc
+```
+
+The builder fails closed without the signing certificate, timestamps
+`rackio.exe`, and verifies Authenticode before archiving it. The installer
+checks that signature again before copying or registering the service.

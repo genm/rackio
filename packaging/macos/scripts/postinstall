@@ -1,0 +1,50 @@
+#!/bin/sh
+set -eu
+
+if ! dscl . -read /Groups/_rackio-viewers >/dev/null 2>&1; then
+  next_gid="$(dscl . -list /Groups PrimaryGroupID | awk '$2 >= 400 && $2 < 500 { used[$2] = 1 } END { for (id = 499; id >= 400; id--) if (!used[id]) { print id; exit } }')"
+  [ -n "$next_gid" ] || {
+    echo "No system GID is available for _rackio-viewers" >&2
+    exit 1
+  }
+  dscl . -create /Groups/_rackio-viewers
+  dscl . -create /Groups/_rackio-viewers PrimaryGroupID "$next_gid"
+  dscl . -create /Groups/_rackio-viewers RealName "Rackio Viewers"
+fi
+
+if ! dscl . -read /Users/_rackio >/dev/null 2>&1; then
+  next_uid="$(dscl . -list /Users UniqueID | awk '$2 >= 400 && $2 < 500 { used[$2] = 1 } END { for (id = 499; id >= 400; id--) if (!used[id]) { print id; exit } }')"
+  [ -n "$next_uid" ] || {
+    echo "No system UID is available for _rackio" >&2
+    exit 1
+  }
+  group_id="$(dscl . -read /Groups/_rackio-viewers PrimaryGroupID | awk '{ print $2 }')"
+  dscl . -create /Users/_rackio
+  dscl . -create /Users/_rackio UniqueID "$next_uid"
+  dscl . -create /Users/_rackio PrimaryGroupID "$group_id"
+  dscl . -create /Users/_rackio UserShell /usr/bin/false
+  dscl . -create /Users/_rackio NFSHomeDirectory "/var/empty"
+  dscl . -create /Users/_rackio RealName "Rackio Agent"
+  dscl . -create /Users/_rackio IsHidden 1
+fi
+
+install -d -o _rackio -g _rackio-viewers -m 0750 \
+  "/Library/Preferences/Rackio" \
+  "/Library/Application Support/Rackio" \
+  "/Library/Application Support/Rackio/state" \
+  "/Library/Application Support/Rackio/run" \
+  "/Library/Logs/Rackio"
+chmod 0770 "/Library/Application Support/Rackio/run"
+console_user="$(stat -f %Su /dev/console)"
+if [ "$console_user" != "root" ] && [ "$console_user" != "_rackio" ]; then
+  dseditgroup -o edit -a "$console_user" -t user _rackio-viewers
+fi
+chown root:wheel /usr/local/bin/rackio /Library/LaunchDaemons/dev.rackio.agent.plist
+chmod 0755 /usr/local/bin/rackio
+chmod 0644 /Library/LaunchDaemons/dev.rackio.agent.plist
+
+launchctl bootstrap system /Library/LaunchDaemons/dev.rackio.agent.plist
+launchctl enable system/dev.rackio.agent
+launchctl kickstart -k system/dev.rackio.agent
+echo "Sign out and back in before using the Rackio tray as $console_user."
+exit 0

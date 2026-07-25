@@ -29,5 +29,8 @@ rackio-protocol = { version = "0.1.0", path = "../../crates/rackio-protocol" }
 thiserror.workspace = true
 uuid.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+rackio-windows-ipc = { version = "0.1.0", path = "../../crates/rackio-windows-ipc" }
+
 [lints]
 workspace = true

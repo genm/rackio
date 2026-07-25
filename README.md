@@ -10,11 +10,11 @@ cannot produce a direct path.
 The name combines a machine rack with `I/O`. It also echoes *rakkyō*, the
 Japanese word for the pickled scallion, giving Rackio a playful visual motif.
 
-This repository is an early implementation, not a production release. The core
-collector, bounded history store, authenticated P2P protocol, one-time pairing,
-headless daemon/CLI, Tauri tray shell, state-driven React UI, and relay packaging
-are present. The release checklist documents the remaining cross-OS and NAT
-matrix work.
+This repository is a release-candidate implementation, not yet a published
+production release. The core collector, bounded history store, authenticated
+P2P protocol, one-time pairing, headless daemon/CLI, Tauri tray shell,
+state-driven React UI, and relay packaging are present. The release checklist
+documents the remaining cross-OS and NAT matrix work.
 
 For a handoff-oriented view of completed and partial behavior, read
 [`docs/current-state.md`](docs/current-state.md). An implementation listed
@@ -33,14 +33,15 @@ has the required evidence.
 - Desktop and CLI pairing-bundle import with persisted remote machine inventory
 - live remote metrics, truthful LAN/WAN/relay path, RTT, stale and offline state
 - fail-closed unknown peer and protocol-major handling
-- Unix-domain local daemon IPC, CLI operations, and Tauri tray UI
+- peer-credential-gated Unix socket or explicit-DACL Windows named-pipe local
+  IPC, CLI operations, and Tauri tray UI
 - checksum-verified Linux release packaging and an idempotent systemd installer
 - explicit `Relayed`, stale/offline, auth, incompatibility and degraded states
 
-Windows named-pipe IPC, signed installers, reboot persistence on all three
-platforms, QR rendering, mDNS pairing discovery, active-connection teardown on
-revoke, the upstream Linux Tauri/GTK `RUSTSEC-2024-0429` dependency, and the
-full NAT laboratory are tracked as release blockers in
+Real signed/notarized installers, reboot persistence on all three platforms,
+Windows integration evidence, the upstream Linux Tauri/GTK
+`RUSTSEC-2024-0429` dependency, and the full NAT laboratory are tracked as
+release blockers in
 [`docs/release-checklist.md`](docs/release-checklist.md).
 
 The current upstream `iroh 1.0.3` code also leaves vendor relay hostname

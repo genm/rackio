@@ -4427,6 +4427,7 @@ dependencies = [
  "rackio-core",
  "rackio-iroh",
  "rackio-protocol",
+ "rackio-windows-ipc",
  "serde",
  "serde_json",
  "sysinfo",
@@ -4460,6 +4461,7 @@ dependencies = [
  "chrono",
  "directories",
  "qrcode",
+ "rackio-windows-ipc",
  "serde",
  "serde_json",
  "tauri",
@@ -4502,6 +4504,14 @@ dependencies = [
  "protoc-bin-vendored",
  "thiserror 2.0.19",
  "tokio",
+]
+
+[[package]]
+name = "rackio-windows-ipc"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

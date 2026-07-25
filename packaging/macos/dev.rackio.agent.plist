@@ -9,6 +9,10 @@
       <string>/usr/local/bin/rackio</string>
       <string>daemon</string>
     </array>
+    <key>UserName</key>
+    <string>_rackio</string>
+    <key>GroupName</key>
+    <string>_rackio-viewers</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -20,9 +24,11 @@
       <key>RACKIO_DATA_DIR</key>
       <string>/Library/Application Support/Rackio</string>
       <key>RACKIO_STATE_DIR</key>
+      <string>/Library/Application Support/Rackio/state</string>
+      <key>RACKIO_LOG_DIR</key>
       <string>/Library/Logs/Rackio</string>
       <key>RACKIO_SOCKET</key>
-      <string>/var/run/rackio/agent.sock</string>
+      <string>/Library/Application Support/Rackio/run/agent.sock</string>
       <key>RACKIO_SHARED_SOCKET</key>
       <string>1</string>
     </dict>

@@ -10,6 +10,9 @@ a local, same-host or single-platform check exists.
 ## Functional blockers
 
 - [ ] Windows named-pipe IPC with explicit ACL and caller verification
+  - [x] implementation uses the `Rackio Viewers` group DACL, rejects remote
+        clients and rechecks the connected process token
+  - [ ] Windows CI integration evidence
 - [ ] system service installers for Windows, macOS and Linux, including reboot
       recovery and desktop access to the local socket
   - [x] checksum-verified Linux systemd installer and rootless installer tests
@@ -20,6 +23,12 @@ a local, same-host or single-platform check exists.
   - [ ] Linux reboot recovery on supported distributions
   - [ ] independent artifact signature/provenance verification
   - [ ] signed macOS package and Windows service installer
+    - [x] macOS pkg builder refuses release output without a signing identity
+          and optionally waits for notarization and staples the ticket
+    - [x] Windows Service archive installer configures the viewer group,
+          service recovery and secured ProgramData directories; its builder
+          and installer both enforce Authenticode
+    - [ ] real macOS notarization receipt and Windows Authenticode/MSI signature
 - [x] immediate teardown of active connections when a peer is revoked
 - [x] five-minute mDNS advertisement lifecycle during pairing only
 - [x] QR and private file import/export for pairing bundles

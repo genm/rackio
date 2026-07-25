@@ -352,7 +352,9 @@ async fn daemon_request(
     #[cfg(target_os = "linux")]
     candidates.push(std::path::PathBuf::from("/run/rackio/agent.sock"));
     #[cfg(target_os = "macos")]
-    candidates.push(std::path::PathBuf::from("/var/run/rackio/agent.sock"));
+    candidates.push(std::path::PathBuf::from(
+        "/Library/Application Support/Rackio/run/agent.sock",
+    ));
     candidates.push(state_dir.join("agent.sock"));
     let mut last_error = None;
     let mut connected = None;
@@ -394,11 +396,44 @@ async fn daemon_request(
     Ok(response)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+async fn daemon_request(
+    command: serde_json::Value,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+
+    let pipe_name = rackio_windows_ipc::configured_pipe_name()?;
+    let stream = rackio_windows_ipc::connect_client(&pipe_name).await?;
+    let (read, mut write) = tokio::io::split(stream);
+    let mut request = serde_json::to_vec(&command)?;
+    request.push(b'\n');
+    write.write_all(&request).await?;
+    let mut lines = BufReader::new(read).lines();
+    let line = lines
+        .next_line()
+        .await?
+        .ok_or("daemon closed the local connection without a response")?;
+    let response: serde_json::Value = serde_json::from_str(&line)?;
+    if !response
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(response
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("daemon request failed")
+            .to_owned()
+            .into());
+    }
+    Ok(response)
+}
+
+#[cfg(not(any(unix, windows)))]
 async fn daemon_request(
     _command: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    Err("Windows named-pipe local IPC is not available in this development build".into())
+    Err("local daemon IPC is unsupported on this platform".into())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

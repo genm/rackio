@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+launchctl bootout system/dev.rackio.agent >/dev/null 2>&1 || true
+exit 0
