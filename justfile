@@ -21,6 +21,7 @@ coverage:
 dependencies:
     mise exec -- cargo deny check
     mise exec -- cargo machete
+    mise run licenses:check
 
 release-check:
     mise exec -- cargo build --release -p rackio-agent

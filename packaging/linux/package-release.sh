@@ -23,11 +23,12 @@ install -m 0644 "$repo_root/packaging/linux/rackio.service" "$staging/rackio.ser
 install -m 0755 "$repo_root/packaging/linux/uninstall.sh" "$staging/uninstall.sh"
 install -m 0644 "$repo_root/LICENSE-MIT" "$staging/LICENSE-MIT"
 install -m 0644 "$repo_root/LICENSE-APACHE" "$staging/LICENSE-APACHE"
+install -m 0644 "$repo_root/THIRDPARTY.html" "$staging/THIRDPARTY.html"
 
 mkdir -p "$output_dir"
 asset="rackio-v${version}-${target}.tar.gz"
 tar -C "$staging" -czf "$output_dir/$asset" \
-  rackio rackio.service uninstall.sh LICENSE-MIT LICENSE-APACHE
+  rackio rackio.service uninstall.sh LICENSE-MIT LICENSE-APACHE THIRDPARTY.html
 if command -v sha256sum >/dev/null 2>&1; then
   digest="$(sha256sum "$output_dir/$asset" | awk '{ print $1 }')"
 else

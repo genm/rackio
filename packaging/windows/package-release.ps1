@@ -32,7 +32,7 @@ try {
         throw "Authenticode verification failed"
     }
     Copy-Item -LiteralPath "packaging/windows/uninstall.ps1" -Destination $staging
-    Copy-Item -LiteralPath "LICENSE-MIT", "LICENSE-APACHE" -Destination $staging
+    Copy-Item -LiteralPath "LICENSE-MIT", "LICENSE-APACHE", "THIRDPARTY.html" -Destination $staging
     Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $archive -Force
     $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
     Set-Content -NoNewline -LiteralPath "$archive.sha256" -Value "$digest  $archiveName`n"

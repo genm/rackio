@@ -22,6 +22,7 @@ rm -f /etc/systemd/system/rackio.service
 rm -f /usr/local/bin/rackio
 rm -f /usr/local/lib/rackio/uninstall.sh
 rmdir /usr/local/lib/rackio 2>/dev/null || true
+rm -rf /usr/local/share/doc/rackio
 if command -v systemctl >/dev/null 2>&1; then
   systemctl daemon-reload
 fi

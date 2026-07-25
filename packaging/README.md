@@ -3,6 +3,12 @@
 The agent is designed to outlive the tray and user login. The templates in this
 directory define that process boundary.
 
+Installation and removal are package-owned operations. Rackio intentionally
+does not expose CLI commands that would register only a binary while omitting
+the platform user/group, IPC permissions, persistence directories, recovery
+policy, or signed service definition. Use the installer for the target OS below
+as the single authoritative path.
+
 ## Linux system service
 
 [`../install.sh`](../install.sh) automates the Linux headless installation. It
@@ -40,8 +46,10 @@ releases/
     └── rackio-v<VERSION>-<TARGET>.tar.gz.sha256
 ```
 
-Each archive contains `rackio`, `rackio.service`, `uninstall.sh`, and both
-license files. Build it from an already compiled binary:
+Each archive contains `rackio`, `rackio.service`, `uninstall.sh`, the project
+licenses, and the generated `THIRDPARTY.html` Rust dependency-license bundle. CI
+regenerates that bundle from `Cargo.lock` and rejects drift. Build the archive
+from an already compiled binary:
 
 ```sh
 packaging/linux/package-release.sh \

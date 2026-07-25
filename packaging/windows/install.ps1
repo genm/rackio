@@ -35,8 +35,17 @@ try {
     Expand-Archive -LiteralPath $Archive -DestinationPath $temporary
     $binary = Get-ChildItem -Path $temporary -Filter "rackio.exe" -Recurse | Select-Object -First 1
     $uninstaller = Get-ChildItem -Path $temporary -Filter "uninstall.ps1" -Recurse | Select-Object -First 1
-    if ($null -eq $binary -or $null -eq $uninstaller) {
-        throw "release archive must contain rackio.exe and uninstall.ps1"
+    $mitLicense = Get-ChildItem -Path $temporary -Filter "LICENSE-MIT" -Recurse | Select-Object -First 1
+    $apacheLicense = Get-ChildItem -Path $temporary -Filter "LICENSE-APACHE" -Recurse | Select-Object -First 1
+    $thirdPartyNotices = Get-ChildItem -Path $temporary -Filter "THIRDPARTY.html" -Recurse | Select-Object -First 1
+    if (
+        $null -eq $binary -or
+        $null -eq $uninstaller -or
+        $null -eq $mitLicense -or
+        $null -eq $apacheLicense -or
+        $null -eq $thirdPartyNotices
+    ) {
+        throw "release archive must contain the binary, uninstaller, project licenses, and third-party notices"
     }
     $signature = Get-AuthenticodeSignature -LiteralPath $binary.FullName
     if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
@@ -61,6 +70,9 @@ try {
     }
     Copy-Item -Force -LiteralPath $binary.FullName -Destination (Join-Path $installDir "rackio.exe")
     Copy-Item -Force -LiteralPath $uninstaller.FullName -Destination (Join-Path $installDir "uninstall.ps1")
+    Copy-Item -Force -LiteralPath $mitLicense.FullName -Destination (Join-Path $installDir "LICENSE-MIT")
+    Copy-Item -Force -LiteralPath $apacheLicense.FullName -Destination (Join-Path $installDir "LICENSE-APACHE")
+    Copy-Item -Force -LiteralPath $thirdPartyNotices.FullName -Destination (Join-Path $installDir "THIRDPARTY.html")
 
     & icacls.exe $installDir /inheritance:r /grant:r `
         "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "${viewerGroup}:(OI)(CI)RX" | Out-Null

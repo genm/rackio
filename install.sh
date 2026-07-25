@@ -158,9 +158,15 @@ tar -xzf "$TEMP_DIR/$ASSET" -C "$TEMP_DIR/extracted"
 [ -f "$TEMP_DIR/extracted/rackio" ] || fail "release archive does not contain rackio"
 [ -f "$TEMP_DIR/extracted/rackio.service" ] || fail "release archive does not contain rackio.service"
 [ -f "$TEMP_DIR/extracted/uninstall.sh" ] || fail "release archive does not contain uninstall.sh"
+[ -f "$TEMP_DIR/extracted/LICENSE-MIT" ] || fail "release archive does not contain LICENSE-MIT"
+[ -f "$TEMP_DIR/extracted/LICENSE-APACHE" ] || fail "release archive does not contain LICENSE-APACHE"
+[ -f "$TEMP_DIR/extracted/THIRDPARTY.html" ] || fail "release archive does not contain third-party license notices"
 [ ! -L "$TEMP_DIR/extracted/rackio" ] || fail "release binary must not be a symbolic link"
 [ ! -L "$TEMP_DIR/extracted/rackio.service" ] || fail "release service must not be a symbolic link"
 [ ! -L "$TEMP_DIR/extracted/uninstall.sh" ] || fail "release uninstaller must not be a symbolic link"
+[ ! -L "$TEMP_DIR/extracted/LICENSE-MIT" ] || fail "LICENSE-MIT must not be a symbolic link"
+[ ! -L "$TEMP_DIR/extracted/LICENSE-APACHE" ] || fail "LICENSE-APACHE must not be a symbolic link"
+[ ! -L "$TEMP_DIR/extracted/THIRDPARTY.html" ] || fail "third-party license notices must not be a symbolic link"
 chmod 0755 "$TEMP_DIR/extracted/rackio" "$TEMP_DIR/extracted/uninstall.sh"
 "$TEMP_DIR/extracted/rackio" --version >/dev/null 2>&1 ||
   fail "downloaded Rackio binary cannot run on this machine"
@@ -181,6 +187,7 @@ run_root() {
 
 BIN_PATH="$(root_path /usr/local/bin/rackio)"
 LIB_DIR="$(root_path /usr/local/lib/rackio)"
+DOC_DIR="$(root_path /usr/local/share/doc/rackio)"
 UNIT_PATH="$(root_path /etc/systemd/system/rackio.service)"
 
 if [ "$SKIP_SERVICE" != "1" ]; then
@@ -191,10 +198,13 @@ if [ "$SKIP_SERVICE" != "1" ]; then
   command -v usermod >/dev/null 2>&1 || fail "usermod is required by this installer"
 fi
 
-run_root install -d -m 0755 "$(dirname "$BIN_PATH")" "$LIB_DIR" "$(dirname "$UNIT_PATH")"
+run_root install -d -m 0755 "$(dirname "$BIN_PATH")" "$LIB_DIR" "$DOC_DIR" "$(dirname "$UNIT_PATH")"
 run_root install -m 0755 "$TEMP_DIR/extracted/rackio" "$BIN_PATH"
 run_root install -m 0755 "$TEMP_DIR/extracted/uninstall.sh" "$LIB_DIR/uninstall.sh"
 run_root install -m 0644 "$TEMP_DIR/extracted/rackio.service" "$UNIT_PATH"
+run_root install -m 0644 "$TEMP_DIR/extracted/LICENSE-MIT" "$DOC_DIR/LICENSE-MIT"
+run_root install -m 0644 "$TEMP_DIR/extracted/LICENSE-APACHE" "$DOC_DIR/LICENSE-APACHE"
+run_root install -m 0644 "$TEMP_DIR/extracted/THIRDPARTY.html" "$DOC_DIR/THIRDPARTY.html"
 
 if [ "$SKIP_SERVICE" = "1" ]; then
   [ -n "$INSTALL_ROOT" ] || fail "RACKIO_SKIP_SERVICE is restricted to repository tests"

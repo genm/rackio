@@ -25,6 +25,7 @@ scripts="$staging/scripts"
 mkdir -p \
   "$payload/usr/local/bin" \
   "$payload/usr/local/lib/rackio" \
+  "$payload/usr/local/share/doc/rackio" \
   "$payload/Library/LaunchDaemons" \
   "$scripts" \
   "$output_dir"
@@ -38,6 +39,9 @@ codesign \
 codesign --verify --strict --verbose=2 "$payload/usr/local/bin/rackio"
 install -m 0755 "$repo_root/packaging/macos/uninstall.sh" \
   "$payload/usr/local/lib/rackio/uninstall.sh"
+install -m 0644 "$repo_root/LICENSE-MIT" "$payload/usr/local/share/doc/rackio/LICENSE-MIT"
+install -m 0644 "$repo_root/LICENSE-APACHE" "$payload/usr/local/share/doc/rackio/LICENSE-APACHE"
+install -m 0644 "$repo_root/THIRDPARTY.html" "$payload/usr/local/share/doc/rackio/THIRDPARTY.html"
 install -m 0644 "$repo_root/packaging/macos/dev.rackio.agent.plist" \
   "$payload/Library/LaunchDaemons/dev.rackio.agent.plist"
 install -m 0755 "$repo_root/packaging/macos/scripts/preinstall" "$scripts/preinstall"

@@ -17,6 +17,7 @@ fi
 launchctl bootout system/dev.rackio.agent >/dev/null 2>&1 || true
 rm -f /Library/LaunchDaemons/dev.rackio.agent.plist /usr/local/bin/rackio
 rm -rf /usr/local/lib/rackio
+rm -rf /usr/local/share/doc/rackio
 
 if [ "$purge" -eq 1 ]; then
   rm -rf \
