@@ -2,6 +2,10 @@
 
 **Your machines, one rack.**
 
+[![CI](https://github.com/genm/rackio/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/genm/rackio/actions/workflows/ci.yml?query=branch%3Amain)
+[![Security](https://github.com/genm/rackio/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/genm/rackio/actions/workflows/security.yml?query=branch%3Amain)
+[![License: Apache-2.0 OR MIT](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
+
 > [!WARNING]
 > Rackio is under active development and has no supported production release
 > yet. Source code and development builds are provided for evaluation only.
