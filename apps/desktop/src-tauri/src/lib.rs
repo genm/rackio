@@ -177,7 +177,7 @@ async fn machine_history(endpoint_id: String, hours: u16) -> Result<serde_json::
     let to_ms = chrono::Utc::now().timestamp_millis();
     let from_ms = to_ms.saturating_sub(i64::from(hours) * 60 * 60 * 1_000);
     let response = daemon_request(serde_json::json!({
-        "command": "query_remote_history",
+        "command": "query_history",
         "endpoint_id": endpoint_id,
         "from_ms": from_ms,
         "to_ms": to_ms,

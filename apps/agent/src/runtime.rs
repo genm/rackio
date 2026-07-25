@@ -10,8 +10,8 @@ use anyhow::{Context, anyhow};
 use chrono::Utc;
 use directories::ProjectDirs;
 use rackio_core::{
-    CapabilityState, HealthSnapshot, MetricCapability, MetricStore, NodeInfo, NodeState,
-    ProtocolVersion, SystemCollector,
+    CapabilityState, HealthSnapshot, HistoryResolution, MetricCapability, MetricStore, NodeInfo,
+    NodeState, ProtocolVersion, SystemCollector,
 };
 use rackio_iroh::{
     EndpointConfig, NodeRuntime, PairingManager, PairingMdnsState, PeerRegistry, RemoteServer,
@@ -78,7 +78,7 @@ pub enum LocalCommand {
     PairingImport {
         bundle: String,
     },
-    QueryRemoteHistory {
+    QueryHistory {
         endpoint_id: String,
         from_ms: i64,
         to_ms: i64,
@@ -472,12 +472,18 @@ async fn handle_local(
                 Err(error) => LocalResponse::failure(error),
             }
         }
-        LocalCommand::QueryRemoteHistory {
+        LocalCommand::QueryHistory {
             endpoint_id,
             from_ms,
             to_ms,
             resolution,
-        } => handle_remote_history(remote_fleet, &endpoint_id, from_ms, to_ms, resolution).await,
+        } => {
+            if endpoint_id == endpoint.id().to_string() {
+                handle_local_history(runtime, from_ms, to_ms, resolution).await
+            } else {
+                handle_remote_history(remote_fleet, &endpoint_id, from_ms, to_ms, resolution).await
+            }
+        }
         LocalCommand::PeerList => match runtime.peers.list() {
             Ok(peers) => LocalResponse::success(peers),
             Err(error) => LocalResponse::failure(error),
@@ -551,6 +557,26 @@ async fn handle_remote_history(
         .query_history(endpoint_id, from_ms, to_ms, resolution)
         .await
     {
+        Ok(samples) => LocalResponse::success(samples),
+        Err(error) => LocalResponse::failure(error),
+    }
+}
+
+async fn handle_local_history(
+    runtime: &Arc<NodeRuntime>,
+    from_ms: i64,
+    to_ms: i64,
+    resolution: RemoteHistoryResolution,
+) -> LocalResponse {
+    const MAX_HISTORY_RANGE_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
+    if from_ms > to_ms || to_ms.saturating_sub(from_ms) > MAX_HISTORY_RANGE_MS {
+        return LocalResponse::failure("history range is invalid or exceeds seven days");
+    }
+    let resolution = match resolution {
+        RemoteHistoryResolution::Raw => HistoryResolution::Raw,
+        RemoteHistoryResolution::Minute => HistoryResolution::Minute,
+    };
+    match runtime.store.lock().await.query(from_ms, to_ms, resolution) {
         Ok(samples) => LocalResponse::success(samples),
         Err(error) => LocalResponse::failure(error),
     }

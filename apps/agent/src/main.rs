@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
             print_response(
                 request_local(
                     &paths,
-                    LocalCommand::QueryRemoteHistory {
+                    LocalCommand::QueryHistory {
                         endpoint_id,
                         from_ms,
                         to_ms,

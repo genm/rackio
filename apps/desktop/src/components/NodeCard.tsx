@@ -57,7 +57,7 @@ export function NodeCard({
         disabled={node.endpointId === undefined}
         title={
           node.endpointId === undefined
-            ? "Local history is owned by the local agent and is not yet shown here"
+            ? "History is unavailable until this machine has an endpoint identity"
             : "Query this machine for its 24-hour history"
         }
         onClick={() => onViewHistory?.(node)}

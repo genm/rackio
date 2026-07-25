@@ -101,10 +101,10 @@ If a write fails, live sampling continues in memory and health becomes
 `storage_degraded`. Missing or unsupported metrics remain absent rather than
 being reported as zero.
 
-The viewer stores peer connection information, not remote history. Its current
-remote snapshot and short CPU sparkline are memory-resident. Persisting one
-last-known remote snapshot across a viewer restart is allowed by the product
-contract but is not implemented yet.
+The viewer stores peer connection information, not remote history. It persists
+one last-known remote snapshot for truthful offline display across a viewer
+restart. Detailed local and remote history is queried from the machine that
+owns it and is not permanently replicated by the viewer.
 
 ## Version policy
 

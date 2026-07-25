@@ -131,6 +131,9 @@ fleet="$(wait_for_remote_sample)"
 endpoint_id="$(jq -r '.data.remotes[0].endpoint_id' <<<"$fleet")"
 history="$(wait_for_remote_history "$endpoint_id")"
 [[ "$(jq -r '.data[0].timestamp_ms != null' <<<"$history")" == "true" ]]
+server_endpoint_id="$(server status | jq -r '.data.endpoint_id')"
+local_history="$(server history "$server_endpoint_id" --hours 24)"
+[[ "$(jq -r '.data | length > 0' <<<"$local_history")" == "true" ]]
 
 if viewer pairing import "$bundle" >/dev/null 2>&1; then
   echo "the same pairing bundle was accepted twice" >&2
@@ -138,6 +141,12 @@ if viewer pairing import "$bundle" >/dev/null 2>&1; then
 fi
 if rg -q 'one_time_secret' "$integration_root/viewer/data/monitored-machines.json"; then
   echo "the viewer persisted a one-time pairing secret" >&2
+  exit 1
+fi
+if rg -q 'rackio-pair:|one_time_secret|"cpu_percent"' \
+  "$integration_root/viewer.log" "$integration_root/server.log" \
+  "$integration_root/viewer/log" "$integration_root/server/log"; then
+  echo "daemon logs exposed a pairing bundle, secret, or metric payload" >&2
   exit 1
 fi
 
@@ -162,6 +171,8 @@ printf '%s\n' "$(jq -n \
     pairing: true,
     remote_metric: true,
     remote_history: true,
+    local_history: true,
+    sensitive_logs_absent: true,
     reused_bundle_rejected: true,
     last_snapshot_restored_offline: true,
     viewer_restart_reconnected: true,
