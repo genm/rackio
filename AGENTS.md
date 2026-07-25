@@ -73,6 +73,13 @@ tests, component tests, and the production frontend build.
 - Do not introduce `.env` files. Use explicit OS configuration or the selected
   managed secret system for secrets.
 
+## OSS governance
+
+For GitHub Issues, labels, Milestones, Projects, contribution triage, release
+evidence, or public-repository setup, read and follow the project-local
+`.agents/skills/rackio-oss-governance/SKILL.md`. Keep external GitHub state,
+release-gate state, and repository-local preparation distinct.
+
 ## Protocol and security changes
 
 - Preserve the 1 MiB frame allocation boundary and bounded history paging.
