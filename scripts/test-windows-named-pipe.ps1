@@ -20,6 +20,7 @@ $env:RACKIO_PIPE = "\\.\pipe\rackio-test-$([Guid]::NewGuid())"
 
 $binary = Join-Path $PSScriptRoot "..\target\debug\rackio.exe"
 $daemon = $null
+$completed = $false
 try {
     cargo build -p rackio-agent
     $daemon = Start-Process -FilePath $binary -ArgumentList "daemon" -PassThru -NoNewWindow
@@ -41,10 +42,17 @@ try {
         acl_group = "Rackio Viewers"
         caller_token_verified = $true
     } | ConvertTo-Json -Compress
+    $completed = $true
 } finally {
     if ($null -ne $daemon -and -not $daemon.HasExited) {
         Stop-Process -Id $daemon.Id -Force
         $daemon.WaitForExit()
+    }
+    if (-not $completed -and (Test-Path -LiteralPath $env:RACKIO_LOG_DIR)) {
+        $diagnostics = Join-Path $PSScriptRoot "..\test-results\windows-named-pipe"
+        New-Item -ItemType Directory -Path $diagnostics -Force | Out-Null
+        Get-ChildItem -LiteralPath $env:RACKIO_LOG_DIR -File |
+            Copy-Item -Destination $diagnostics -Force
     }
     Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
     if ($groupCreated) {
