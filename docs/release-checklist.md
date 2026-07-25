@@ -83,8 +83,8 @@ duration, packet loss and relay byte count.
 - [ ] dependency, license, SBOM and vulnerability reports are clean
   - [x] Rust dependency notices are generated from the `deny.toml` policy,
         checked against `Cargo.lock`, and included in service artifacts
-  - [ ] include JavaScript dependency notices before distributing a desktop
-        bundle containing frontend dependencies
+  - [x] JavaScript notices are generated from the locked production graph and
+        bundled with the desktop application
 - [ ] independent security review completed
 
 `cargo deny` contains one scoped exception for `RUSTSEC-2024-0429`. It is an

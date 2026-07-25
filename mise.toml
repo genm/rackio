@@ -74,6 +74,8 @@ description = "Verify bundled Rust third-party license notices match the locked 
 run = [
   "scripts/generate-third-party-licenses.sh /tmp/rackio-THIRDPARTY.html",
   "cmp THIRDPARTY.html /tmp/rackio-THIRDPARTY.html",
+  "node scripts/generate-javascript-licenses.mjs /tmp/rackio-THIRDPARTY-JAVASCRIPT.html",
+  "cmp THIRDPARTY-JAVASCRIPT.html /tmp/rackio-THIRDPARTY-JAVASCRIPT.html",
 ]
 
 [tasks."secrets:history"]

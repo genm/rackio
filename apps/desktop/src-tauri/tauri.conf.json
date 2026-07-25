@@ -28,6 +28,12 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": "all",
+    "resources": [
+      "../../../LICENSE-APACHE",
+      "../../../LICENSE-MIT",
+      "../../../THIRDPARTY-JAVASCRIPT.html",
+      "../../../THIRDPARTY.html"
+    ]
   }
 }

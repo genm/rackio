@@ -68,6 +68,10 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Verify bundled JavaScript license notices
+        run: |
+          node scripts/generate-javascript-licenses.mjs /tmp/rackio-THIRDPARTY-JAVASCRIPT.html
+          cmp THIRDPARTY-JAVASCRIPT.html /tmp/rackio-THIRDPARTY-JAVASCRIPT.html
       - name: Audit JavaScript dependencies
         run: pnpm audit --audit-level=high
       - name: Scan source and lockfiles
