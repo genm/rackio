@@ -35,6 +35,9 @@ pub fn load_or_create_secret_key(path: &Path) -> Result<SecretKey, IdentityError
 fn create_secret_key(path: &Path) -> Result<SecretKey, IdentityError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        // Windows does not provide the Unix mode bit contract we enforce here.
+        // Keep the permission change inside the platform that can guarantee it.
+        #[cfg(unix)]
         set_owner_only_dir(parent)?;
     }
 
@@ -63,11 +66,6 @@ fn create_secret_key(path: &Path) -> Result<SecretKey, IdentityError> {
 fn set_owner_only_dir(path: &Path) -> Result<(), io::Error> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(not(unix))]
-fn set_owner_only_dir(_path: &Path) -> Result<(), io::Error> {
-    Ok(())
 }
 
 #[cfg(test)]
