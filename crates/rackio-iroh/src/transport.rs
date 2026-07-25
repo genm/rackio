@@ -1,7 +1,7 @@
 use std::{net::IpAddr, time::Duration};
 
 use iroh::{
-    Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey, TransportAddr,
+    Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr,
     endpoint::{Connection, PortmapperConfig, presets},
 };
 use rackio_core::ConnectionPath;
@@ -47,8 +47,15 @@ pub async fn bind_endpoint(
     secret_key: SecretKey,
     config: &EndpointConfig,
 ) -> Result<Endpoint, TransportError> {
-    let relay_mode = if config.relay_urls.is_empty() {
-        RelayMode::Disabled
+    // Minimal installs only a crypto provider. In particular, it does not add
+    // iroh's vendor DNS discovery or public relay map.
+    let builder = Endpoint::builder(presets::Minimal)
+        .secret_key(secret_key)
+        .alpns(vec![rackio_protocol::ALPN.to_vec()])
+        .portmapper_config(PortmapperConfig::Disabled);
+    let builder = if config.relay_urls.is_empty() {
+        // Avoid constructing any relay mode in direct-only runtime.
+        builder.clear_relay_transports()
     } else {
         let urls = config
             .relay_urls
@@ -59,18 +66,9 @@ pub async fn bind_endpoint(
                     .map_err(|_| TransportError::InvalidRelayUrl(value.clone()))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        RelayMode::custom(urls)
+        builder.relay_mode(RelayMode::Custom(RelayMap::from_iter(urls)))
     };
-
-    // Minimal installs only a crypto provider. In particular, it does not add
-    // iroh's vendor DNS discovery or public relay map.
-    Ok(Endpoint::builder(presets::Minimal)
-        .secret_key(secret_key)
-        .alpns(vec![rackio_protocol::ALPN.to_vec()])
-        .relay_mode(relay_mode)
-        .portmapper_config(PortmapperConfig::Disabled)
-        .bind()
-        .await?)
+    Ok(builder.bind().await?)
 }
 
 #[must_use]

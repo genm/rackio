@@ -331,6 +331,25 @@ mod tests {
     }
 
     #[test]
+    fn expired_window_fails_closed_and_is_consumed() {
+        let key = SecretKey::generate();
+        let mut manager = PairingManager::default();
+        let bundle = manager.open(Uuid::new_v4(), key.public(), Vec::new(), Vec::new());
+        if let Some(window) = manager.active.as_mut() {
+            window.expires_at_ms = 0;
+        }
+
+        assert!(matches!(
+            manager.verify_and_consume(&bundle.one_time_secret),
+            Err(PairingError::Expired)
+        ));
+        assert!(matches!(
+            manager.verify_and_consume(&bundle.one_time_secret),
+            Err(PairingError::WindowClosed)
+        ));
+    }
+
+    #[test]
     fn registry_persists_authorization_and_revoke() {
         let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let path = directory.path().join("peers.json");

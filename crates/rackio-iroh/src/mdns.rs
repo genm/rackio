@@ -1,5 +1,7 @@
+use std::{collections::BTreeMap, net::IpAddr};
+
 use iroh::Endpoint;
-use iroh_mdns_address_lookup::MdnsAddressLookup;
+use swarm_discovery::{Discoverer, DropGuard};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -7,45 +9,52 @@ const PAIRING_SERVICE_NAME: &str = "rackio-pairing-v1";
 
 #[derive(Debug, Error)]
 pub enum PairingMdnsError {
-    #[error("endpoint address lookup is unavailable: {0}")]
-    Endpoint(String),
+    #[error("the endpoint has no direct address to advertise")]
+    NoDirectAddress,
     #[error("mDNS advertisement could not start: {0}")]
     Start(String),
 }
 
 /// A short-lived LAN advertisement. The one-time pairing secret is never
 /// included: mDNS only publishes the endpoint ID and reachable addresses.
-#[derive(Debug)]
 pub struct PairingMdnsAdvertisement {
-    endpoint: Endpoint,
+    _guard: DropGuard,
+}
+
+impl std::fmt::Debug for PairingMdnsAdvertisement {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PairingMdnsAdvertisement")
+            .finish_non_exhaustive()
+    }
 }
 
 impl PairingMdnsAdvertisement {
     pub fn start(endpoint: &Endpoint) -> Result<Self, PairingMdnsError> {
-        let services = endpoint
-            .address_lookup()
-            .map_err(|error| PairingMdnsError::Endpoint(error.to_string()))?;
-        let mdns = MdnsAddressLookup::builder()
-            .service_name(PAIRING_SERVICE_NAME)
-            .build(endpoint.id())
-            .map_err(|error| PairingMdnsError::Start(error.to_string()))?;
-
-        // Rackio's Minimal endpoint installs no other lookup services. Clearing
-        // here makes reopening a pairing window replace, rather than stack,
-        // the previous short-lived advertisement.
-        services.clear();
-        services.add(mdns);
-        Ok(Self {
-            endpoint: endpoint.clone(),
-        })
-    }
-}
-
-impl Drop for PairingMdnsAdvertisement {
-    fn drop(&mut self) {
-        if let Ok(services) = self.endpoint.address_lookup() {
-            services.clear();
+        let mut addresses_by_port = BTreeMap::<u16, Vec<IpAddr>>::new();
+        for address in endpoint.addr().ip_addrs() {
+            addresses_by_port
+                .entry(address.port())
+                .or_default()
+                .push(address.ip());
         }
+        if addresses_by_port.is_empty() {
+            return Err(PairingMdnsError::NoDirectAddress);
+        }
+
+        // Use swarm-discovery directly so the LAN-only pairing feature cannot
+        // re-enable iroh's vendor relay defaults through a transitive feature.
+        let mut discoverer = Discoverer::new_interactive(
+            String::from(PAIRING_SERVICE_NAME),
+            endpoint.id().to_string(),
+        );
+        for (port, addresses) in addresses_by_port {
+            discoverer = discoverer.with_addrs(port, addresses);
+        }
+        let guard = discoverer
+            .spawn(&tokio::runtime::Handle::current())
+            .map_err(|error| PairingMdnsError::Start(error.to_string()))?;
+        Ok(Self { _guard: guard })
     }
 }
 
