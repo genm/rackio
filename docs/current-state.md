@@ -6,6 +6,8 @@ live in [`architecture.md`](architecture.md) and
 [`release-checklist.md`](release-checklist.md). Implemented code listed here
 does not make a release-checklist item complete without its required
 cross-platform, network or supply-chain evidence.
+Issue-sized remaining work and execution order live in
+[`backlog.md`](backlog.md).
 
 ## Working vertical slice
 
@@ -95,10 +97,9 @@ rootless installer test.
 
 ## Next coherent milestones
 
-1. Finish a publishable Linux headless supply chain: reproducible artifacts,
-   signature/provenance, SBOM, immutable hosting and reboot evidence.
-2. Run same-LAN, NAT, relay-outage and path-migration matrices.
-3. Finish macOS and Windows service/IPC packaging.
+Follow the dependency order in [`backlog.md`](backlog.md), beginning with the
+public repository, Linux desktop security blocker, and signed service-release
+evidence.
 
 Do not move remote transport into Tauri to accelerate UI work. Keeping it in the
 daemon is what preserves collection and monitoring after tray exit or logout.

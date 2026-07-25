@@ -7,6 +7,9 @@ Implementation progress without complete release evidence is summarized in
 [`current-state.md`](current-state.md). Keep a top-level box unchecked when only
 a local, same-host or single-platform check exists.
 
+Execution order, issue-sized scope, and required evidence for unchecked gates
+are maintained in [`backlog.md`](backlog.md).
+
 ## Public repository identity
 
 - [x] accept `Rackio` as the public name after reviewing the inactive,

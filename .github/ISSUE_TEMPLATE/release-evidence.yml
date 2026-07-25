@@ -1,0 +1,73 @@
+name: Release evidence
+description: Track one issue-sized item from docs/backlog.md and attach reviewable release evidence.
+title: "[REL-XX] "
+labels:
+  - release
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use one issue per backlog ID. `docs/release-checklist.md` remains the release-status source of truth; update it only after the attached evidence has been reviewed.
+  - type: dropdown
+    id: backlog_id
+    attributes:
+      label: Backlog item
+      description: Select the matching item from docs/backlog.md.
+      options:
+        - REL-01 Public GitHub repository
+        - REL-02 Linux Tauri/GTK security blocker
+        - REL-03 Linux service release
+        - REL-04 macOS service release
+        - REL-05 Windows service release
+        - REL-06 Direct, NAT, and relay matrix
+        - REL-07 Privacy and relay payload opacity
+        - REL-08 Mixed-OS product and resource acceptance
+        - REL-09 Independent security review and release decision
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Record OS, architecture, network topology, tool versions, and artifact commit/checksum as applicable.
+      placeholder: |
+        Commit:
+        Artifact checksum:
+        OS and architecture:
+        Network topology:
+        Tool versions:
+    validations:
+      required: true
+  - type: textarea
+    id: execution
+    attributes:
+      label: Execution and results
+      description: List exact commands or procedures and their observed results, including a realistic failure or degraded path.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Link machine-readable reports, CI runs, packet captures, screenshots, signatures, or review documents.
+      placeholder: |
+        - CI/report:
+        - Logs or packet capture:
+        - Screenshots:
+        - Signature/provenance:
+    validations:
+      required: true
+  - type: textarea
+    id: checklist
+    attributes:
+      label: Release-checklist gates
+      description: Quote the exact unchecked gates this issue is intended to satisfy.
+    validations:
+      required: true
+  - type: textarea
+    id: blockers
+    attributes:
+      label: Blockers and residual risk
+      description: Record missing authority, credentials, hardware, upstream fixes, or unresolved risk. Use "None" only when verified.
+    validations:
+      required: true

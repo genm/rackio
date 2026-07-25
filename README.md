@@ -19,7 +19,8 @@ documents the remaining cross-OS and NAT matrix work.
 For a handoff-oriented view of completed and partial behavior, read
 [`docs/current-state.md`](docs/current-state.md). An implementation listed
 there is not release-complete until [`docs/release-checklist.md`](docs/release-checklist.md)
-has the required evidence.
+has the required evidence. Remaining work is organized into issue-sized,
+dependency-ordered items in [`docs/backlog.md`](docs/backlog.md).
 
 ## What works
 
