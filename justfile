@@ -22,10 +22,14 @@ dependencies:
     mise exec -- cargo deny check
     mise exec -- cargo machete
     mise run licenses:check
+    mise run secrets:history
 
 release-check:
     mise exec -- cargo build --release -p rackio-agent
     mise exec -- scripts/check-release-binary-cloud-independence.sh
+
+benchmark-agent:
+    mise run benchmark:agent
 
 test-installer:
     packaging/linux/install.test.sh

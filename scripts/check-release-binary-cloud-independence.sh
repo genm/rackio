@@ -2,9 +2,26 @@
 set -eu
 
 binary_path="${1:-target/release/rackio}"
+report_path="${RACKIO_RELEASE_REPORT:-test-results/release-binary-cloud-independence.json}"
+diagnostic_path="${report_path%.json}.stderr"
+mkdir -p "$(dirname "$report_path")"
+rm -f "$diagnostic_path"
+
+report() {
+  status="$1"
+  reason="${2:-}"
+  if [ -n "$reason" ]; then
+    printf '{"check":"release_binary_cloud_independence","status":"%s","reason":"%s","path":"%s"}\n' \
+      "$status" "$reason" "$binary_path" >"$report_path"
+  else
+    printf '{"check":"release_binary_cloud_independence","status":"%s","path":"%s"}\n' \
+      "$status" "$binary_path" >"$report_path"
+  fi
+}
 
 if [ ! -f "$binary_path" ]; then
-  printf '{"check":"release_binary_cloud_independence","status":"error","reason":"binary_not_found","path":"%s"}\n' "$binary_path" >&2
+  report error binary_not_found
+  cat "$report_path" >&2
   exit 2
 fi
 
@@ -16,9 +33,14 @@ matches="$(
 )"
 
 if [ -n "$matches" ]; then
-  printf '{"check":"release_binary_cloud_independence","status":"failed","reason":"vendor_network_hostname_present","path":"%s"}\n' "$binary_path" >&2
-  printf '%s\n' "$matches" >&2
+  report failed vendor_network_hostname_present
+  {
+    cat "$report_path"
+    printf '%s\n' "$matches"
+  } >"$diagnostic_path"
+  cat "$diagnostic_path" >&2
   exit 1
 fi
 
-printf '{"check":"release_binary_cloud_independence","status":"passed","path":"%s"}\n' "$binary_path"
+report passed
+cat "$report_path"

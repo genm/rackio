@@ -4,6 +4,7 @@ pnpm = "10.33.0"
 rust = "1.92.0"
 just = "1.57.0"
 "aqua:evilmartians/lefthook" = "2.1.10"
+"aqua:gitleaks/gitleaks" = "8.30.1"
 "cargo:cargo-deny" = "0.20.2"
 "cargo:cargo-about" = { version = "0.9.1", features = "cli" }
 "cargo:cargo-llvm-cov" = "0.8.7"
@@ -61,9 +62,23 @@ run = "packaging/linux/install.test.sh"
 description = "Verify two-daemon pairing, live metrics, reuse rejection, and reconnect"
 run = "scripts/test-two-daemon-pairing.sh"
 
+[tasks."benchmark:agent"]
+description = "Enforce the release agent CPU and RSS budgets"
+run = [
+  "cargo build --release -p rackio-agent",
+  "scripts/benchmark-agent-resources.sh",
+]
+
 [tasks."licenses:check"]
 description = "Verify bundled Rust third-party license notices match the locked dependency graph"
 run = [
   "scripts/generate-third-party-licenses.sh /tmp/rackio-THIRDPARTY.html",
   "cmp THIRDPARTY.html /tmp/rackio-THIRDPARTY.html",
+]
+
+[tasks."secrets:history"]
+description = "Scan the complete Git history for committed secrets"
+run = [
+  "mkdir -p test-results",
+  "gitleaks git . --redact=100 --report-format json --report-path test-results/gitleaks.json --exit-code 1 --no-banner",
 ]
