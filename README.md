@@ -97,26 +97,17 @@ cargo run -p rackio-agent -- relay set https://relay.example.test
 Restart the daemon after changing relay configuration. `example.test` is only a
 reserved example; replace it with the TLS hostname of your own relay.
 
-## Linux server installation
+## Installation and operations
 
-The intended headless-server experience, after signed release publication is
-unblocked, is:
+The end-to-end operator workflow—source evaluation, intended Linux server
+installation, pairing, SSH-assisted air-gapped bootstrap, relay configuration,
+state interpretation and decommissioning—is in
+[`docs/operations.md`](docs/operations.md). It also makes the current
+no-public-release status and the distinction between checksum verification and
+independent release provenance explicit.
 
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://rackio.genm.dev/install.sh | sh
-```
-
-The repository already contains the installer and its release packager. The
-installer detects `x86_64` or `aarch64`, downloads a versioned GNU/Linux archive,
-verifies its SHA-256 digest before executing it, installs the hardened systemd
-unit, starts the daemon, and requires a successful local health check.
-
-`rackio.genm.dev` is the stable distribution URL, not an active service implied
-by this source tree. Public artifacts remain intentionally blocked until the
-remaining signed cross-platform and NAT evidence in the release checklist
-exists. See
-[`packaging/README.md`](packaging/README.md) for the artifact contract and
-rootless installer test.
+The release archive contract and package-specific build details remain in
+[`packaging/README.md`](packaging/README.md).
 
 ## Workspace
 
