@@ -2,9 +2,16 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 
 import { Dashboard } from "./components/Dashboard";
-import { sshBootstrapStateRegistry, surfaceStateRegistry } from "./state-registry";
+import {
+  machineDetailStateRegistry,
+  sshBootstrapStateRegistry,
+  surfaceStateRegistry,
+} from "./state-registry";
 import type {
+  FleetNode,
   FleetSnapshot,
+  HistoryPoint,
+  MachineDetailState,
   PairingStatus,
   SshBootstrapInput,
   SshBootstrapStatus,
@@ -18,6 +25,9 @@ export default function App() {
   const [pairing, setPairing] = useState<PairingStatus>({ state: "idle" });
   const [sshBootstrap, setSshBootstrap] = useState<SshBootstrapStatus>(
     sshBootstrapStateRegistry.editing,
+  );
+  const [machineDetail, setMachineDetail] = useState<MachineDetailState>(
+    machineDetailStateRegistry.closed,
   );
 
   const pairMachine = async (bundle: string) => {
@@ -88,6 +98,24 @@ export default function App() {
     }
   };
 
+  const viewHistory = async (node: FleetNode) => {
+    if (node.endpointId === undefined) return;
+    setMachineDetail({ state: "loading", node });
+    try {
+      const points = await invoke<HistoryPoint[]>("machine_history", {
+        endpointId: node.endpointId,
+        hours: 24,
+      });
+      setMachineDetail({ state: "ready", node, points });
+    } catch (error: unknown) {
+      setMachineDetail({
+        state: "error",
+        node,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -119,9 +147,12 @@ export default function App() {
       snapshot={snapshot}
       pairing={pairing}
       sshBootstrap={sshBootstrap}
+      machineDetail={machineDetail}
       onPair={pairMachine}
       onInspectSshHost={inspectSshHost}
       onInstallViaSsh={installViaSsh}
+      onViewHistory={viewHistory}
+      onCloseHistory={() => setMachineDetail(machineDetailStateRegistry.closed)}
     />
   );
 }

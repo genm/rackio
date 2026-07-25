@@ -93,6 +93,49 @@ async fn pair_machine(bundle: String) -> Result<serde_json::Value, String> {
         .ok_or_else(|| String::from("daemon pairing response did not contain data"))
 }
 
+#[tauri::command]
+async fn machine_history(endpoint_id: String, hours: u16) -> Result<serde_json::Value, String> {
+    if endpoint_id.is_empty() || !(1..=168).contains(&hours) {
+        return Err(String::from(
+            "History requires a paired endpoint and a range between 1 and 168 hours.",
+        ));
+    }
+    let to_ms = chrono::Utc::now().timestamp_millis();
+    let from_ms = to_ms.saturating_sub(i64::from(hours) * 60 * 60 * 1_000);
+    let response = daemon_request(serde_json::json!({
+        "command": "query_remote_history",
+        "endpoint_id": endpoint_id,
+        "from_ms": from_ms,
+        "to_ms": to_ms,
+        "resolution": "minute",
+    }))
+    .await
+    .map_err(|error| error.to_string())?;
+    let samples = response
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| String::from("daemon history response did not contain samples"))?;
+    Ok(serde_json::Value::Array(
+        samples
+            .iter()
+            .map(|sample| {
+                serde_json::json!({
+                    "timestampMs": sample.get("timestamp_ms"),
+                    "cpuPercent": sample.get("cpu_percent"),
+                    "memoryUsedBytes": sample.get("memory_used_bytes"),
+                    "memoryTotalBytes": sample.get("memory_total_bytes"),
+                    "networkReceivedBytesPerSecond": sample
+                        .get("network")
+                        .and_then(|network| network.get("received_bytes_per_second")),
+                    "networkSentBytesPerSecond": sample
+                        .get("network")
+                        .and_then(|network| network.get("sent_bytes_per_second")),
+                })
+            })
+            .collect(),
+    ))
+}
+
 fn machine_json(
     source: &serde_json::Value,
     node_state: &str,
@@ -139,6 +182,7 @@ fn machine_json(
         .and_then(serde_json::Value::as_f64);
     Ok(serde_json::json!({
         "id": node_id,
+        "endpointId": source.get("endpoint_id"),
         "name": node_name,
         "os": format!(
             "{} · {}",
@@ -267,6 +311,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             fleet_snapshot,
             pair_machine,
+            machine_history,
             ssh_bootstrap::ssh_inspect_host,
             ssh_bootstrap::ssh_bootstrap
         ])

@@ -104,6 +104,20 @@ wait_for_remote_sample() {
   return 1
 }
 
+wait_for_remote_history() {
+  endpoint_id="$1"
+  for _ in {1..60}; do
+    history="$(viewer history "$endpoint_id" --hours 24 2>/dev/null || true)"
+    if [[ -n "$history" ]] && [[ "$(jq -r '.data | length > 0' <<<"$history")" == "true" ]]; then
+      printf '%s' "$history"
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "remote history did not become queryable within fifteen seconds" >&2
+  return 1
+}
+
 start_viewer
 start_server
 wait_for_command "viewer daemon" viewer status
@@ -114,6 +128,9 @@ imported="$(viewer pairing import "$bundle")"
 [[ "$(jq -r '.ok' <<<"$imported")" == "true" ]]
 fleet="$(wait_for_remote_sample)"
 [[ "$(jq -r '.data.remotes[0].path' <<<"$fleet")" == "lan_direct" ]]
+endpoint_id="$(jq -r '.data.remotes[0].endpoint_id' <<<"$fleet")"
+history="$(wait_for_remote_history "$endpoint_id")"
+[[ "$(jq -r '.data[0].timestamp_ms != null' <<<"$history")" == "true" ]]
 
 if viewer pairing import "$bundle" >/dev/null 2>&1; then
   echo "the same pairing bundle was accepted twice" >&2
@@ -127,8 +144,16 @@ fi
 kill "$viewer_pid"
 wait "$viewer_pid" 2>/dev/null || true
 viewer_pid=""
+kill "$server_pid"
+wait "$server_pid" 2>/dev/null || true
+server_pid=""
 start_viewer
 wait_for_command "restarted viewer daemon" viewer status
+restored_fleet="$(viewer fleet)"
+[[ "$(jq -r '.data.remotes[0].latest.cpu_percent != null' <<<"$restored_fleet")" == "true" ]]
+[[ "$(jq -r '.data.remotes[0].last_seen_ms != null' <<<"$restored_fleet")" == "true" ]]
+start_server
+wait_for_command "restarted monitored daemon" server status
 restarted_fleet="$(wait_for_remote_sample)"
 
 printf '%s\n' "$(jq -n \
@@ -136,7 +161,9 @@ printf '%s\n' "$(jq -n \
   '{
     pairing: true,
     remote_metric: true,
+    remote_history: true,
     reused_bundle_rejected: true,
+    last_snapshot_restored_offline: true,
     viewer_restart_reconnected: true,
     path: $path
   }')"

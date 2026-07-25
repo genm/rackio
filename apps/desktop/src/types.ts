@@ -12,6 +12,7 @@ export type ConnectionPath = "lan_direct" | "wan_direct" | "relayed" | "unknown"
 
 export interface FleetNode {
   id: string;
+  endpointId?: string;
   name: string;
   os: string;
   state: NodeState;
@@ -26,6 +27,21 @@ export interface FleetNode {
   history: number[];
   detail?: string;
 }
+
+export interface HistoryPoint {
+  timestampMs: number;
+  cpuPercent?: number;
+  memoryUsedBytes?: number;
+  memoryTotalBytes?: number;
+  networkReceivedBytesPerSecond?: number;
+  networkSentBytesPerSecond?: number;
+}
+
+export type MachineDetailState =
+  | { state: "closed" }
+  | { state: "loading"; node: FleetNode }
+  | { state: "ready"; node: FleetNode; points: HistoryPoint[] }
+  | { state: "error"; node: FleetNode; message: string };
 
 export interface FleetSnapshot {
   daemon: "connected" | "unavailable";

@@ -1,30 +1,44 @@
 import { useState } from "react";
 
-import { nodeStateRegistry, sshBootstrapStateRegistry, worstState } from "../state-registry";
+import {
+  machineDetailStateRegistry,
+  nodeStateRegistry,
+  sshBootstrapStateRegistry,
+  worstState,
+} from "../state-registry";
 import type {
   FleetSnapshot,
+  FleetNode,
+  MachineDetailState,
   PairingStatus,
   SshBootstrapInput,
   SshBootstrapStatus,
   SshTarget,
 } from "../types";
 import { NodeCard } from "./NodeCard";
+import { MachineDetail } from "./MachineDetail";
 import { SshBootstrapForm } from "./SshBootstrapForm";
 
 export function Dashboard({
   snapshot,
   pairing = { state: "idle" },
   sshBootstrap = sshBootstrapStateRegistry.editing,
+  machineDetail = machineDetailStateRegistry.closed,
   onPair = async () => undefined,
   onInspectSshHost = async () => undefined,
   onInstallViaSsh = async () => undefined,
+  onViewHistory = async () => undefined,
+  onCloseHistory = () => undefined,
 }: {
   snapshot: FleetSnapshot;
   pairing?: PairingStatus;
   sshBootstrap?: SshBootstrapStatus;
+  machineDetail?: MachineDetailState;
   onPair?: (bundle: string) => Promise<void>;
   onInspectSshHost?: (target: SshTarget) => Promise<void>;
   onInstallViaSsh?: (input: SshBootstrapInput) => Promise<void>;
+  onViewHistory?: (node: FleetNode) => Promise<void>;
+  onCloseHistory?: () => void;
 }) {
   const [pairingOpen, setPairingOpen] = useState(false);
   const [pairingMethod, setPairingMethod] = useState<"bundle" | "ssh">("bundle");
@@ -145,6 +159,7 @@ export function Dashboard({
           </section>
         </div>
       ) : null}
+      <MachineDetail detail={machineDetail} onClose={onCloseHistory} />
       <section className="summary" aria-label="Rack summary">
         <div>
           <strong>{snapshot.nodes.length}</strong>
@@ -176,7 +191,7 @@ export function Dashboard({
       ) : (
         <section className="node-grid" aria-label="Monitored machines">
           {snapshot.nodes.map((node) => (
-            <NodeCard key={node.id} node={node} />
+            <NodeCard key={node.id} node={node} onViewHistory={onViewHistory} />
           ))}
         </section>
       )}

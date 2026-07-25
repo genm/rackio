@@ -35,11 +35,11 @@ NAT and mixed-OS release matrices.
 | Surface | Implemented now | Missing or incomplete |
 | --- | --- | --- |
 | Collector | CPU, memory, swap, disk, network rate, uptime, OS and architecture | GPU, temperature, processes, containers and logs are not implemented |
-| Local history | 2-second samples, SQLite WAL batches, raw/minute retention and 64 MiB pruning | Remote history is not connected to the desktop |
+| Local history | 2-second samples, SQLite WAL batches, raw/minute retention and 64 MiB pruning | Cross-machine long-term aggregation is intentionally absent |
 | Remote server | Endpoint authentication, allowlist authorization, node info, live metrics, health, path and bounded history protocol | Active connections are not immediately closed on revoke |
 | Pairing | Five-minute, attempt-limited, single-use secret and copy/paste import | QR, file import/export and pairing-window mDNS |
-| Viewer daemon | Secret-free remote inventory, reconnect loop, live cache, CPU sparkline buffer and stale/offline derivation | Last remote metric snapshot is not persisted across viewer restarts |
-| Desktop | Local/remote cards, bundle pairing, SSH bootstrap with host-key confirmation, and explicit direct/relayed/degraded/auth states | Detail/history view, notifications, dynamic tray health icon and Linux window fallback |
+| Viewer daemon | Secret-free remote inventory, reconnect loop, persisted last-known snapshot, bounded remote history query and stale/offline derivation | Periodic health/path refresh and path-migration events |
+| Desktop | Local/remote cards, 24-hour remote history detail, bundle pairing, SSH bootstrap with host-key confirmation, and explicit direct/relayed/degraded/auth states | Notifications, dynamic tray health icon and Linux window fallback |
 | Linux packaging | Release archive builder, HTTPS or client-pushed archive install, checksum verification, hardened systemd unit and preserving/purge uninstaller | No signed public release; reboot and distribution coverage are not proven |
 | macOS | LaunchDaemon template | Signed/notarized package, ownership rollback and installer receipts |
 | Windows | Collector and remote endpoint code participate in workspace checks | Named-pipe IPC ACL, Windows Service and installer |
@@ -71,8 +71,8 @@ monitoring requires a second explicit pairing.
 - Authorization rejection is `auth_error`; protocol-major rejection is
   `incompatible`.
 - Last known in-memory values remain visible instead of being replaced by zero.
-- A viewer-daemon restart retains remote identity and connection information,
-  but not its last metric values.
+- A viewer-daemon restart retains remote identity, connection information and
+  the last-known metric snapshot without permanently replicating remote history.
 
 Remote health and connection path are read when a monitoring session is
 established. Periodic in-session refresh and structured path-migration events
@@ -97,10 +97,9 @@ rootless installer test.
 
 1. Finish a publishable Linux headless supply chain: reproducible artifacts,
    signature/provenance, SBOM, immutable hosting and reboot evidence.
-2. Connect bounded remote history to a daemon-owned detail API and desktop view.
-3. Persist one last-known remote snapshot without replicating remote history.
-4. Run same-LAN, NAT, relay-outage and path-migration matrices.
-5. Finish macOS and Windows service/IPC packaging.
+2. Add periodic health/path refresh, path-migration events and tray state.
+3. Run same-LAN, NAT, relay-outage and path-migration matrices.
+4. Finish macOS and Windows service/IPC packaging.
 
 Do not move remote transport into Tauri to accelerate UI work. Keeping it in the
 daemon is what preserves collection and monitoring after tray exit or logout.

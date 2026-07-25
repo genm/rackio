@@ -1,7 +1,9 @@
 mod remote;
 mod runtime;
 
+use chrono::Utc;
 use clap::{Parser, Subcommand};
+use remote::RemoteHistoryResolution;
 use runtime::{LocalCommand, app_paths, request_local, run_daemon};
 
 #[derive(Debug, Parser)]
@@ -16,6 +18,11 @@ enum Command {
     Daemon,
     Status,
     Fleet,
+    History {
+        endpoint_id: String,
+        #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u16).range(1..=168))]
+        hours: u16,
+    },
     Pairing {
         #[command(subcommand)]
         command: PairingCommand,
@@ -69,6 +76,22 @@ async fn main() -> anyhow::Result<()> {
         Command::Status => print_response(request_local(&paths, LocalCommand::Status).await?)?,
         Command::Fleet => {
             print_response(request_local(&paths, LocalCommand::FleetSnapshot).await?)?;
+        }
+        Command::History { endpoint_id, hours } => {
+            let to_ms = Utc::now().timestamp_millis();
+            let from_ms = to_ms.saturating_sub(i64::from(hours) * 60 * 60 * 1_000);
+            print_response(
+                request_local(
+                    &paths,
+                    LocalCommand::QueryRemoteHistory {
+                        endpoint_id,
+                        from_ms,
+                        to_ms,
+                        resolution: RemoteHistoryResolution::Minute,
+                    },
+                )
+                .await?,
+            )?;
         }
         Command::Pairing {
             command: PairingCommand::Create,

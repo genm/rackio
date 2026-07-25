@@ -3,7 +3,13 @@ import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
 import type { FleetNode } from "../types";
 import { Sparkline } from "./Sparkline";
 
-export function NodeCard({ node }: { node: FleetNode }) {
+export function NodeCard({
+  node,
+  onViewHistory,
+}: {
+  node: FleetNode;
+  onViewHistory?: (node: FleetNode) => void;
+}) {
   const state = nodeStateRegistry[node.state];
   const path = connectionPathRegistry[node.path];
   return (
@@ -45,6 +51,19 @@ export function NodeCard({ node }: { node: FleetNode }) {
         </span>
         <span>{node.detail ?? "Collectors operational"}</span>
       </footer>
+      <button
+        type="button"
+        className="history-button"
+        disabled={node.endpointId === undefined}
+        title={
+          node.endpointId === undefined
+            ? "Local history is owned by the local agent and is not yet shown here"
+            : "Query this machine for its 24-hour history"
+        }
+        onClick={() => onViewHistory?.(node)}
+      >
+        View 24-hour history
+      </button>
     </article>
   );
 }

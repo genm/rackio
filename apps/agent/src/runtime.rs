@@ -25,7 +25,7 @@ use tokio::{
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 use uuid::Uuid;
 
-use crate::remote::{RemoteFleet, RemoteMachineSnapshot};
+use crate::remote::{RemoteFleet, RemoteHistoryResolution, RemoteMachineSnapshot};
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
@@ -75,10 +75,22 @@ pub enum LocalCommand {
     Status,
     FleetSnapshot,
     PairingCreate,
-    PairingImport { bundle: String },
+    PairingImport {
+        bundle: String,
+    },
+    QueryRemoteHistory {
+        endpoint_id: String,
+        from_ms: i64,
+        to_ms: i64,
+        resolution: RemoteHistoryResolution,
+    },
     PeerList,
-    PeerRevoke { endpoint_id: String },
-    RelaySet { relay_url: Option<String> },
+    PeerRevoke {
+        endpoint_id: String,
+    },
+    RelaySet {
+        relay_url: Option<String>,
+    },
     Doctor,
 }
 
@@ -406,6 +418,12 @@ async fn handle_local(
                 Err(error) => LocalResponse::failure(error),
             }
         }
+        LocalCommand::QueryRemoteHistory {
+            endpoint_id,
+            from_ms,
+            to_ms,
+            resolution,
+        } => handle_remote_history(remote_fleet, &endpoint_id, from_ms, to_ms, resolution).await,
         LocalCommand::PeerList => match runtime.peers.list() {
             Ok(peers) => LocalResponse::success(peers),
             Err(error) => LocalResponse::failure(error),
@@ -427,6 +445,22 @@ async fn handle_local(
                 Err(error) => LocalResponse::failure(error),
             }
         }
+    }
+}
+
+async fn handle_remote_history(
+    remote_fleet: &RemoteFleet,
+    endpoint_id: &str,
+    from_ms: i64,
+    to_ms: i64,
+    resolution: RemoteHistoryResolution,
+) -> LocalResponse {
+    match remote_fleet
+        .query_history(endpoint_id, from_ms, to_ms, resolution)
+        .await
+    {
+        Ok(samples) => LocalResponse::success(samples),
+        Err(error) => LocalResponse::failure(error),
     }
 }
 

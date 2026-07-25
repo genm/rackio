@@ -1,4 +1,10 @@
-import type { ConnectionPath, FleetSnapshot, NodeState, SshBootstrapStatus } from "./types";
+import type {
+  ConnectionPath,
+  FleetSnapshot,
+  MachineDetailState,
+  NodeState,
+  SshBootstrapStatus,
+} from "./types";
 
 export const nodeStateRegistry: Record<NodeState, { label: string; rank: number; tone: string }> = {
   healthy: { label: "Healthy", rank: 0, tone: "good" },
@@ -54,6 +60,50 @@ export const sshBootstrapStateRegistry: Record<string, SshBootstrapStatus> = {
     state: "completed",
     machineName: "Home Server",
     remotePlatform: "Linux x86_64",
+  },
+};
+
+const detailFixtureNode = {
+  id: "detail-node",
+  endpointId: "endpoint-detail",
+  name: "Home Server",
+  os: "Linux · x86_64",
+  state: "healthy" as const,
+  path: "lan_direct" as const,
+  cpuPercent: 42,
+  memoryUsedBytes: 12_000_000_000,
+  memoryTotalBytes: 32_000_000_000,
+  rttMs: 8,
+  lastSeenMs: 1_750_000_000_000,
+  history: [32, 39, 42],
+};
+
+export const machineDetailStateRegistry: Record<string, MachineDetailState> = {
+  closed: { state: "closed" },
+  loading: { state: "loading", node: detailFixtureNode },
+  ready: {
+    state: "ready",
+    node: detailFixtureNode,
+    points: [
+      {
+        timestampMs: 1_750_000_000_000,
+        cpuPercent: 32,
+        memoryUsedBytes: 11_500_000_000,
+        memoryTotalBytes: 32_000_000_000,
+      },
+      {
+        timestampMs: 1_750_000_060_000,
+        cpuPercent: 42,
+        memoryUsedBytes: 12_000_000_000,
+        memoryTotalBytes: 32_000_000_000,
+      },
+    ],
+  },
+  empty: { state: "ready", node: detailFixtureNode, points: [] },
+  error: {
+    state: "error",
+    node: detailFixtureNode,
+    message: "History request timed out. Live monitoring continues.",
   },
 };
 

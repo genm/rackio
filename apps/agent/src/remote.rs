@@ -16,7 +16,7 @@ use rackio_core::{
 use rackio_iroh::{ClientConnection, PairingBundle, PairingError, TransportError};
 use rackio_protocol::{
     current_version,
-    v1::{PairRequest, Request, request, response},
+    v1::{HistoryQuery, PairRequest, Request, history_query, request, response},
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -29,6 +29,7 @@ const STREAM_SILENCE_TIMEOUT: Duration = Duration::from_secs(12);
 const STALE_AFTER_MS: i64 = 10_000;
 const OFFLINE_AFTER_MS: i64 = 30_000;
 const HISTORY_POINTS: usize = 120;
+const MAX_HISTORY_RANGE_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 
 #[derive(Debug, Error)]
 pub enum RemoteFleetError {
@@ -46,6 +47,10 @@ pub enum RemoteFleetError {
     UnexpectedResponse(&'static str),
     #[error("machine is already paired")]
     AlreadyPaired,
+    #[error("paired machine was not found")]
+    UnknownMachine,
+    #[error("history range is invalid or exceeds seven days")]
+    InvalidHistoryRange,
     #[error("paired machine registry lock is unavailable")]
     RegistryUnavailable,
     #[error("paired machine registry I/O failed: {0}")]
@@ -61,6 +66,19 @@ struct RemoteMachineRecord {
     direct_addresses: Vec<SocketAddr>,
     relay_urls: Vec<String>,
     paired_at_ms: i64,
+    #[serde(default)]
+    last_snapshot: Option<PersistedRemoteSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct PersistedRemoteSnapshot {
+    latest: Option<MetricSample>,
+    state: NodeState,
+    path: ConnectionPath,
+    rtt_ms: Option<u64>,
+    last_seen_ms: Option<i64>,
+    history: Vec<f32>,
+    details: Vec<String>,
 }
 
 impl RemoteMachineRecord {
@@ -116,6 +134,15 @@ impl RemoteMachineRegistry {
             .contains_key(endpoint_id))
     }
 
+    fn get(&self, endpoint_id: &str) -> Result<RemoteMachineRecord, RemoteFleetError> {
+        self.records
+            .read()
+            .map_err(|_| RemoteFleetError::RegistryUnavailable)?
+            .get(endpoint_id)
+            .cloned()
+            .ok_or(RemoteFleetError::UnknownMachine)
+    }
+
     fn insert(&self, record: RemoteMachineRecord) -> Result<(), RemoteFleetError> {
         let mut records = self
             .records
@@ -123,6 +150,25 @@ impl RemoteMachineRegistry {
             .map_err(|_| RemoteFleetError::RegistryUnavailable)?;
         let mut next = records.clone();
         next.insert(record.endpoint_id.clone(), record);
+        persist_records(&self.path, &next)?;
+        *records = next;
+        Ok(())
+    }
+
+    fn update_snapshot(
+        &self,
+        endpoint_id: &str,
+        snapshot: &RemoteMachineSnapshot,
+    ) -> Result<(), RemoteFleetError> {
+        let mut records = self
+            .records
+            .write()
+            .map_err(|_| RemoteFleetError::RegistryUnavailable)?;
+        let mut next = records.clone();
+        let record = next
+            .get_mut(endpoint_id)
+            .ok_or(RemoteFleetError::UnknownMachine)?;
+        record.last_snapshot = Some(PersistedRemoteSnapshot::from(snapshot));
         persist_records(&self.path, &next)?;
         *records = next;
         Ok(())
@@ -165,6 +211,19 @@ pub struct RemoteMachineSnapshot {
 
 impl RemoteMachineSnapshot {
     fn offline(record: &RemoteMachineRecord) -> Self {
+        if let Some(persisted) = &record.last_snapshot {
+            return Self {
+                node: record.node.clone(),
+                endpoint_id: record.endpoint_id.clone(),
+                latest: persisted.latest.clone(),
+                state: persisted.state,
+                path: persisted.path,
+                rtt_ms: persisted.rtt_ms,
+                last_seen_ms: persisted.last_seen_ms,
+                history: persisted.history.clone(),
+                details: persisted.details.clone(),
+            };
+        }
         Self {
             node: record.node.clone(),
             endpoint_id: record.endpoint_id.clone(),
@@ -194,6 +253,27 @@ impl RemoteMachineSnapshot {
             self.state
         }
     }
+}
+
+impl From<&RemoteMachineSnapshot> for PersistedRemoteSnapshot {
+    fn from(snapshot: &RemoteMachineSnapshot) -> Self {
+        Self {
+            latest: snapshot.latest.clone(),
+            state: snapshot.state,
+            path: snapshot.path,
+            rtt_ms: snapshot.rtt_ms,
+            last_seen_ms: snapshot.last_seen_ms,
+            history: snapshot.history.clone(),
+            details: snapshot.details.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteHistoryResolution {
+    Raw,
+    Minute,
 }
 
 #[derive(Clone)]
@@ -245,6 +325,57 @@ impl RemoteFleet {
                 snapshot
             })
             .collect()
+    }
+
+    pub async fn query_history(
+        &self,
+        endpoint_id: &str,
+        from_ms: i64,
+        to_ms: i64,
+        resolution: RemoteHistoryResolution,
+    ) -> Result<Vec<MetricSample>, RemoteFleetError> {
+        if from_ms > to_ms || to_ms.saturating_sub(from_ms) > MAX_HISTORY_RANGE_MS {
+            return Err(RemoteFleetError::InvalidHistoryRange);
+        }
+        let record = self.registry.get(endpoint_id)?;
+        let client = connect_record(self.endpoint.clone(), &record).await?;
+        let mut stream = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            client.stream(&Request {
+                body: Some(request::Body::QueryHistory(HistoryQuery {
+                    from_ms,
+                    to_ms,
+                    resolution: match resolution {
+                        RemoteHistoryResolution::Raw => history_query::Resolution::Raw as i32,
+                        RemoteHistoryResolution::Minute => history_query::Resolution::Minute as i32,
+                    },
+                    protocol: Some(current_version()),
+                })),
+            }),
+        )
+        .await
+        .map_err(|_| RemoteFleetError::Timeout("history request"))??;
+        let mut samples = Vec::new();
+        loop {
+            let response = tokio::time::timeout(REQUEST_TIMEOUT, stream.next())
+                .await
+                .map_err(|_| RemoteFleetError::Timeout("history response"))??;
+            match response.body {
+                Some(response::Body::MetricSample(sample)) => {
+                    samples.push(metric_sample(sample));
+                }
+                Some(response::Body::StreamComplete(_)) => break,
+                Some(response::Body::Error(error)) => {
+                    return Err(RemoteFleetError::Transport(TransportError::Remote {
+                        code: error.code,
+                        message: error.message,
+                    }));
+                }
+                _ => return Err(RemoteFleetError::UnexpectedResponse("history event")),
+            }
+        }
+        client.close();
+        Ok(samples)
     }
 
     pub async fn import_pairing(
@@ -325,6 +456,7 @@ impl RemoteFleet {
             direct_addresses: bundle.direct_addresses,
             relay_urls: bundle.relay_urls,
             paired_at_ms: Utc::now().timestamp_millis(),
+            last_snapshot: None,
         };
         self.registry.insert(record.clone())?;
         self.snapshots
@@ -338,9 +470,10 @@ impl RemoteFleet {
 
     fn spawn_monitor(&self, record: RemoteMachineRecord) {
         let endpoint = self.endpoint.clone();
+        let registry = self.registry.clone();
         let snapshots = Arc::clone(&self.snapshots);
         tokio::spawn(async move {
-            monitor_machine(endpoint, record, snapshots).await;
+            monitor_machine(endpoint, record, registry, snapshots).await;
         });
     }
 }
@@ -359,11 +492,13 @@ fn validate_bundle(bundle: &PairingBundle, now_ms: i64) -> Result<(), PairingErr
 async fn monitor_machine(
     endpoint: iroh::Endpoint,
     record: RemoteMachineRecord,
+    registry: RemoteMachineRegistry,
     snapshots: Arc<AsyncRwLock<BTreeMap<String, RemoteMachineSnapshot>>>,
 ) {
     let mut retry_delay = Duration::from_secs(1);
     loop {
-        let result = monitor_session(endpoint.clone(), &record, Arc::clone(&snapshots)).await;
+        let result =
+            monitor_session(endpoint.clone(), &record, &registry, Arc::clone(&snapshots)).await;
         if let Err(error) = result {
             update_error(&snapshots, &record, &error).await;
         }
@@ -375,25 +510,11 @@ async fn monitor_machine(
 async fn monitor_session(
     endpoint: iroh::Endpoint,
     record: &RemoteMachineRecord,
+    registry: &RemoteMachineRegistry,
     snapshots: Arc<AsyncRwLock<BTreeMap<String, RemoteMachineSnapshot>>>,
 ) -> Result<(), RemoteFleetError> {
-    let address = record.endpoint_addr()?;
-    let client = tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        ClientConnection::connect(endpoint, address),
-    )
-    .await
-    .map_err(|_| RemoteFleetError::Timeout("connect"))??;
-    if client.remote_id().to_string() != record.endpoint_id {
-        client.close();
-        return Err(RemoteFleetError::IdentityMismatch);
-    }
-
+    let client = connect_record(endpoint, record).await?;
     let node = get_node_info(&client).await?;
-    if node.node_id != record.node.node_id {
-        client.close();
-        return Err(RemoteFleetError::IdentityMismatch);
-    }
     let health = get_health(&client).await?;
     let (path, rtt_ms) = get_connection_path(&client).await?;
     {
@@ -425,6 +546,7 @@ async fn monitor_session(
         match response.body {
             Some(response::Body::MetricSample(sample)) => {
                 let sample = metric_sample(sample);
+                let should_persist = sample.sequence.is_multiple_of(5);
                 let mut entries = snapshots.write().await;
                 let snapshot = entries
                     .entry(record.endpoint_id.clone())
@@ -439,6 +561,17 @@ async fn monitor_session(
                 snapshot.latest = Some(sample);
                 snapshot.state = health.state;
                 snapshot.last_seen_ms = Some(Utc::now().timestamp_millis());
+                if should_persist {
+                    let snapshot = snapshot.clone();
+                    drop(entries);
+                    if let Err(error) = registry.update_snapshot(&record.endpoint_id, &snapshot) {
+                        tracing::warn!(
+                            endpoint_id = %record.endpoint_id,
+                            error = %error,
+                            "failed to persist last-known remote snapshot"
+                        );
+                    }
+                }
             }
             Some(response::Body::Heartbeat(_)) => {
                 let mut entries = snapshots.write().await;
@@ -449,6 +582,29 @@ async fn monitor_session(
             _ => return Err(RemoteFleetError::UnexpectedResponse("metrics event")),
         }
     }
+}
+
+async fn connect_record(
+    endpoint: iroh::Endpoint,
+    record: &RemoteMachineRecord,
+) -> Result<ClientConnection, RemoteFleetError> {
+    let address = record.endpoint_addr()?;
+    let client = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        ClientConnection::connect(endpoint, address),
+    )
+    .await
+    .map_err(|_| RemoteFleetError::Timeout("connect"))??;
+    if client.remote_id().to_string() != record.endpoint_id {
+        client.close();
+        return Err(RemoteFleetError::IdentityMismatch);
+    }
+    let node = get_node_info(&client).await?;
+    if node.node_id != record.node.node_id {
+        client.close();
+        return Err(RemoteFleetError::IdentityMismatch);
+    }
+    Ok(client)
 }
 
 async fn update_error(
@@ -672,6 +828,7 @@ mod tests {
             ],
             relay_urls: Vec::new(),
             paired_at_ms: 1,
+            last_snapshot: None,
         }
     }
 
@@ -725,5 +882,47 @@ mod tests {
 
         assert!(!saved.contains("one_time_secret"));
         assert!(!saved.contains("must-not-persist"));
+    }
+
+    #[test]
+    fn persisted_last_snapshot_survives_restart_without_becoming_zero() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = directory.path().join("machines.json");
+        let registry = RemoteMachineRegistry::load(&path).unwrap_or_else(|error| panic!("{error}"));
+        let record = record();
+        registry
+            .insert(record.clone())
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut snapshot = RemoteMachineSnapshot::offline(&record);
+        snapshot.state = NodeState::Healthy;
+        snapshot.last_seen_ms = Some(42);
+        snapshot.latest = Some(rackio_core::MetricSample {
+            timestamp_ms: 42,
+            sequence: 5,
+            cpu_percent: Some(37.5),
+            memory_used_bytes: None,
+            memory_total_bytes: None,
+            swap_used_bytes: None,
+            swap_total_bytes: None,
+            disks: Vec::new(),
+            network: None,
+            uptime_seconds: 1,
+            errors: Vec::new(),
+        });
+        registry
+            .update_snapshot(&record.endpoint_id, &snapshot)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let reloaded = RemoteMachineRegistry::load(path).unwrap_or_else(|error| panic!("{error}"));
+        let restored = RemoteMachineSnapshot::offline(
+            &reloaded
+                .get(&record.endpoint_id)
+                .unwrap_or_else(|error| panic!("{error}")),
+        );
+        assert_eq!(
+            restored.latest.and_then(|sample| sample.cpu_percent),
+            Some(37.5)
+        );
+        assert_eq!(restored.last_seen_ms, Some(42));
     }
 }

@@ -23,9 +23,9 @@ a local, same-host or single-platform check exists.
 - [ ] immediate teardown of active connections when a peer is revoked
 - [ ] five-minute mDNS advertisement lifecycle during pairing only
 - [ ] QR and file import/export for pairing bundles
-- [ ] remote peer inventory and on-demand history in the desktop viewer
+- [x] remote peer inventory and on-demand history in the desktop viewer
   - [x] pairing import, persisted remote inventory and live metrics
-  - [ ] on-demand remote history
+  - [x] on-demand 24-hour minute history with explicit empty/error states
 - [ ] dynamic tray icon reflects the fleet's current worst state
 - [ ] viewer heartbeat transitions nodes to stale at 10 seconds and offline at
       30 seconds

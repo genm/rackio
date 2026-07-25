@@ -3,7 +3,8 @@ use std::sync::Arc;
 use chrono::Utc;
 use iroh::{Endpoint, EndpointId, endpoint::Connection};
 use rackio_core::{
-    HealthSnapshot, HistoryResolution, MetricSample, MetricStore, NodeInfo, StoreError,
+    ConnectionPath, HealthSnapshot, HistoryResolution, MetricSample, MetricStore, NodeInfo,
+    StoreError,
 };
 use rackio_protocol::{
     FrameError, compatible, read_frame,
@@ -221,7 +222,7 @@ async fn handle_authorized(
             if require_permission(send, permissions.read_metrics, "read_metrics").await?
                 && version_is_compatible(send, &version).await?
             {
-                let details = classify_connection(connection);
+                let details = settled_connection_details(connection).await;
                 write_response(
                     send,
                     response::Body::ConnectionPath(protocol::connection_details(
@@ -245,6 +246,20 @@ async fn handle_authorized(
         request::Body::Pair(_) => unreachable!("pair requests return before authorization"),
     }
     Ok(())
+}
+
+async fn settled_connection_details(
+    connection: &Connection,
+) -> crate::transport::ConnectionDetails {
+    let mut details = classify_connection(connection);
+    for _ in 0..10 {
+        if details.path != ConnectionPath::Unknown {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        details = classify_connection(connection);
+    }
+    details
 }
 
 async fn handle_history(
