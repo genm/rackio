@@ -29,10 +29,10 @@ use crate::remote::{RemoteFleet, RemoteHistoryResolution, RemoteMachineSnapshot}
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
-    pub config_dir: PathBuf,
-    pub data_dir: PathBuf,
-    pub state_dir: PathBuf,
-    pub log_dir: PathBuf,
+    pub config: PathBuf,
+    pub data: PathBuf,
+    pub state: PathBuf,
+    pub log: PathBuf,
     #[cfg(unix)]
     pub local_socket: PathBuf,
 }
@@ -58,10 +58,10 @@ pub fn app_paths() -> anyhow::Result<AppPaths> {
     let log_dir =
         std::env::var_os("RACKIO_LOG_DIR").map_or_else(|| state_dir.join("logs"), PathBuf::from);
     Ok(AppPaths {
-        config_dir,
-        data_dir,
-        state_dir,
-        log_dir,
+        config: config_dir,
+        data: data_dir,
+        state: state_dir,
+        log: log_dir,
         #[cfg(unix)]
         local_socket,
     })
@@ -162,7 +162,7 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     init_logging(&paths)?;
 
     let config = load_config(&paths)?;
-    let secret = load_or_create_secret_key(&paths.data_dir.join("identity.key"))?;
+    let secret = load_or_create_secret_key(&paths.data.join("identity.key"))?;
     let endpoint = rackio_iroh::bind_endpoint(
         secret,
         &EndpointConfig {
@@ -170,24 +170,22 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         },
     )
     .await?;
-    let node_id = load_or_create_node_id(&paths.data_dir.join("node-id"))?;
+    let node_id = load_or_create_node_id(&paths.data.join("node-id"))?;
     let info = node_info(node_id);
     let (latest_tx, latest_rx) = watch::channel(None);
     let runtime = Arc::new(NodeRuntime {
         info,
         health: RwLock::new(healthy()),
         latest: latest_rx,
-        store: tokio::sync::Mutex::new(MetricStore::open(paths.data_dir.join("metrics.sqlite3"))?),
+        store: tokio::sync::Mutex::new(MetricStore::open(paths.data.join("metrics.sqlite3"))?),
         pairing: std::sync::Mutex::new(PairingManager::default()),
         pairing_mdns: Arc::new(PairingMdnsState::default()),
-        peers: PeerRegistry::load(paths.data_dir.join("peers.json"))?,
+        peers: PeerRegistry::load(paths.data.join("peers.json"))?,
         active_connections: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     });
     let server = RemoteServer::new(endpoint.clone(), Arc::clone(&runtime));
-    let remote_fleet = RemoteFleet::load(
-        endpoint.clone(),
-        paths.data_dir.join("monitored-machines.json"),
-    )?;
+    let remote_fleet =
+        RemoteFleet::load(endpoint.clone(), paths.data.join("monitored-machines.json"))?;
     remote_fleet.start()?;
 
     tracing::info!(
@@ -700,19 +698,14 @@ fn healthy() -> HealthSnapshot {
 }
 
 fn create_directories(paths: &AppPaths) -> anyhow::Result<()> {
-    for path in [
-        &paths.config_dir,
-        &paths.data_dir,
-        &paths.state_dir,
-        &paths.log_dir,
-    ] {
+    for path in [&paths.config, &paths.data, &paths.state, &paths.log] {
         fs::create_dir_all(path)?;
     }
     Ok(())
 }
 
 fn config_path(paths: &AppPaths) -> PathBuf {
-    paths.config_dir.join("config.json")
+    paths.config.join("config.json")
 }
 
 fn validate_relay_url(relay_url: Option<&str>) -> Result<(), &'static str> {
@@ -732,11 +725,11 @@ fn load_config(paths: &AppPaths) -> anyhow::Result<AgentConfig> {
 }
 
 fn save_config(paths: &AppPaths, config: &AgentConfig) -> anyhow::Result<()> {
-    fs::create_dir_all(&paths.config_dir)?;
+    fs::create_dir_all(&paths.config)?;
     let target = config_path(paths);
     let mut file = tempfile::Builder::new()
         .prefix(".config-")
-        .tempfile_in(&paths.config_dir)?;
+        .tempfile_in(&paths.config)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -762,8 +755,8 @@ fn load_or_create_node_id(path: &Path) -> anyhow::Result<Uuid> {
 }
 
 fn init_logging(paths: &AppPaths) -> anyhow::Result<()> {
-    fs::create_dir_all(&paths.log_dir)?;
-    let file = tracing_appender::rolling::daily(&paths.log_dir, "agent.jsonl");
+    fs::create_dir_all(&paths.log)?;
+    let file = tracing_appender::rolling::daily(&paths.log, "agent.jsonl");
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(tracing_subscriber::fmt::layer().json().with_writer(file))
@@ -795,10 +788,10 @@ mod tests {
             .path()
             .join("explicit.sock");
         let paths = AppPaths {
-            config_dir: PathBuf::from("/unused/config"),
-            data_dir: PathBuf::from("/unused/data"),
-            state_dir: PathBuf::from("/unused/state"),
-            log_dir: PathBuf::from("/unused/log"),
+            config: PathBuf::from("/unused/config"),
+            data: PathBuf::from("/unused/data"),
+            state: PathBuf::from("/unused/state"),
+            log: PathBuf::from("/unused/log"),
             local_socket: explicit.clone(),
         };
         let candidates = local_socket_candidates(&paths, true);
