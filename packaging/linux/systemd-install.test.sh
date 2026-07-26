@@ -54,8 +54,8 @@ trap cleanup EXIT HUP INT TERM
 wait_for_root_health() {
   local _
   for _ in {1..30}; do
-    if sudo env RACKIO_SOCKET=/run/rackio/agent.sock /usr/local/bin/rackio status |
-      jq -e '.ok == true' >/dev/null 2>&1; then
+    if sudo env RACKIO_SOCKET=/run/rackio/agent.sock /usr/local/bin/rackio status 2>/dev/null |
+      jq -e '.ok == true' >/dev/null; then
       return 0
     fi
     sleep 1
@@ -71,8 +71,10 @@ systemctl is-enabled --quiet rackio.service
 systemctl is-active --quiet rackio.service
 wait_for_root_health
 
-[[ "$(stat -c '%a' /run/rackio/agent.sock)" == "660" ]]
-[[ "$(stat -c '%G' /run/rackio/agent.sock)" == "rackio-viewers" ]]
+# The current CI shell does not inherit a group added after login. Inspect
+# metadata as root, then prove viewer access below in a fresh group context.
+[[ "$(sudo stat -c '%a' /run/rackio/agent.sock)" == "660" ]]
+[[ "$(sudo stat -c '%G' /run/rackio/agent.sock)" == "rackio-viewers" ]]
 id -nG "$viewer_user" | tr ' ' '\n' | grep -Fxq rackio-viewers
 sudo -u "$viewer_user" -g rackio-viewers \
   env RACKIO_SOCKET=/run/rackio/agent.sock /usr/local/bin/rackio status |
@@ -96,7 +98,7 @@ sudo touch /var/lib/rackio/preserve-marker
 sudo /usr/local/lib/rackio/uninstall.sh
 [[ ! -e /usr/local/bin/rackio ]]
 [[ ! -e /etc/systemd/system/rackio.service ]]
-[[ -e /var/lib/rackio/preserve-marker ]]
+sudo test -e /var/lib/rackio/preserve-marker
 if systemctl is-active --quiet rackio.service; then
   fail "preserving uninstall left the service active"
 fi
@@ -109,7 +111,8 @@ getent group rackio-viewers >/dev/null
 sudo env RACKIO_VIEWER_USER="$viewer_user" \
   sh "$repo_root/install.sh" --archive "$archive" --checksum "$checksum" >/dev/null
 systemctl is-active --quiet rackio.service
-[[ -e /var/lib/rackio/preserve-marker ]]
+wait_for_root_health
+sudo test -e /var/lib/rackio/preserve-marker
 
 sudo /usr/local/lib/rackio/uninstall.sh --purge
 [[ ! -e /usr/local/bin/rackio ]]

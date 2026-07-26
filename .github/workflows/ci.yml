@@ -21,6 +21,9 @@ jobs:
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.plan.outputs.rust }}
+      rust_linux: ${{ steps.plan.outputs.rust_linux }}
+      rust_macos: ${{ steps.plan.outputs.rust_macos }}
+      rust_windows: ${{ steps.plan.outputs.rust_windows }}
       frontend: ${{ steps.plan.outputs.frontend }}
     steps:
       - name: Check out complete history
@@ -85,7 +88,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
-      RUN_RUST: ${{ needs.plan.result == 'failure' || needs.plan.outputs.rust == 'true' }}
+      RUN_RUST: >-
+        ${{
+          needs.plan.result == 'failure' ||
+          (matrix.os == 'ubuntu-24.04' && needs.plan.outputs.rust_linux == 'true') ||
+          (matrix.os == 'macos-15' && needs.plan.outputs.rust_macos == 'true') ||
+          (matrix.os == 'windows-2022' && needs.plan.outputs.rust_windows == 'true')
+        }}
     strategy:
       fail-fast: false
       matrix:
