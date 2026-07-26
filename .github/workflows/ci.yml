@@ -68,6 +68,18 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate Windows PowerShell syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          @(
+            "scripts/test-windows-named-pipe.ps1",
+            "packaging/windows/install.ps1",
+            "packaging/windows/uninstall.ps1",
+            "packaging/windows/package-release.ps1"
+          ) | ForEach-Object {
+            [void][scriptblock]::Create((Get-Content -Raw -LiteralPath $_))
+          }
       - name: Install Linux desktop libraries
         if: runner.os == 'Linux'
         run: |
@@ -93,16 +105,7 @@ jobs:
       - name: Exercise secured named-pipe IPC
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          @(
-            "scripts/test-windows-named-pipe.ps1",
-            "packaging/windows/install.ps1",
-            "packaging/windows/uninstall.ps1",
-            "packaging/windows/package-release.ps1"
-          ) | ForEach-Object {
-            [void][scriptblock]::Create((Get-Content -Raw -LiteralPath $_))
-          }
-          scripts/test-windows-named-pipe.ps1
+        run: scripts/test-windows-named-pipe.ps1
       - name: Capture failure diagnostics
         if: failure()
         shell: bash
