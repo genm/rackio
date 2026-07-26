@@ -47,6 +47,12 @@ NAT and mixed-OS release matrices.
 | Windows | Explicit-DACL named-pipe IPC with caller-token verification, Windows Service installer/uninstaller and a GitHub-hosted CI integration scenario | Authenticode/MSI signing, clean-host remote-client rejection and reboot evidence require a Windows release host |
 | Relay | Version-pinned upstream relay container and configuration | Internet-exposure workflow, token delivery and NAT evidence |
 
+CI runs every gate for a ready PR's initial revision, selector/workflow changes,
+scheduled security checks and any selector failure. Later PR synchronizations
+compare only the previous and current head revisions; documentation-only updates
+retain commit policy, required-context reporting and affected-range secret
+scanning without rebuilding Rust or the desktop.
+
 ## Persistence and directionality
 
 The daemon data directory owns:
