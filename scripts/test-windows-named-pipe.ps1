@@ -36,18 +36,26 @@ function Invoke-StatusAsTestUser {
 
     $stdout = Join-Path $root "$Name.stdout"
     $stderr = Join-Path $root "$Name.stderr"
-    $processEnvironment = @{
-        RACKIO_CONFIG_DIR = $env:RACKIO_CONFIG_DIR
-        RACKIO_DATA_DIR = $env:RACKIO_DATA_DIR
-        RACKIO_STATE_DIR = $env:RACKIO_STATE_DIR
-        RACKIO_LOG_DIR = $env:RACKIO_LOG_DIR
-        RACKIO_PIPE = $env:RACKIO_PIPE
+    $helper = Join-Path $root "$Name.ps1"
+    $literal = {
+        param([string]$Value)
+        "'$($Value.Replace("'", "''"))'"
     }
+    @(
+        '$ErrorActionPreference = "Stop"'
+        "`$env:RACKIO_CONFIG_DIR = $(& $literal $env:RACKIO_CONFIG_DIR)"
+        "`$env:RACKIO_DATA_DIR = $(& $literal $env:RACKIO_DATA_DIR)"
+        "`$env:RACKIO_STATE_DIR = $(& $literal $env:RACKIO_STATE_DIR)"
+        "`$env:RACKIO_LOG_DIR = $(& $literal $env:RACKIO_LOG_DIR)"
+        "`$env:RACKIO_PIPE = $(& $literal $env:RACKIO_PIPE)"
+        "& $(& $literal $binary) status"
+        'exit $LASTEXITCODE'
+    ) | Set-Content -LiteralPath $helper -Encoding utf8
+    $pwsh = Join-Path $PSHOME "pwsh.exe"
     $process = Start-Process `
-        -FilePath $binary `
-        -ArgumentList "status" `
+        -FilePath $pwsh `
+        -ArgumentList "-NoProfile -NonInteractive -File `"$helper`"" `
         -Credential $credential `
-        -Environment $processEnvironment `
         -LoadUserProfile `
         -PassThru `
         -RedirectStandardOutput $stdout `
