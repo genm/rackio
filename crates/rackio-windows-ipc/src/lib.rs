@@ -14,8 +14,8 @@ use tokio::{
 use windows_sys::{
     Win32::{
         Foundation::{
-            CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_PIPE_BUSY,
-            GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+            ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_PIPE_BUSY, GetLastError, HANDLE,
+            INVALID_HANDLE_VALUE, LocalFree,
         },
         Security::{
             Authorization::{
@@ -23,16 +23,13 @@ use windows_sys::{
                 SDDL_REVISION_1,
             },
             CheckTokenMembership, CreateWellKnownSid, LookupAccountNameW, PSECURITY_DESCRIPTOR,
-            PSID, SECURITY_MAX_SID_SIZE, SID_NAME_USE, TOKEN_QUERY, WinBuiltinAdministratorsSid,
+            PSID, RevertToSelf, SECURITY_MAX_SID_SIZE, SID_NAME_USE, WinBuiltinAdministratorsSid,
         },
         Storage::FileSystem::{
             CreateFileW, FILE_FLAG_OVERLAPPED, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
             FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, OPEN_EXISTING, SYNCHRONIZE,
         },
-        System::{
-            Pipes::GetNamedPipeClientProcessId,
-            Threading::{OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION},
-        },
+        System::Pipes::ImpersonateNamedPipeClient,
     },
     core::PWSTR,
 };
@@ -120,6 +117,11 @@ pub struct PipeSecurity {
     administrators_sid: Vec<u8>,
 }
 
+// SAFETY: this type has unique ownership of a LocalAlloc security descriptor
+// and its SID buffers. Windows permits LocalFree on a different thread, and
+// the type is deliberately not Sync, so no descriptor is shared concurrently.
+unsafe impl Send for PipeSecurity {}
+
 impl PipeSecurity {
     pub fn for_local_group(group_name: &str) -> io::Result<Self> {
         let viewer_group_sid = lookup_account_sid(group_name)?;
@@ -155,28 +157,33 @@ impl PipeSecurity {
         }
     }
 
-    pub fn verify_client(&self, pipe: &NamedPipeServer) -> io::Result<()> {
+    /// Verifies the token associated with the most recent read from `pipe`.
+    pub fn verify_client_after_read(&self, pipe: &NamedPipeServer) -> io::Result<()> {
         let handle = pipe.as_raw_handle() as HANDLE;
-        let mut process_id = 0_u32;
-        // SAFETY: `handle` is a live connected named-pipe handle and the output
-        // pointer references initialized writable storage.
-        if unsafe { GetNamedPipeClientProcessId(handle, &mut process_id) } == 0 {
+        // Inspect the security context attached to this pipe connection
+        // directly. Reopening a process by PID introduces a race with client
+        // exit and can fail even when the pipe token itself is queryable.
+        // Windows requires the server to read data before impersonation so it
+        // can bind the check to the client that supplied that data.
+        // SAFETY: `handle` is a live connected named-pipe server handle.
+        if unsafe { ImpersonateNamedPipeClient(handle) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        let process = OwnedHandle::new(
-            // SAFETY: No borrowed pointers are passed; the returned owned
-            // process handle is closed by `OwnedHandle`.
-            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) },
-        )?;
-        let mut token = ptr::null_mut();
-        // SAFETY: The process handle is valid and `token` is a writable output.
-        if unsafe { OpenProcessToken(process.0, TOKEN_QUERY, &mut token) } == 0 {
+
+        let authorized =
+            token_is_member(ptr::null_mut(), &self.viewer_group_sid).and_then(|viewer| {
+                if viewer {
+                    Ok(true)
+                } else {
+                    token_is_member(ptr::null_mut(), &self.administrators_sid)
+                }
+            });
+        // SAFETY: This thread successfully impersonated the connected client
+        // above and must return to the daemon identity before doing more work.
+        if unsafe { RevertToSelf() } == 0 {
             return Err(io::Error::last_os_error());
         }
-        let token = OwnedHandle::new(token)?;
-        if !token_is_member(token.0, &self.viewer_group_sid)?
-            && !token_is_member(token.0, &self.administrators_sid)?
-        {
+        if !authorized? {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "named-pipe caller is neither a Rackio viewer nor an administrator",
@@ -194,27 +201,6 @@ impl Drop for PipeSecurity {
             unsafe {
                 LocalFree(self.descriptor.cast());
             }
-        }
-    }
-}
-
-struct OwnedHandle(HANDLE);
-
-impl OwnedHandle {
-    fn new(handle: HANDLE) -> io::Result<Self> {
-        if handle.is_null() {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(Self(handle))
-        }
-    }
-}
-
-impl Drop for OwnedHandle {
-    fn drop(&mut self) {
-        // SAFETY: This wrapper uniquely owns the non-null Win32 handle.
-        unsafe {
-            CloseHandle(self.0);
         }
     }
 }
