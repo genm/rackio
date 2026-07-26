@@ -405,6 +405,7 @@ async fn run_local_server(
     anyhow::bail!("local IPC is unsupported on this platform")
 }
 
+#[cfg(unix)]
 async fn serve_local_stream<S>(
     stream: S,
     paths: AppPaths,
