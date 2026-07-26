@@ -88,4 +88,16 @@ if RACKIO_INSTALL_ROOT="$test_root/rejected" \
 fi
 test ! -e "$test_root/rejected/usr/local/bin/rackio"
 
-printf '{"ok":true,"normal_install":true,"idempotent_reinstall":true,"local_archive_install":true,"missing_notice_rejection":true,"checksum_rejection":true}\n'
+if GITHUB_ACTIONS=false \
+  RACKIO_SYSTEM_INSTALL_TEST=1 \
+  bash "$repo_root/packaging/linux/systemd-install.test.sh" \
+  "$asset" \
+  "$asset.sha256" \
+  2>"$test_root/system-install-guard.stderr"; then
+  echo "system install test ran outside an opted-in GitHub-hosted runner" >&2
+  exit 1
+fi
+grep -Fq "restricted to an explicitly opted-in GitHub-hosted runner" \
+  "$test_root/system-install-guard.stderr"
+
+printf '{"ok":true,"normal_install":true,"idempotent_reinstall":true,"local_archive_install":true,"missing_notice_rejection":true,"checksum_rejection":true,"system_install_guard":true}\n'
