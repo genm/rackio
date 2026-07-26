@@ -38,20 +38,46 @@ pub struct AppPaths {
 }
 
 pub fn app_paths() -> anyhow::Result<AppPaths> {
-    let dirs = ProjectDirs::from("dev", "rackio", "rackio")
-        .ok_or_else(|| anyhow!("OS application directories are unavailable"))?;
-    let config_dir = std::env::var_os("RACKIO_CONFIG_DIR")
-        .map_or_else(|| dirs.config_dir().to_path_buf(), PathBuf::from);
-    let data_dir = std::env::var_os("RACKIO_DATA_DIR")
-        .map_or_else(|| dirs.data_local_dir().to_path_buf(), PathBuf::from);
-    let state_dir = std::env::var_os("RACKIO_STATE_DIR").map_or_else(
-        || {
-            dirs.state_dir()
-                .unwrap_or_else(|| dirs.data_local_dir())
-                .to_path_buf()
-        },
-        PathBuf::from,
-    );
+    let config_override = std::env::var_os("RACKIO_CONFIG_DIR").map(PathBuf::from);
+    let data_override = std::env::var_os("RACKIO_DATA_DIR").map(PathBuf::from);
+    let state_override = std::env::var_os("RACKIO_STATE_DIR").map(PathBuf::from);
+    // Service accounts may intentionally provide every owned path while OS
+    // user-profile directories are unavailable. Only require ProjectDirs for
+    // values that actually need a platform default.
+    let dirs = if config_override.is_none() || data_override.is_none() || state_override.is_none() {
+        Some(
+            ProjectDirs::from("dev", "rackio", "rackio")
+                .ok_or_else(|| anyhow!("OS application directories are unavailable"))?,
+        )
+    } else {
+        None
+    };
+    let config_dir = match config_override {
+        Some(path) => path,
+        None => dirs
+            .as_ref()
+            .ok_or_else(|| anyhow!("OS config directory is unavailable"))?
+            .config_dir()
+            .to_path_buf(),
+    };
+    let data_dir = match data_override {
+        Some(path) => path,
+        None => dirs
+            .as_ref()
+            .ok_or_else(|| anyhow!("OS data directory is unavailable"))?
+            .data_local_dir()
+            .to_path_buf(),
+    };
+    let state_dir = if let Some(path) = state_override {
+        path
+    } else {
+        let dirs = dirs
+            .as_ref()
+            .ok_or_else(|| anyhow!("OS state directory is unavailable"))?;
+        dirs.state_dir()
+            .unwrap_or_else(|| dirs.data_local_dir())
+            .to_path_buf()
+    };
     #[cfg(unix)]
     let local_socket = std::env::var_os("RACKIO_SOCKET")
         .map_or_else(|| state_dir.join("agent.sock"), PathBuf::from);
