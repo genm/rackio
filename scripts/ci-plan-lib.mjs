@@ -5,13 +5,25 @@ const GLOBAL_PATHS = [
   /^scripts\/ci-plan\.test\.mjs$/,
 ];
 
-const RUST_PATHS = [
+const CROSS_PLATFORM_RUST_PATHS = [
   /^Cargo\.(?:toml|lock)$/,
   /^rust-toolchain\.toml$/,
   /^(?:apps\/agent|crates|proto)\//,
   /^apps\/desktop\/src-tauri\//,
-  /^packaging\/(?!.*\.md$)/,
-  /^scripts\/(?:benchmark-agent-resources|test-two-daemon-pairing|test-windows-named-pipe)\.(?:sh|ps1)$/,
+  /^packaging\/(?!linux\/|macos\/|windows\/|.*\.md$)/,
+];
+
+const LINUX_RUST_PATHS = [
+  /^install\.sh$/,
+  /^packaging\/linux\/(?!.*\.md$)/,
+  /^scripts\/(?:benchmark-agent-resources|test-two-daemon-pairing)\.sh$/,
+];
+
+const MACOS_RUST_PATHS = [/^packaging\/macos\/(?!.*\.md$)/];
+
+const WINDOWS_RUST_PATHS = [
+  /^packaging\/windows\/(?!.*\.md$)/,
+  /^scripts\/test-windows-named-pipe\.ps1$/,
 ];
 
 const FRONTEND_PATHS = [
@@ -28,6 +40,7 @@ const SECURITY_POLICY_PATHS = [
   /^THIRDPARTY(?:-JAVASCRIPT)?\.html$/,
   /^(?:apps\/agent|crates|proto)\//,
   /^(?:packaging|relay-package)\/(?!.*\.md$)/,
+  /^install\.sh$/,
   /^apps\/desktop\/(?:package\.json|src-tauri\/)/,
   /^scripts\/generate-(?:javascript-licenses|third-party-licenses)\.(?:mjs|sh)$/,
 ];
@@ -42,6 +55,9 @@ export function fullPlan(reason) {
   return {
     full_run: true,
     rust: true,
+    rust_linux: true,
+    rust_macos: true,
+    rust_windows: true,
     frontend: true,
     security_policy: true,
     security_source: true,
@@ -55,9 +71,18 @@ export function classifyChangedFiles(files) {
     return fullPlan("global_ci_change");
   }
 
+  const crossPlatformRust = files.some((path) => matchesAny(path, CROSS_PLATFORM_RUST_PATHS));
+  const rustLinux = crossPlatformRust || files.some((path) => matchesAny(path, LINUX_RUST_PATHS));
+  const rustMacos = crossPlatformRust || files.some((path) => matchesAny(path, MACOS_RUST_PATHS));
+  const rustWindows =
+    crossPlatformRust || files.some((path) => matchesAny(path, WINDOWS_RUST_PATHS));
+
   return {
     full_run: false,
-    rust: files.some((path) => matchesAny(path, RUST_PATHS)),
+    rust: rustLinux || rustMacos || rustWindows,
+    rust_linux: rustLinux,
+    rust_macos: rustMacos,
+    rust_windows: rustWindows,
     frontend: files.some((path) => matchesAny(path, FRONTEND_PATHS)),
     security_policy: files.some((path) => matchesAny(path, SECURITY_POLICY_PATHS)),
     security_source: files.some((path) => matchesAny(path, SECURITY_SOURCE_PATHS)),
