@@ -41,6 +41,12 @@ are maintained in [`backlog.md`](backlog.md).
 - [ ] system service installers for Windows, macOS and Linux, including reboot
       recovery and desktop access to the local socket
   - [x] checksum-verified Linux systemd installer and rootless installer tests
+  - [x] native x86_64 and arm64 Ubuntu runners verify clean systemd install,
+        viewer-group access, non-member rejection, restart, preserving
+        reinstall and purge in
+        [run 30212938779](https://github.com/genm/rackio/actions/runs/30212938779);
+        reboot, SSH client coverage and supported-distribution coverage remain
+        open
   - [x] SSH client-push implementation with host-key confirmation, no server
         download, automatic pairing flow and visible failure states
   - [ ] SSH bootstrap evidence against clean Linux hosts from macOS, Windows
@@ -48,7 +54,7 @@ are maintained in [`backlog.md`](backlog.md).
   - [ ] Linux reboot recovery on supported distributions
   - [x] native x86_64 and arm64 Linux archives have independently verified
         SLSA provenance in
-        [run 30206186071](https://github.com/genm/rackio/actions/runs/30206186071);
+        [run 30212938779](https://github.com/genm/rackio/actions/runs/30212938779);
         this evidence does not make the short-lived workflow artifacts a
         supported public release
   - [ ] signed macOS package and Windows service installer
