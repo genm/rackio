@@ -3,12 +3,5 @@
   "identifier": "desktop",
   "description": "Least-privilege permissions for the Rackio desktop window.",
   "windows": ["main"],
-  "permissions": [
-    "core:default",
-    "dialog:allow-save",
-    "notification:default",
-    "autostart:allow-enable",
-    "autostart:allow-disable",
-    "autostart:allow-is-enabled"
-  ]
+  "permissions": ["core:default", "dialog:allow-save", "notification:default"]
 }

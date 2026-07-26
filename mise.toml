@@ -15,6 +15,7 @@ trivy = "0.72.0"
 
 [tasks.check]
 description = "Run repository quality gates"
+env = { CARGO_INCREMENTAL = "0" }
 run = [
   "actionlint",
   "cargo fmt --all -- --check",
@@ -55,6 +56,10 @@ run = "pnpm --filter @rackio/desktop tauri dev"
 [tasks."frontend:dev"]
 description = "Run only the browser frontend in development mode"
 run = "pnpm --filter @rackio/desktop dev"
+
+[tasks."measure:desktop-build"]
+description = "Measure a clean desktop debug build and enforce its disk budget"
+run = "node scripts/measure-desktop-build.mjs"
 
 [tasks."test:installer"]
 description = "Verify Linux release packaging, install, and checksum rejection"

@@ -33,7 +33,6 @@ swarm-discovery = "=0.6.3"
 sysinfo = { version = "=0.39.6", default-features = false, features = ["disk", "network", "system"] }
 tauri = { version = "2.11.5", features = ["tray-icon"] }
 tauri-build = "2.6.3"
-tauri-plugin-autostart = "2.5.1"
 tauri-plugin-dialog = "=2.7.2"
 tauri-plugin-notification = "2.3.3"
 thiserror = "2.0.19"
@@ -72,3 +71,21 @@ missing_panics_doc = "allow"
 codegen-units = 1
 lto = "fat"
 strip = "symbols"
+
+# Keep line-number backtraces without duplicating full dependency debug data in
+# every worktree. Use `--profile debugging` when source-level debugging is needed.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
+
+[profile.test.package."*"]
+debug = false
+
+[profile.debugging]
+inherits = "dev"
+debug = "full"
