@@ -23,6 +23,7 @@ Each kind of state has one owner:
 | Executable work and discussion | GitHub Issues |
 | First-release gate status | [`docs/release-checklist.md`](docs/release-checklist.md) |
 | Release work scope and required evidence | [`docs/backlog.md`](docs/backlog.md) |
+| Release approval, authority, and artifact locations | [`docs/release-governance.md`](docs/release-governance.md) |
 | Priorities and current workflow state | GitHub Project |
 | Time-bounded release target | GitHub Milestone |
 | Label names and meanings | [`.github/labels.json`](.github/labels.json) |

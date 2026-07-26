@@ -10,7 +10,9 @@ current source-evaluation workflow. Release eligibility is decided only by
 > `rackio.genm.dev` is a planned distribution endpoint, not evidence that an
 > installer or release artifact is available there. Do not use the commands
 > below against production machines until the release checklist records the
-> required signed-artifact, platform and network evidence.
+> required signed-artifact, platform and network evidence. GitHub Release
+> ownership, release approval and custom-domain publication are defined in
+> [`release-governance.md`](release-governance.md).
 
 ## Operating model
 
