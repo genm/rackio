@@ -44,7 +44,7 @@ function Invoke-StatusAsTestUser {
         -PassThru `
         -RedirectStandardOutput $stdout `
         -RedirectStandardError $stderr
-    if (-not $process.WaitForExit(10_000)) {
+    if (-not $process.WaitForExit(10000)) {
         Stop-Process -Id $process.Id -Force
         $process.WaitForExit()
         throw "$Name status client did not exit within ten seconds"
