@@ -14,14 +14,16 @@ are maintained in [`backlog.md`](backlog.md).
 
 - [x] accept `Rackio` as the public name after reviewing the inactive,
       functionally distinct Python project with the same name
-- [ ] create the intended public remote, then enable private vulnerability
+- [x] create the intended public remote, then enable private vulnerability
       reporting and required CI checks before accepting contributions
   - [x] publish `genm/rackio` with `main` as the protected default branch
   - [x] enable private vulnerability reporting, Dependabot alerts, security
         updates, secret scanning and push protection
   - [x] require CI, Security and cross-platform Rust checks on pull requests
-  - [ ] review successful initial CI and Security runs in
-        [REL-01](https://github.com/genm/rackio/issues/13)
+  - [x] review successful initial
+        [CI](https://github.com/genm/rackio/actions/runs/30189950751) and
+        [Security](https://github.com/genm/rackio/actions/runs/30189950752)
+        runs in [REL-01](https://github.com/genm/rackio/issues/13)
 - [x] scan the complete Git history for committed secrets locally and in
       security CI
 
@@ -30,7 +32,9 @@ are maintained in [`backlog.md`](backlog.md).
 - [ ] Windows named-pipe IPC with explicit ACL and caller verification
   - [x] implementation uses the `Rackio Viewers` group DACL, rejects remote
         clients and rechecks the connected process token
-  - [ ] Windows CI integration evidence
+  - [x] GitHub-hosted Windows CI verifies `Rackio Viewers` access,
+        post-removal denial and remote pipe-name rejection in
+        [run 30199245306](https://github.com/genm/rackio/actions/runs/30199245306)
 - [ ] system service installers for Windows, macOS and Linux, including reboot
       recovery and desktop access to the local socket
   - [x] checksum-verified Linux systemd installer and rootless installer tests

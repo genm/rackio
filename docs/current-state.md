@@ -44,8 +44,14 @@ NAT and mixed-OS release matrices.
 | Desktop | Local/remote cards, 24-hour remote history detail, dynamic worst-state tray icon, configurable OS notifications, QR/file/bundle pairing, SSH bootstrap, and explicit degraded states | Cross-platform packaging |
 | Linux packaging | Release archive builder, HTTPS or client-pushed archive install, checksum verification, hardened systemd unit and preserving/purge uninstaller | No signed public release; reboot and distribution coverage are not proven |
 | macOS | Dedicated daemon user/group, LaunchDaemon lifecycle, preserving uninstaller and fail-closed signed/notarized pkg builder | A real Developer ID signature, notarization receipt and reboot evidence require release credentials and a clean macOS host |
-| Windows | Explicit-DACL named-pipe IPC with caller-token verification, Windows Service installer/uninstaller and CI integration scenario | Windows CI execution, Authenticode/MSI signing and reboot evidence require a Windows release host |
+| Windows | Explicit-DACL named-pipe IPC with caller-token verification, Windows Service installer/uninstaller and a GitHub-hosted CI integration scenario | Authenticode/MSI signing, clean-host remote-client rejection and reboot evidence require a Windows release host |
 | Relay | Version-pinned upstream relay container and configuration | Internet-exposure workflow, token delivery and NAT evidence |
+
+CI runs every gate for a ready PR's initial revision, selector/workflow changes,
+scheduled security checks and any selector failure. Later PR synchronizations
+compare only the previous and current head revisions; documentation-only updates
+retain commit policy, required-context reporting and affected-range secret
+scanning without rebuilding Rust or the desktop.
 
 ## Persistence and directionality
 
@@ -98,8 +104,7 @@ rootless installer test.
 ## Next coherent milestones
 
 Follow the dependency order in [`backlog.md`](backlog.md), beginning with the
-public repository, Linux desktop security blocker, and signed service-release
-evidence.
+Linux desktop security blocker and signed service-release evidence.
 
 Do not move remote transport into Tauri to accelerate UI work. Keeping it in the
 daemon is what preserves collection and monitoring after tray exit or logout.

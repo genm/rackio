@@ -25,6 +25,7 @@ run = [
   "pnpm typecheck",
   "pnpm lint",
   "pnpm test:env",
+  "pnpm test:ci-plan",
   "pnpm test",
   "pnpm test:ct",
   "pnpm build",
