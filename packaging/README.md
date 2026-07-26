@@ -100,10 +100,14 @@ The manually dispatched
 [`Linux release evidence`](../.github/workflows/linux-release-evidence.yml)
 workflow builds the headless agent natively on GitHub-hosted x86_64 and arm64
 Linux runners, rejects vendor relay/discovery defaults, verifies the archive
-checksum and contents, and records GitHub build-provenance attestations. It
-accepts only the protected default branch. Its one-day workflow artifacts are
-test evidence, not a supported release or the canonical immutable publication
-defined in [`release-governance.md`](../docs/release-governance.md).
+checksum and contents, records GitHub build-provenance attestations, then
+installs that same archive on the clean runner. The system test verifies
+systemd enablement and restart, root and viewer-group health, denial outside the
+viewer group, preserving reinstall, and explicit purge on both architectures.
+It accepts only the protected default branch. Its one-day workflow artifacts
+are test evidence, not reboot evidence, a supported release, or the canonical
+immutable publication defined in
+[`release-governance.md`](../docs/release-governance.md).
 
 Download an evidence archive from its workflow run and independently verify
 the GitHub attestation:

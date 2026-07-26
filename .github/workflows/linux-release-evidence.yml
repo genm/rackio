@@ -62,6 +62,7 @@ jobs:
           RACKIO_RELEASE_REPORT: test-results/release-binary-${{ matrix.target }}.json
         run: scripts/check-release-binary-cloud-independence.sh "target/${{ matrix.target }}/release/rackio"
       - name: Package and verify release archive
+        id: artifact
         env:
           TARGET: ${{ matrix.target }}
           VERSION: ${{ steps.package.outputs.version }}
@@ -92,10 +93,34 @@ jobs:
             --arg archive "$(basename "$archive")" \
             '{ok: true, target: $target, version: $version, archive: $archive, checksum: true, layout: true}' \
             > "test-results/linux-release-$TARGET.json"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "checksum=$archive.sha256" >> "$GITHUB_OUTPUT"
       - name: Attest build provenance
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
           subject-path: dist/*.tar.gz
+      - name: Exercise clean systemd installation
+        env:
+          RACKIO_SYSTEM_INSTALL_TEST: "1"
+        run: |
+          packaging/linux/systemd-install.test.sh \
+            "${{ steps.artifact.outputs.archive }}" \
+            "${{ steps.artifact.outputs.checksum }}" \
+            "test-results/linux-systemd-${{ matrix.target }}.json"
+      - name: Capture systemd failure diagnostics
+        if: failure()
+        run: |
+          sudo systemctl status rackio.service --no-pager 2>&1 |
+            tee "test-results/linux-systemd-${{ matrix.target }}.status.txt" >/dev/null || true
+          sudo journalctl -u rackio.service --no-pager --lines=200 2>&1 |
+            tee "test-results/linux-systemd-${{ matrix.target }}.journal.txt" >/dev/null || true
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-systemd-failure-${{ matrix.target }}
+          path: test-results/
+          retention-days: 1
       - name: Upload short-lived evidence bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
