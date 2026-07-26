@@ -36,10 +36,18 @@ function Invoke-StatusAsTestUser {
 
     $stdout = Join-Path $root "$Name.stdout"
     $stderr = Join-Path $root "$Name.stderr"
+    $processEnvironment = @{
+        RACKIO_CONFIG_DIR = $env:RACKIO_CONFIG_DIR
+        RACKIO_DATA_DIR = $env:RACKIO_DATA_DIR
+        RACKIO_STATE_DIR = $env:RACKIO_STATE_DIR
+        RACKIO_LOG_DIR = $env:RACKIO_LOG_DIR
+        RACKIO_PIPE = $env:RACKIO_PIPE
+    }
     $process = Start-Process `
         -FilePath $binary `
         -ArgumentList "status" `
         -Credential $credential `
+        -Environment $processEnvironment `
         -LoadUserProfile `
         -PassThru `
         -RedirectStandardOutput $stdout `
