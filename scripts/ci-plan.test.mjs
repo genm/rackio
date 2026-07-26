@@ -10,6 +10,7 @@ test("docs-only updates select no heavy gates", () => {
   assert.deepEqual(
     classifyChangedFiles([
       "README.md",
+      ".agents/skills/rackio-oss-governance/SKILL.md",
       "docs/operations.md",
       "packaging/README.md",
       "relay-package/README.md",
@@ -64,14 +65,17 @@ test("Tauri JSON configuration selects both desktop owners", () => {
   assert.equal(plan.frontend, true);
 });
 
-test("initial and reopened ready pull requests run every gate", () => {
-  for (const eventAction of ["opened", "ready_for_review", "reopened"]) {
+test("recognized pull request actions select only affected gates", () => {
+  for (const eventAction of ["opened", "ready_for_review", "reopened", "synchronize"]) {
     const plan = planForEvent({
       eventName: "pull_request",
       eventAction,
       files: ["docs/operations.md"],
     });
-    assert.equal(plan.full_run, true);
+    assert.equal(plan.full_run, false);
+    assert.equal(plan.rust, false);
+    assert.equal(plan.frontend, false);
+    assert.equal(plan.security_policy, false);
   }
 });
 

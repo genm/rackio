@@ -26,7 +26,7 @@ let files = [];
 let plan;
 
 try {
-  if (eventName === "push" || (eventName === "pull_request" && eventAction === "synchronize")) {
+  if (eventName === "push" || eventName === "pull_request") {
     files = changedFiles(process.env.CI_BASE_SHA, process.env.CI_HEAD_SHA);
   }
   plan = planForEvent({ eventName, eventAction, files });

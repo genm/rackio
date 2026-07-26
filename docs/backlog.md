@@ -4,10 +4,11 @@ This document turns the remaining release gates into issue-sized work. The
 authoritative completion state remains [`release-checklist.md`](release-checklist.md);
 do not maintain a second set of checkboxes here.
 
-When the public GitHub remote exists, create one issue per backlog ID, keep the
-ID in the issue title, and attach the resulting evidence to that issue. Closing
-an issue does not by itself satisfy a release gate: update the release checklist
-only after its evidence has been reviewed.
+When the public GitHub remote exists, create one issue per backlog ID. Use the
+work item as the human-readable issue title, and preserve the backlog ID through
+the issue body's source link to this document. Attach the resulting evidence to
+that issue. Closing an issue does not by itself satisfy a release gate: update
+the release checklist only after its evidence has been reviewed.
 
 ## Execution order
 

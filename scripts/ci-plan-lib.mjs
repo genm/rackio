@@ -71,10 +71,9 @@ export function planForEvent({ eventName, eventAction, files = [] }) {
   }
 
   if (eventName === "pull_request") {
-    if (["opened", "ready_for_review", "reopened"].includes(eventAction)) {
-      return fullPlan(`pull_request_${eventAction}`);
-    }
-    if (eventAction !== "synchronize") {
+    // GitHub supplies comparable base/head SHAs for every supported PR
+    // transition, so lifecycle events can use the same affected plan as pushes.
+    if (!["opened", "ready_for_review", "reopened", "synchronize"].includes(eventAction)) {
       return fullPlan("unknown_pull_request_action");
     }
   } else if (eventName !== "push") {
