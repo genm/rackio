@@ -16,6 +16,12 @@ are maintained in [`backlog.md`](backlog.md).
       functionally distinct Python project with the same name
 - [ ] create the intended public remote, then enable private vulnerability
       reporting and required CI checks before accepting contributions
+  - [x] publish `genm/rackio` with `main` as the protected default branch
+  - [x] enable private vulnerability reporting, Dependabot alerts, security
+        updates, secret scanning and push protection
+  - [x] require CI, Security and cross-platform Rust checks on pull requests
+  - [ ] review successful initial CI and Security runs in
+        [REL-01](https://github.com/genm/rackio/issues/13)
 - [x] scan the complete Git history for committed secrets locally and in
       security CI
 

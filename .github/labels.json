@@ -108,5 +108,15 @@
     "name": "help wanted",
     "color": "008672",
     "description": "Maintainers welcome external help"
+  },
+  {
+    "name": "dependencies",
+    "color": "0366d6",
+    "description": "Pull requests that update a dependency file"
+  },
+  {
+    "name": "github_actions",
+    "color": "000000",
+    "description": "Pull requests that update GitHub Actions code"
   }
 ]
