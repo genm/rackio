@@ -46,7 +46,11 @@ are maintained in [`backlog.md`](backlog.md).
   - [ ] SSH bootstrap evidence against clean Linux hosts from macOS, Windows
         and Linux clients
   - [ ] Linux reboot recovery on supported distributions
-  - [ ] independent artifact signature/provenance verification
+  - [x] native x86_64 and arm64 Linux archives have independently verified
+        SLSA provenance in
+        [run 30206186071](https://github.com/genm/rackio/actions/runs/30206186071);
+        this evidence does not make the short-lived workflow artifacts a
+        supported public release
   - [ ] signed macOS package and Windows service installer
     - [x] macOS pkg builder refuses release output without a signing identity
           and optionally waits for notarization and staples the ticket
