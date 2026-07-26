@@ -156,6 +156,10 @@ try {
     if ($remoteExitCode -eq 0 -or $remoteOutput -notmatch "must start with") {
         throw "Remote named-pipe configuration was not rejected locally"
     }
+    # GitHub's pwsh wrapper propagates LASTEXITCODE after dot-sourcing this
+    # script. The rejected client is expected, so do not turn that assertion
+    # into a false-negative workflow result.
+    $global:LASTEXITCODE = 0
 
     [ordered]@{
         ok = $true
