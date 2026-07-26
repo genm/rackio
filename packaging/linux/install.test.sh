@@ -7,8 +7,17 @@ trap 'rm -rf "$test_root"' EXIT
 mkdir -p "$test_root/bin" "$test_root/releases/v0.1.0"
 
 fake_binary="$test_root/bin/rackio"
-# shellcheck disable=SC2016 # The generated fixture must evaluate $1 at runtime.
-printf '#!/bin/sh\n[ "${1:-}" = "--version" ] && { echo "rackio 0.1.0"; exit 0; }\nexit 1\n' \
+# shellcheck disable=SC2016 # The generated fixture must evaluate variables at runtime.
+printf '%s\n' \
+  '#!/bin/sh' \
+  'if [ "${1:-}" = "--version" ]; then echo "rackio 0.1.0"; exit 0; fi' \
+  'if [ "${1:-}" = "status" ] && [ -n "${RACKIO_FAKE_HEALTH_COUNT:-}" ]; then' \
+  '  count="$(cat "$RACKIO_FAKE_HEALTH_COUNT" 2>/dev/null || echo 0)"' \
+  '  count=$((count + 1))' \
+  '  printf "%s\n" "$count" >"$RACKIO_FAKE_HEALTH_COUNT"' \
+  '  [ "${RACKIO_FAKE_HEALTH_ALWAYS_FAIL:-0}" != "1" ] && [ "$count" -ge 3 ] && exit 0' \
+  'fi' \
+  'exit 1' \
   >"$fake_binary"
 chmod 0755 "$fake_binary"
 "$repo_root/packaging/linux/package-release.sh" \
@@ -100,4 +109,54 @@ fi
 grep -Fq "restricted to an explicitly opted-in GitHub-hosted runner" \
   "$test_root/system-install-guard.stderr"
 
-printf '{"ok":true,"normal_install":true,"idempotent_reinstall":true,"local_archive_install":true,"missing_notice_rejection":true,"checksum_rejection":true,"system_install_guard":true}\n'
+fake_system_bin="$test_root/system-bin"
+mkdir "$fake_system_bin"
+for command_name in systemctl getent groupadd useradd usermod; do
+  printf '#!/bin/sh\nexit 0\n' >"$fake_system_bin/$command_name"
+  chmod 0755 "$fake_system_bin/$command_name"
+done
+
+service_releases="$test_root/service-releases"
+mkdir -p "$service_releases/v0.1.0"
+"$repo_root/packaging/linux/package-release.sh" \
+  "$fake_binary" \
+  0.1.0 \
+  x86_64-unknown-linux-gnu \
+  "$service_releases/v0.1.0" >/dev/null
+service_asset="$service_releases/v0.1.0/rackio-v0.1.0-x86_64-unknown-linux-gnu.tar.gz"
+health_count="$test_root/health-count"
+printf '0\n' >"$health_count"
+
+PATH="$fake_system_bin:$PATH" \
+RACKIO_INSTALL_ROOT="$test_root/service-root" \
+RACKIO_FAKE_HEALTH_COUNT="$health_count" \
+_RACKIO_HEALTH_ATTEMPTS=3 \
+_RACKIO_HEALTH_RETRY_DELAY=0 \
+_RACKIO_TEST_OS=Linux \
+_RACKIO_TEST_ARCH=x86_64 \
+  sh "$repo_root/install.sh" \
+  --archive "$service_asset" \
+  --checksum "$service_asset.sha256" >/dev/null
+test "$(cat "$health_count")" -eq 3
+
+printf '0\n' >"$health_count"
+if PATH="$fake_system_bin:$PATH" \
+  RACKIO_INSTALL_ROOT="$test_root/unhealthy-service-root" \
+  RACKIO_FAKE_HEALTH_COUNT="$health_count" \
+  RACKIO_FAKE_HEALTH_ALWAYS_FAIL=1 \
+  _RACKIO_HEALTH_ATTEMPTS=3 \
+  _RACKIO_HEALTH_RETRY_DELAY=0 \
+  _RACKIO_TEST_OS=Linux \
+  _RACKIO_TEST_ARCH=x86_64 \
+  sh "$repo_root/install.sh" \
+  --archive "$service_asset" \
+  --checksum "$service_asset.sha256" \
+  2>"$test_root/unhealthy-service.stderr"; then
+  echo "installer accepted a service that never became healthy" >&2
+  exit 1
+fi
+grep -Fq "did not become healthy within 3 seconds" \
+  "$test_root/unhealthy-service.stderr"
+test "$(cat "$health_count")" -eq 3
+
+printf '{"ok":true,"normal_install":true,"idempotent_reinstall":true,"local_archive_install":true,"missing_notice_rejection":true,"checksum_rejection":true,"system_install_guard":true,"delayed_service_health":true,"unhealthy_service_rejection":true}\n'
