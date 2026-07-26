@@ -5,8 +5,8 @@ import { evaluateEnvironment } from "./environment-doctor-lib.mjs";
 
 const requiredChecks = [
   { name: "node", required: true, ok: true, detail: "v24.15.0" },
-  { name: "pnpm", required: true, ok: true, detail: "10.33.0" },
-  { name: "rust", required: true, ok: true, detail: "rustc 1.92.0" },
+  { name: "pnpm", required: true, ok: true, detail: "11.17.0" },
+  { name: "rust", required: true, ok: true, detail: "rustc 1.97.1" },
   { name: "git_hook", required: true, ok: true, detail: "installed" },
   { name: "playwright_chromium", required: true, ok: true, detail: "installed" },
 ];

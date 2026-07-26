@@ -177,7 +177,7 @@ function dockerCheck() {
 const toolInventory = loadToolInventory();
 const checks = [
   managedToolCheck(toolInventory, "node", "node", "node", ["--version"]),
-  managedToolCheck(toolInventory, "pnpm", "pnpm", "pnpm", ["--version"]),
+  managedToolCheck(toolInventory, "pnpm", "github:pnpm/pnpm", "pnpm", ["--version"]),
   managedToolCheck(toolInventory, "rust", "rust", "rustc", ["--version"]),
   managedToolCheck(toolInventory, "cargo_nextest", "cargo:cargo-nextest", "cargo", [
     "nextest",

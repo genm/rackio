@@ -11,7 +11,7 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -19,7 +19,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 const PAIRING_SECRET_BYTES: usize = 32;
-const PAIRING_WINDOW: Duration = Duration::from_secs(5 * 60);
+const PAIRING_WINDOW: Duration = Duration::from_mins(5);
 const MAX_FAILURES: u8 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -563,7 +563,7 @@ async fn create_pairing_bundle(
         Ok(generation) => {
             let pairing_mdns = Arc::clone(&runtime.pairing_mdns);
             tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+                tokio::time::sleep(Duration::from_mins(5)).await;
                 if pairing_mdns.close_if_generation(generation).await {
                     tracing::info!("pairing mDNS advertisement expired");
                 }
