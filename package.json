@@ -19,12 +19,5 @@
     "oxfmt": "0.60.0",
     "oxlint": "1.75.0"
   },
-  "packageManager": "pnpm@10.33.0",
-  "pnpm": {
-    "minimumReleaseAge": 4320,
-    "onlyBuiltDependencies": [
-      "@tauri-apps/cli",
-      "esbuild"
-    ]
-  }
+  "packageManager": "pnpm@11.17.0"
 }

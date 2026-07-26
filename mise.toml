@@ -1,6 +1,6 @@
 [tools]
 node = "24.15.0"
-pnpm = "10.33.0"
+"github:pnpm/pnpm" = "11.17.0"
 rust = "1.97.1"
 just = "1.57.0"
 "aqua:evilmartians/lefthook" = "2.1.10"
