@@ -66,7 +66,9 @@ hide blockers in Project-only notes.
 ## Manage release work
 
 Use one release-evidence issue per `REL-XX` section in `docs/backlog.md`.
-Preserve the backlog ID in the title and attach:
+Use the work item as the human-readable title, without a `REL-XX` prefix.
+Preserve the backlog ID in the issue body by linking its `docs/backlog.md`
+section, and attach:
 
 - exact commit and artifact checksum;
 - environment and reproducible procedure;
