@@ -1,8 +1,13 @@
+import { TextDecoder } from "node:util";
+
+const pathDecoder = new TextDecoder("utf-8", { fatal: true });
+
 const GLOBAL_PATHS = [
   /^\.github\/workflows\//,
   /^mise\.toml$/,
   /^scripts\/ci-plan(?:-lib)?\.mjs$/,
   /^scripts\/ci-plan\.test\.mjs$/,
+  /^scripts\/reject-matches(?:\.sh|\.test\.mjs)$/,
 ];
 
 const CROSS_PLATFORM_RUST_PATHS = [
@@ -49,6 +54,17 @@ const SECURITY_SOURCE_PATHS = [/^(?:apps|crates)\//];
 
 function matchesAny(path, patterns) {
   return patterns.some((pattern) => pattern.test(path));
+}
+
+export function parseChangedFiles(output) {
+  const decoded = pathDecoder.decode(output);
+  if (decoded.length === 0) {
+    return [];
+  }
+  if (!decoded.endsWith("\0")) {
+    throw new Error("git diff path output is missing its NUL terminator");
+  }
+  return decoded.slice(0, -1).split("\0");
 }
 
 export function fullPlan(reason) {
