@@ -118,5 +118,15 @@
     "name": "github_actions",
     "color": "000000",
     "description": "Pull requests that update GitHub Actions code"
+  },
+  {
+    "name": "rust",
+    "color": "000000",
+    "description": "Pull requests that update rust code"
+  },
+  {
+    "name": "javascript",
+    "color": "168700",
+    "description": "Pull requests that update javascript code"
   }
 ]

@@ -42,7 +42,10 @@ mkdir -p \
   "$integration_root/server/log"
 
 cargo build -p rackio-agent >/dev/null
-binary="$repo_root/target/debug/rackio"
+# Cargo may use a shared or caller-selected target directory. Resolve the
+# authoritative path instead of silently waiting on a binary that was not built.
+target_dir="$(cargo metadata --format-version=1 --no-deps | jq -er '.target_directory')"
+binary="$target_dir/debug/rackio"
 viewer_socket="$integration_root/viewer.sock"
 server_socket="$integration_root/server.sock"
 
