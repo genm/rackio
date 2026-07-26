@@ -21,6 +21,9 @@ updates:
         dependency-type: development
         patterns:
           - "*"
+        # Keep breaking toolchain upgrades isolated so one failure has one owner.
+        update-types:
+          - patch
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -30,3 +33,7 @@ updates:
       github-actions:
         patterns:
           - "*"
+        # Major action upgrades can change runtime and input contracts.
+        update-types:
+          - minor
+          - patch
