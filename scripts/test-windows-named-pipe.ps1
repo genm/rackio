@@ -70,7 +70,7 @@ try {
     New-Item -ItemType Directory -Path $root | Out-Null
     # The temporary non-administrator account needs only this test directory for
     # its Rackio state and redirected output. Use the language-neutral Users SID.
-    & icacls.exe $root /grant "*S-1-5-32-545:(OI)(CI)M" /quiet | Out-Null
+    & icacls.exe $root /grant "*S-1-5-32-545:(OI)(CI)M" /Q | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to grant temporary test-directory access"
     }
@@ -155,14 +155,16 @@ try {
             Stop-Process -Id $daemon.Id -Force
             $daemon.WaitForExit()
         }
+        $logDirectory = $env:RACKIO_LOG_DIR
         if (
             -not $completed -and
             $null -ne $root -and
-            (Test-Path -LiteralPath $env:RACKIO_LOG_DIR)
+            -not [string]::IsNullOrWhiteSpace($logDirectory) -and
+            (Test-Path -LiteralPath $logDirectory)
         ) {
             $diagnostics = Join-Path $PSScriptRoot "..\test-results\windows-named-pipe"
             New-Item -ItemType Directory -Path $diagnostics -Force | Out-Null
-            Get-ChildItem -LiteralPath $env:RACKIO_LOG_DIR -File |
+            Get-ChildItem -LiteralPath $logDirectory -File |
                 Copy-Item -Destination $diagnostics -Force
         }
     } finally {
