@@ -234,8 +234,21 @@ run_root systemctl enable --now rackio.service
 run_root systemctl is-active --quiet rackio.service ||
   fail "rackio.service did not become active; inspect: journalctl -u rackio.service"
 
-run_root env RACKIO_SOCKET=/run/rackio/agent.sock "$BIN_PATH" status >/dev/null ||
-  fail "rackio.service is active but its local health check failed"
+if [ -n "$INSTALL_ROOT" ]; then
+  HEALTH_ATTEMPTS="${_RACKIO_HEALTH_ATTEMPTS:-30}"
+  HEALTH_RETRY_DELAY="${_RACKIO_HEALTH_RETRY_DELAY:-1}"
+else
+  HEALTH_ATTEMPTS=30
+  HEALTH_RETRY_DELAY=1
+fi
+# systemd can report active before the daemon creates its local socket.
+health_attempt=1
+while ! run_root env RACKIO_SOCKET=/run/rackio/agent.sock "$BIN_PATH" status >/dev/null 2>&1; do
+  [ "$health_attempt" -lt "$HEALTH_ATTEMPTS" ] ||
+    fail "rackio.service did not become healthy within ${HEALTH_ATTEMPTS} seconds; inspect: journalctl -u rackio.service"
+  sleep "$HEALTH_RETRY_DELAY"
+  health_attempt=$((health_attempt + 1))
+done
 
 cat <<EOF
 Rackio $VERSION installed successfully.
