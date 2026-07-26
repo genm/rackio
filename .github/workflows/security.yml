@@ -47,7 +47,7 @@ jobs:
       - name: Select pinned Rust toolchain
         run: rustup show
       - name: Install Rust policy tools
-        uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8 # v2.77.5
+        uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094 # v2.85.1
         with:
           tool: cargo-deny@0.20.2,cargo-machete@0.9.2,cargo-about@0.9.1
           fallback: none
