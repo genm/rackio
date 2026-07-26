@@ -9,6 +9,11 @@ the platform user/group, IPC permissions, persistence directories, recovery
 policy, or signed service definition. Use the installer for the target OS below
 as the single authoritative path.
 
+The operator workflow and its security boundaries are maintained in
+[`../docs/operations.md`](../docs/operations.md). This document owns artifact
+layout, package-building and platform-installer details; it does not imply that
+a public release is available.
+
 ## Linux system service
 
 [`../install.sh`](../install.sh) automates the Linux headless installation. It

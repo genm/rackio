@@ -22,6 +22,9 @@ environment doctor. Re-running it is safe.
 
 No `.env` file is required. Node identities and pairing secrets are generated
 by the agent in its protected data directory, not placed in the repository.
+For the user/operator lifecycle rather than source development, use
+[`operations.md`](operations.md); it is also the authoritative guide for the
+SSH-assisted Linux bootstrap trust boundary.
 
 ## Host prerequisites
 

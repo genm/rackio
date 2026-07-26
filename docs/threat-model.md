@@ -12,7 +12,9 @@
 
 The local agent is trusted. The tray UI is trusted only through OS-local IPC
 permissions. Remote peers, LAN discovery input, pairing bundles after expiry,
-relay operators, DNS and all network traffic are untrusted.
+relay operators, DNS and all network traffic are untrusted. SSH-assisted
+bootstrap also treats the network-provided SSH host key as untrusted until the
+operator verifies its displayed fingerprint through an independent channel.
 
 ## Guarantees
 
@@ -31,6 +33,9 @@ relay operators, DNS and all network traffic are untrusted.
 - direct-only mode configures no public relay, vendor DNS discovery, gateway
   port-mapping probe or telemetry.
 - metrics, keys and pairing secrets are excluded from structured logs.
+- SSH bootstrap uses non-interactive SSH/SCP with strict host-key checking
+  after explicit fingerprint confirmation. It uploads a locally selected
+  archive and does not transfer the SSH private key or capture a password.
 
 ## Relay visibility
 
@@ -49,6 +54,12 @@ out of scope for v1. Operators must document retention of relay access logs.
   daemon-owned 0600 file inside a 0700 directory on Unix.
 - Relay endpoint allowlisting and token delivery need an operator-facing secret
   workflow before internet exposure.
+- `ssh-keyscan` cannot authenticate a host key by itself. A mistaken fingerprint
+  confirmation authorizes installation on the wrong host; its verification is
+  an operator responsibility, documented in [`operations.md`](operations.md).
+- SSH bootstrap is an initial installation aid, not the monitoring transport.
+  A successful SSH session is not proof of P2P reachability, NAT traversal or
+  the identity of a later Rackio endpoint.
 - Packet-capture proof of zero non-peer egress and relay payload opacity remains
   part of the release NAT/privacy matrix.
 
