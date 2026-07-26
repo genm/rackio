@@ -476,7 +476,10 @@ async fn write_error(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+        sync::Arc,
+    };
 
     use rackio_core::{
         HealthSnapshot, MetricStore, NodeInfo, NodeState, ProtocolVersion as CoreProtocolVersion,
@@ -541,7 +544,24 @@ mod tests {
         });
         let server = RemoteServer::new(server_endpoint.clone(), Arc::clone(&runtime));
         let server_task = tokio::spawn(server.run());
-        let client = ClientConnection::connect(client_endpoint, server_endpoint.addr())
+        let advertised_addr = server_endpoint.addr();
+        let advertised_ip = advertised_addr
+            .ip_addrs()
+            .find(|address| address.is_ipv4())
+            .or_else(|| advertised_addr.ip_addrs().next())
+            .copied()
+            .unwrap_or_else(|| panic!("test endpoint did not advertise a direct address"));
+        let loopback = SocketAddr::new(
+            match advertised_ip {
+                SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+                SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
+            },
+            advertised_ip.port(),
+        );
+        // Restrict this same-host contract test to loopback so unrelated host
+        // interfaces cannot turn it into a WAN-path selection race.
+        let test_addr = iroh::EndpointAddr::new(server_endpoint.id()).with_ip_addr(loopback);
+        let client = ClientConnection::connect(client_endpoint, test_addr)
             .await
             .unwrap_or_else(|error| panic!("{error}"));
 
@@ -591,12 +611,32 @@ mod tests {
             Some(response::Body::NodeInfo(ref info)) if info.display_name == "Test node"
         ));
 
-        let connection_path = client
+        let mut connection_path = client
             .request(&Request {
                 body: Some(request::Body::GetConnectionPath(current_version())),
             })
             .await
             .unwrap_or_else(|error| panic!("{error}"));
+        // iroh can briefly select a different direct candidate while its path
+        // state converges under concurrent test load. Require the same-host LAN
+        // result eventually without treating the first truthful snapshot as
+        // the final path.
+        for _ in 0..40 {
+            if matches!(
+                connection_path.body,
+                Some(response::Body::ConnectionPath(ref details))
+                    if details.path == rackio_protocol::v1::ConnectionPath::LanDirect as i32
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            connection_path = client
+                .request(&Request {
+                    body: Some(request::Body::GetConnectionPath(current_version())),
+                })
+                .await
+                .unwrap_or_else(|error| panic!("{error}"));
+        }
         assert!(matches!(
             connection_path.body,
             Some(response::Body::ConnectionPath(ref details))
