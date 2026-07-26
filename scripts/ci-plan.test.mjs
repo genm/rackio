@@ -18,6 +18,9 @@ test("docs-only updates select no heavy gates", () => {
     {
       full_run: false,
       rust: false,
+      rust_linux: false,
+      rust_macos: false,
+      rust_windows: false,
       frontend: false,
       security_policy: false,
       security_source: false,
@@ -37,9 +40,27 @@ test("frontend updates do not select the Rust or dependency-policy gates", () =>
 test("Rust updates select the cross-platform and security gates", () => {
   const plan = classifyChangedFiles(["crates/rackio-iroh/src/transport.rs"]);
   assert.equal(plan.rust, true);
+  assert.equal(plan.rust_linux, true);
+  assert.equal(plan.rust_macos, true);
+  assert.equal(plan.rust_windows, true);
   assert.equal(plan.frontend, false);
   assert.equal(plan.security_policy, true);
   assert.equal(plan.security_source, true);
+});
+
+test("platform packaging selects only its owning Rust runner", () => {
+  for (const [file, selected] of [
+    ["install.sh", "rust_linux"],
+    ["packaging/linux/systemd-install.test.sh", "rust_linux"],
+    ["packaging/macos/package-release.sh", "rust_macos"],
+    ["packaging/windows/install.ps1", "rust_windows"],
+  ]) {
+    const plan = classifyChangedFiles([file]);
+    assert.equal(plan.rust, true, file);
+    assert.equal(plan.rust_linux, selected === "rust_linux", file);
+    assert.equal(plan.rust_macos, selected === "rust_macos", file);
+    assert.equal(plan.rust_windows, selected === "rust_windows", file);
+  }
 });
 
 test("relay packaging selects only dependency policy", () => {
@@ -54,6 +75,9 @@ test("CI routing changes force every gate", () => {
     const plan = classifyChangedFiles([file]);
     assert.equal(plan.full_run, true);
     assert.equal(plan.rust, true);
+    assert.equal(plan.rust_linux, true);
+    assert.equal(plan.rust_macos, true);
+    assert.equal(plan.rust_windows, true);
     assert.equal(plan.frontend, true);
     assert.equal(plan.security_policy, true);
   }
@@ -103,5 +127,8 @@ test("unavailable comparison SHAs fail closed in the CLI", () => {
   assert.equal(result.status, 0);
   assert.match(result.stderr, /Affected detection failed; running every gate/);
   assert.match(readFileSync(outputPath, "utf8"), /^full_run=true$/m);
+  assert.match(readFileSync(outputPath, "utf8"), /^rust_linux=true$/m);
+  assert.match(readFileSync(outputPath, "utf8"), /^rust_macos=true$/m);
+  assert.match(readFileSync(outputPath, "utf8"), /^rust_windows=true$/m);
   assert.match(readFileSync(outputPath, "utf8"), /^reason=selector_error$/m);
 });
