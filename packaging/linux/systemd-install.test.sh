@@ -71,8 +71,10 @@ systemctl is-enabled --quiet rackio.service
 systemctl is-active --quiet rackio.service
 wait_for_root_health
 
-[[ "$(stat -c '%a' /run/rackio/agent.sock)" == "660" ]]
-[[ "$(stat -c '%G' /run/rackio/agent.sock)" == "rackio-viewers" ]]
+# The current CI shell does not inherit a group added after login. Inspect
+# metadata as root, then prove viewer access below in a fresh group context.
+[[ "$(sudo stat -c '%a' /run/rackio/agent.sock)" == "660" ]]
+[[ "$(sudo stat -c '%G' /run/rackio/agent.sock)" == "rackio-viewers" ]]
 id -nG "$viewer_user" | tr ' ' '\n' | grep -Fxq rackio-viewers
 sudo -u "$viewer_user" -g rackio-viewers \
   env RACKIO_SOCKET=/run/rackio/agent.sock /usr/local/bin/rackio status |
