@@ -112,6 +112,9 @@ independent release provenance explicit.
 
 The release archive contract and package-specific build details remain in
 [`packaging/README.md`](packaging/README.md).
+Release approval, immutable artifact ownership, and the planned relationship
+between GitHub Releases and `rackio.genm.dev` are defined in
+[`docs/release-governance.md`](docs/release-governance.md).
 
 ## Workspace
 

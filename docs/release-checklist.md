@@ -20,6 +20,9 @@ are maintained in [`backlog.md`](backlog.md).
   - [x] enable private vulnerability reporting, Dependabot alerts, security
         updates, secret scanning and push protection
   - [x] require CI, Security and cross-platform Rust checks on pull requests
+  - [x] document release approval, publication authority and canonical
+        artifact ownership in
+        [`release-governance.md`](release-governance.md)
   - [x] review successful initial
         [CI](https://github.com/genm/rackio/actions/runs/30189950751) and
         [Security](https://github.com/genm/rackio/actions/runs/30189950752)
