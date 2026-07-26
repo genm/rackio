@@ -32,7 +32,9 @@ are maintained in [`backlog.md`](backlog.md).
 - [ ] Windows named-pipe IPC with explicit ACL and caller verification
   - [x] implementation uses the `Rackio Viewers` group DACL, rejects remote
         clients and rechecks the connected process token
-  - [ ] Windows CI integration evidence
+  - [x] GitHub-hosted Windows CI verifies `Rackio Viewers` access,
+        post-removal denial and remote pipe-name rejection in
+        [run 30199245306](https://github.com/genm/rackio/actions/runs/30199245306)
 - [ ] system service installers for Windows, macOS and Linux, including reboot
       recovery and desktop access to the local socket
   - [x] checksum-verified Linux systemd installer and rootless installer tests
