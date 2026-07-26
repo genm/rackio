@@ -16,6 +16,7 @@ trivy = "0.72.0"
 [tasks.check]
 description = "Run repository quality gates"
 run = [
+  "actionlint",
   "cargo fmt --all -- --check",
   "cargo clippy --workspace --all-targets --all-features -- -D warnings",
   "cargo nextest run --workspace",
