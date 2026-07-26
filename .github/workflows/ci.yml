@@ -14,6 +14,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  plan:
+    name: Plan affected checks
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.plan.outputs.rust }}
+      frontend: ${{ steps.plan.outputs.frontend }}
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Select affected gates
+        id: plan
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          CI_EVENT_ACTION: ${{ github.event.action }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/ci-plan.mjs
+
   commits:
     name: Conventional Commits
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
@@ -58,40 +80,51 @@ jobs:
 
   rust:
     name: Rust (${{ matrix.os }})
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    needs: plan
+    if: always() && (needs.plan.result == 'success' || needs.plan.result == 'failure')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      RUN_RUST: ${{ needs.plan.result == 'failure' || needs.plan.outputs.rust == 'true' }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2022]
     steps:
+      - name: Report unaffected Rust gate
+        if: env.RUN_RUST != 'true'
+        run: echo "No Rust-owned files changed; required context satisfied without heavy work."
       - name: Check out source
+        if: env.RUN_RUST == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Linux desktop libraries
-        if: runner.os == 'Linux'
+        if: env.RUN_RUST == 'true' && runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install --yes libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - name: Select pinned Rust toolchain
+        if: env.RUN_RUST == 'true'
         run: rustup show
       - name: Install nextest
+        if: env.RUN_RUST == 'true'
         uses: taiki-e/install-action@3d7d7cd5ac7f994c1892ae0c06165095b9139094 # v2.85.1
         with:
           tool: cargo-nextest@0.9.140
           fallback: none
       - name: Format
-        if: runner.os == 'Linux'
+        if: env.RUN_RUST == 'true' && runner.os == 'Linux'
         run: cargo fmt --all -- --check
       - name: Clippy
+        if: env.RUN_RUST == 'true'
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
+        if: env.RUN_RUST == 'true'
         run: cargo nextest run --workspace
       - name: Exercise two-daemon pairing and reconnect
-        if: runner.os == 'Linux'
+        if: env.RUN_RUST == 'true' && runner.os == 'Linux'
         run: scripts/test-two-daemon-pairing.sh
       - name: Exercise secured named-pipe IPC
-        if: runner.os == 'Windows'
+        if: env.RUN_RUST == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
           @(
@@ -104,7 +137,7 @@ jobs:
           }
           scripts/test-windows-named-pipe.ps1
       - name: Capture failure diagnostics
-        if: failure()
+        if: env.RUN_RUST == 'true' && failure()
         shell: bash
         run: |
           mkdir -p test-results
@@ -112,7 +145,7 @@ jobs:
           git status --short > test-results/git-status.txt
           cp target/nextest/default/test-results/nextest/junit.xml test-results/junit.xml || true
       - name: Upload failure diagnostics
-        if: failure()
+        if: env.RUN_RUST == 'true' && failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rust-${{ matrix.os }}-failure
@@ -121,40 +154,61 @@ jobs:
 
   frontend:
     name: Frontend
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    needs: plan
+    if: always() && (needs.plan.result == 'success' || needs.plan.result == 'failure')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      RUN_FRONTEND: ${{ needs.plan.result == 'failure' || needs.plan.outputs.frontend == 'true' }}
     steps:
+      - name: Report unaffected frontend gate
+        if: env.RUN_FRONTEND != 'true'
+        run: echo "No frontend-owned files changed; required context satisfied without heavy work."
       - name: Check out source
+        if: env.RUN_FRONTEND == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Node
+        if: env.RUN_FRONTEND == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.15.0
       - name: Activate pinned pnpm
+        if: env.RUN_FRONTEND == 'true'
         run: |
           corepack enable
           corepack install
       - name: Install dependencies
+        if: env.RUN_FRONTEND == 'true'
         run: pnpm install --frozen-lockfile
       - name: Install component-test browser
+        if: env.RUN_FRONTEND == 'true'
         run: pnpm --filter @rackio/desktop exec playwright install --with-deps chromium
       - name: Format
+        if: env.RUN_FRONTEND == 'true'
         run: pnpm format:check
       - name: Typecheck
+        if: env.RUN_FRONTEND == 'true'
         run: pnpm typecheck
       - name: Lint
+        if: env.RUN_FRONTEND == 'true'
         run: pnpm lint
       - name: Unit tests
+        if: env.RUN_FRONTEND == 'true'
         run: pnpm test
       - name: Environment contract tests
+        if: env.RUN_FRONTEND == 'true'
         run: pnpm test:env
+      - name: CI affected-plan tests
+        if: env.RUN_FRONTEND == 'true'
+        run: pnpm test:ci-plan
       - name: Component tests
+        if: env.RUN_FRONTEND == 'true'
         run: pnpm test:ct
       - name: Production build
+        if: env.RUN_FRONTEND == 'true'
         run: pnpm build
       - name: Upload failure evidence
-        if: failure()
+        if: env.RUN_FRONTEND == 'true' && failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: frontend-failure
