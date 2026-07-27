@@ -2,7 +2,8 @@ mod ssh_bootstrap;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use qrcode::{QrCode, render::svg};
-use std::{fs::OpenOptions, io::Write, path::PathBuf};
+use serde::Deserialize;
+use std::{fs::OpenOptions, io::Write, path::PathBuf, time::Duration};
 use tauri::{
     AppHandle, Manager,
     image::Image,
@@ -209,23 +210,14 @@ async fn machine_history(endpoint_id: String, hours: u16) -> Result<serde_json::
     ))
 }
 
-#[tauri::command]
-fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
-    let result = apply_tray_state(&app, &state);
-    drop((app, state));
-    result
-}
-
-fn apply_tray_state(app: &AppHandle, state: &str) -> Result<(), String> {
-    let (label, color) = match state {
-        "healthy" => ("Healthy", [84, 217, 139, 255]),
-        "warning" => ("Warning", [230, 189, 89, 255]),
-        "degraded" => ("Degraded", [230, 189, 89, 255]),
-        "stale" => ("Stale", [164, 173, 168, 255]),
-        "critical" => ("Critical", [255, 111, 103, 255]),
-        "offline" => ("Offline", [255, 111, 103, 255]),
-        "auth_error" => ("Authentication error", [255, 111, 103, 255]),
-        "incompatible" => ("Incompatible agent", [255, 111, 103, 255]),
+fn apply_tray_details(app: &AppHandle, state: &str, tooltip: &str) -> Result<(), String> {
+    let color = match state {
+        "healthy" => [84, 217, 139, 255],
+        "warning" | "degraded" => [230, 189, 89, 255],
+        "stale" => [164, 173, 168, 255],
+        "critical" | "offline" | "auth_error" | "incompatible" | "daemon_unavailable" => {
+            [255, 111, 103, 255]
+        }
         _ => return Err(String::from("Unknown fleet state for tray icon.")),
     };
     let tray = app
@@ -233,12 +225,151 @@ fn apply_tray_state(app: &AppHandle, state: &str) -> Result<(), String> {
         .ok_or_else(|| String::from("Rackio tray icon is unavailable."))?;
     tray.set_icon(Some(state_icon(color)))
         .map_err(|error| format!("Could not update the Rackio tray icon: {error}"))?;
-    tray.set_tooltip(Some(format!("Rackio · {label}")))
+    tray.set_tooltip(Some(tooltip.to_owned()))
         .map_err(|error| format!("Could not update the Rackio tray tooltip: {error}"))?;
     #[cfg(target_os = "macos")]
     tray.set_icon_as_template(false)
         .map_err(|error| format!("Could not configure the Rackio tray icon: {error}"))?;
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct TrayFleetSnapshot {
+    daemon: String,
+    nodes: Vec<TrayNodeSnapshot>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrayNodeSnapshot {
+    state: String,
+    #[serde(rename = "cpuPercent")]
+    cpu_percent: Option<f64>,
+    #[serde(rename = "memoryUsedBytes")]
+    memory_used_bytes: Option<u64>,
+    #[serde(rename = "memoryTotalBytes")]
+    memory_total_bytes: Option<u64>,
+}
+
+fn tray_snapshot_details(snapshot: &TrayFleetSnapshot) -> (String, String) {
+    if snapshot.daemon != "connected" {
+        return (
+            String::from("daemon_unavailable"),
+            String::from("Rackio · Agent unavailable"),
+        );
+    }
+    if snapshot.nodes.is_empty() {
+        return (
+            String::from("healthy"),
+            String::from("Rackio · No paired machines"),
+        );
+    }
+
+    let state = snapshot
+        .nodes
+        .iter()
+        .map(|node| node.state.as_str())
+        .max_by_key(|state| tray_state_rank(state))
+        .unwrap_or("degraded")
+        .to_owned();
+    let machine_label = if snapshot.nodes.len() == 1 {
+        "machine"
+    } else {
+        "machines"
+    };
+    let cpu = average_cpu(&snapshot.nodes)
+        .map(|value| format!(" · CPU {value:.0}%"))
+        .unwrap_or_default();
+    let memory = memory_usage_percent(&snapshot.nodes)
+        .map(|value| format!(" · Memory {value:.0}%"))
+        .unwrap_or_default();
+    let tooltip = format!(
+        "Rackio · {} · {} {}{}{}",
+        tray_state_label(&state),
+        snapshot.nodes.len(),
+        machine_label,
+        cpu,
+        memory
+    );
+    (state, tooltip)
+}
+
+fn tray_state_rank(state: &str) -> u8 {
+    match state {
+        "healthy" => 0,
+        "warning" => 1,
+        "degraded" => 2,
+        "stale" => 3,
+        "critical" => 4,
+        "offline" | "auth_error" | "incompatible" => 5,
+        _ => 6,
+    }
+}
+
+fn tray_state_label(state: &str) -> &str {
+    match state {
+        "healthy" => "Healthy",
+        "warning" => "Warning",
+        "stale" => "Stale",
+        "critical" => "Critical",
+        "offline" => "Offline",
+        "auth_error" => "Authentication error",
+        "incompatible" => "Incompatible agent",
+        "daemon_unavailable" => "Agent unavailable",
+        _ => "Degraded",
+    }
+}
+
+fn average_cpu(nodes: &[TrayNodeSnapshot]) -> Option<f64> {
+    let values: Vec<f64> = nodes.iter().filter_map(|node| node.cpu_percent).collect();
+    (!values.is_empty()).then(|| {
+        let count = u32::try_from(values.len()).unwrap_or(u32::MAX);
+        values.iter().sum::<f64>() / f64::from(count)
+    })
+}
+
+fn memory_usage_percent(nodes: &[TrayNodeSnapshot]) -> Option<f64> {
+    let (used, total) = nodes.iter().fold((0_u128, 0_u128), |(used, total), node| {
+        match (node.memory_used_bytes, node.memory_total_bytes) {
+            (Some(node_used), Some(node_total)) if node_total > 0 => (
+                used.saturating_add(u128::from(node_used)),
+                total.saturating_add(u128::from(node_total)),
+            ),
+            _ => (used, total),
+        }
+    });
+    (total > 0).then(|| {
+        let basis_points = used
+            .saturating_mul(10_000)
+            .checked_div(total)
+            .unwrap_or_default()
+            .min(10_000);
+        f64::from(u32::try_from(basis_points).unwrap_or(10_000)) / 100.0
+    })
+}
+
+async fn update_tray_from_daemon(app: &AppHandle) {
+    let (state, tooltip) = match fleet_snapshot().await {
+        Ok(value) => match serde_json::from_value::<TrayFleetSnapshot>(value) {
+            Ok(snapshot) => tray_snapshot_details(&snapshot),
+            Err(_) => (
+                String::from("degraded"),
+                String::from("Rackio · Degraded · Invalid agent snapshot"),
+            ),
+        },
+        Err(_) => (
+            String::from("daemon_unavailable"),
+            String::from("Rackio · Agent unavailable"),
+        ),
+    };
+    let _ = apply_tray_details(app, &state, &tooltip);
+}
+
+async fn run_tray_monitor(app: AppHandle) {
+    let mut ticker = tokio::time::interval(Duration::from_secs(2));
+    loop {
+        ticker.tick().await;
+        update_tray_from_daemon(&app).await;
+    }
 }
 
 fn state_icon(color: [u8; 4]) -> Image<'static> {
@@ -461,13 +592,20 @@ pub fn run() {
             if let Some(icon) = app.default_window_icon() {
                 builder = builder.icon(icon.clone());
             }
-            if builder.build(app).is_err()
-                && let Some(window) = app.get_webview_window("main")
-            {
-                // A normal window is the explicit fallback on Linux desktops
-                // without a tray implementation.
-                let _ = window.show();
-                let _ = window.set_focus();
+            match builder.build(app) {
+                Ok(_) => {
+                    // The hidden WebView is a viewer; tray monitoring must keep
+                    // running even when it is not loaded or has been closed.
+                    tauri::async_runtime::spawn(run_tray_monitor(app.handle().clone()));
+                }
+                Err(_) => {
+                    // A normal window is the explicit fallback on Linux desktops
+                    // without a tray implementation.
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
             }
             Ok(())
         })
@@ -477,7 +615,6 @@ pub fn run() {
             create_pairing_share,
             save_pairing_bundle,
             machine_history,
-            set_tray_state,
             ssh_bootstrap::ssh_inspect_host,
             ssh_bootstrap::ssh_bootstrap
         ])
@@ -487,7 +624,10 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{pairing_qr_data_url, save_pairing_bundle};
+    use super::{
+        TrayFleetSnapshot, TrayNodeSnapshot, pairing_qr_data_url, save_pairing_bundle,
+        tray_snapshot_details,
+    };
 
     #[test]
     fn pairing_qr_is_generated_locally_as_an_svg_data_url() {
@@ -529,5 +669,49 @@ mod tests {
         let result = save_pairing_bundle(path.clone(), String::from("not-a-pairing-bundle"));
         assert!(result.is_err());
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn tray_summary_contains_live_cpu_and_memory_for_the_fleet() {
+        let snapshot = TrayFleetSnapshot {
+            daemon: String::from("connected"),
+            nodes: vec![
+                TrayNodeSnapshot {
+                    state: String::from("healthy"),
+                    cpu_percent: Some(20.0),
+                    memory_used_bytes: Some(20),
+                    memory_total_bytes: Some(100),
+                },
+                TrayNodeSnapshot {
+                    state: String::from("warning"),
+                    cpu_percent: Some(60.0),
+                    memory_used_bytes: Some(30),
+                    memory_total_bytes: Some(100),
+                },
+            ],
+        };
+
+        let (state, tooltip) = tray_snapshot_details(&snapshot);
+        assert_eq!(state, "warning");
+        assert_eq!(
+            tooltip,
+            "Rackio · Warning · 2 machines · CPU 40% · Memory 25%"
+        );
+    }
+
+    #[test]
+    fn tray_summary_fails_closed_when_the_daemon_is_unavailable() {
+        let snapshot = TrayFleetSnapshot {
+            daemon: String::from("unavailable"),
+            nodes: Vec::new(),
+        };
+
+        assert_eq!(
+            tray_snapshot_details(&snapshot),
+            (
+                String::from("daemon_unavailable"),
+                String::from("Rackio · Agent unavailable")
+            )
+        );
     }
 }
