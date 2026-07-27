@@ -17,12 +17,12 @@ export interface FleetNode {
   os: string;
   state: NodeState;
   path: ConnectionPath;
-  cpuPercent?: number;
-  memoryUsedBytes?: number;
-  memoryTotalBytes?: number;
-  diskUsedBytes?: number;
-  diskTotalBytes?: number;
-  rttMs?: number;
+  cpuPercent?: number | null;
+  memoryUsedBytes?: number | null;
+  memoryTotalBytes?: number | null;
+  diskUsedBytes?: number | null;
+  diskTotalBytes?: number | null;
+  rttMs?: number | null;
   lastSeenMs?: number;
   history: number[];
   detail?: string;
@@ -30,11 +30,11 @@ export interface FleetNode {
 
 export interface HistoryPoint {
   timestampMs: number;
-  cpuPercent?: number;
-  memoryUsedBytes?: number;
-  memoryTotalBytes?: number;
-  networkReceivedBytesPerSecond?: number;
-  networkSentBytesPerSecond?: number;
+  cpuPercent?: number | null;
+  memoryUsedBytes?: number | null;
+  memoryTotalBytes?: number | null;
+  networkReceivedBytesPerSecond?: number | null;
+  networkSentBytesPerSecond?: number | null;
 }
 
 export type MachineDetailState =

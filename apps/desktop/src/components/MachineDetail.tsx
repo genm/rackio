@@ -14,7 +14,7 @@ export function MachineDetail({
   const { node } = detail;
   const cpuHistory =
     detail.state === "ready"
-      ? detail.points.flatMap((point) => (point.cpuPercent === undefined ? [] : [point.cpuPercent]))
+      ? detail.points.flatMap((point) => (point.cpuPercent == null ? [] : [point.cpuPercent]))
       : [];
   return (
     <div className="dialog-backdrop">
@@ -40,7 +40,7 @@ export function MachineDetail({
           <span className={`badge path-${node.path}`}>
             {connectionPathRegistry[node.path].label}
           </span>
-          <span className="badge">{node.rttMs === undefined ? "RTT —" : `${node.rttMs} ms`}</span>
+          <span className="badge">{node.rttMs == null ? "RTT —" : `${node.rttMs} ms`}</span>
         </div>
         {detail.state === "loading" ? (
           <p className="progress-message" role="status">
@@ -72,7 +72,7 @@ export function MachineDetail({
             <dl className="detail-metrics">
               <div>
                 <dt>Latest CPU</dt>
-                <dd>{node.cpuPercent === undefined ? "—" : `${Math.round(node.cpuPercent)}%`}</dd>
+                <dd>{node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`}</dd>
               </div>
               <div>
                 <dt>Memory</dt>

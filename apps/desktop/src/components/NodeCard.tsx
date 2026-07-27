@@ -30,7 +30,7 @@ export function NodeCard({
       <dl className="metrics">
         <div>
           <dt>CPU</dt>
-          <dd>{node.cpuPercent === undefined ? "—" : `${Math.round(node.cpuPercent)}%`}</dd>
+          <dd>{node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`}</dd>
         </div>
         <div>
           <dt>Memory</dt>
@@ -42,7 +42,7 @@ export function NodeCard({
         </div>
         <div>
           <dt>RTT</dt>
-          <dd>{node.rttMs === undefined ? "—" : `${node.rttMs} ms`}</dd>
+          <dd>{node.rttMs == null ? "—" : `${node.rttMs} ms`}</dd>
         </div>
       </dl>
       <footer>
