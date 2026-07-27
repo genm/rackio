@@ -22,7 +22,7 @@ const PAIRING_SECRET_BYTES: usize = 32;
 const PAIRING_WINDOW: Duration = Duration::from_mins(5);
 const MAX_FAILURES: u8 = 5;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PairingBundle {
     pub format_version: u8,
     pub node_id: Uuid,
@@ -31,6 +31,24 @@ pub struct PairingBundle {
     pub relay_urls: Vec<String>,
     pub one_time_secret: String,
     pub expires_at_ms: i64,
+}
+
+/// Redact the one-time secret. `PairingBundle` is public API and crosses the
+/// daemon, CLI and IPC layers, so a derived `Debug` would let any future
+/// `{:?}` or `tracing` call leak a live pairing secret into logs.
+impl std::fmt::Debug for PairingBundle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PairingBundle")
+            .field("format_version", &self.format_version)
+            .field("node_id", &self.node_id)
+            .field("endpoint_id", &self.endpoint_id)
+            .field("direct_addresses", &self.direct_addresses)
+            .field("relay_urls", &self.relay_urls)
+            .field("one_time_secret", &"<redacted>")
+            .field("expires_at_ms", &self.expires_at_ms)
+            .finish()
+    }
 }
 
 impl PairingBundle {
@@ -252,6 +270,36 @@ impl PeerRegistry {
         Ok(())
     }
 
+    /// Authorize a peer without silently restoring permissions an operator
+    /// previously narrowed. A re-pair proves possession of the one-time secret,
+    /// not an intent to re-grant `read_history` to a downgraded peer.
+    /// Returns the permissions now in effect.
+    pub fn authorize_preserving(
+        &self,
+        endpoint_id: EndpointId,
+    ) -> Result<PeerPermissions, PairingError> {
+        let mut records = self
+            .records
+            .write()
+            .map_err(|_| PairingError::RegistryUnavailable)?;
+        let key = endpoint_id.to_string();
+        let permissions = records
+            .get(&key)
+            .map_or_else(PeerPermissions::default, |record| record.permissions);
+        let mut next = records.clone();
+        next.insert(
+            key.clone(),
+            PeerRecord {
+                endpoint_id: key,
+                paired_at_ms: Utc::now().timestamp_millis(),
+                permissions,
+            },
+        );
+        persist_records(&self.path, &next)?;
+        *records = next;
+        Ok(permissions)
+    }
+
     pub fn revoke(&self, endpoint_id: &str) -> Result<bool, PairingError> {
         let mut records = self
             .records
@@ -297,6 +345,65 @@ mod tests {
     use uuid::Uuid;
 
     use super::{PairingBundle, PairingError, PairingManager, PeerPermissions, PeerRegistry};
+
+    #[test]
+    fn pairing_bundle_debug_redacts_the_one_time_secret() {
+        let key = SecretKey::generate();
+        let mut manager = PairingManager::default();
+        let bundle = manager.open(Uuid::new_v4(), key.public(), Vec::new(), Vec::new());
+
+        let rendered = format!("{bundle:?}");
+        assert!(!rendered.contains(&bundle.one_time_secret));
+        assert!(rendered.contains("<redacted>"));
+    }
+
+    #[test]
+    fn re_pairing_does_not_restore_narrowed_permissions() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let registry = PeerRegistry::load(directory.path().join("peers.json"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let peer = SecretKey::generate().public();
+
+        registry
+            .authorize(
+                peer,
+                PeerPermissions {
+                    read_metrics: true,
+                    read_history: false,
+                },
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let effective = registry
+            .authorize_preserving(peer)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(effective.read_metrics);
+        assert!(
+            !effective.read_history,
+            "re-pairing must not re-grant history"
+        );
+        assert_eq!(
+            registry
+                .permissions(peer)
+                .unwrap_or_else(|error| panic!("{error}")),
+            Some(effective)
+        );
+    }
+
+    #[test]
+    fn first_pairing_grants_the_default_permissions() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let registry = PeerRegistry::load(directory.path().join("peers.json"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let peer = SecretKey::generate().public();
+
+        let effective = registry
+            .authorize_preserving(peer)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(effective, PeerPermissions::default());
+    }
 
     #[test]
     fn pairing_secret_is_single_use() {

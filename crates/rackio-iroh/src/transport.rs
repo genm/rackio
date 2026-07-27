@@ -106,13 +106,22 @@ fn duration_millis(duration: Duration) -> u64 {
 
 fn is_private_or_local(address: IpAddr) -> bool {
     match address {
-        IpAddr::V4(address) => {
-            address.is_private() || address.is_loopback() || address.is_link_local()
-        }
-        IpAddr::V6(address) => {
-            address.is_loopback() || address.is_unique_local() || address.is_unicast_link_local()
-        }
+        IpAddr::V4(address) => is_private_or_local_v4(address),
+        // An IPv4-mapped peer address describes the same IPv4 host, so classify
+        // it as IPv4 rather than reporting a LAN peer as `wan_direct`.
+        IpAddr::V6(address) => address.to_ipv4_mapped().map_or_else(
+            || {
+                address.is_loopback()
+                    || address.is_unique_local()
+                    || address.is_unicast_link_local()
+            },
+            is_private_or_local_v4,
+        ),
     }
+}
+
+fn is_private_or_local_v4(address: std::net::Ipv4Addr) -> bool {
+    address.is_private() || address.is_loopback() || address.is_link_local()
 }
 
 #[derive(Debug)]
@@ -182,8 +191,24 @@ impl ResponseStream {
 
 #[cfg(test)]
 mod tests {
-    use super::{EndpointConfig, bind_endpoint};
+    use super::{EndpointConfig, bind_endpoint, is_private_or_local};
     use iroh::SecretKey;
+
+    #[test]
+    fn ipv4_mapped_lan_addresses_are_not_classified_as_wan() {
+        fn address(value: &str) -> std::net::IpAddr {
+            value
+                .parse()
+                .unwrap_or_else(|error| panic!("{value} is not an address: {error}"))
+        }
+
+        assert!(is_private_or_local(address("::ffff:192.168.1.5")));
+        assert!(is_private_or_local(address("::ffff:127.0.0.1")));
+        assert!(!is_private_or_local(address("::ffff:93.184.216.34")));
+        assert!(is_private_or_local(address("192.168.1.5")));
+        assert!(is_private_or_local(address("fe80::1")));
+        assert!(!is_private_or_local(address("2001:db8::1")));
+    }
 
     #[tokio::test]
     async fn direct_only_endpoint_connects_without_vendor_discovery() {

@@ -27,6 +27,11 @@ use crate::{
 
 const HISTORY_PAGE_SIZE: usize = 256;
 
+/// A viewer sends its request immediately after opening a stream. Bound the
+/// wait so a peer cannot pin a task and its frame buffer by opening streams and
+/// never sending a request. This does not bound a request already being served.
+const REQUEST_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[derive(Debug, Error)]
 pub enum ServerError {
     #[error("connection failed: {0}")]
@@ -45,6 +50,8 @@ pub enum ServerError {
     PairingStateUnavailable,
     #[error("active connection state lock is unavailable")]
     ActiveConnectionStateUnavailable,
+    #[error("peer opened a stream without sending a request in time")]
+    RequestHeaderTimeout,
 }
 
 pub struct NodeRuntime {
@@ -68,6 +75,11 @@ impl NodeRuntime {
                 .map_err(|_| ServerError::ActiveConnectionStateUnavailable)?
                 .remove(endpoint_id)
                 .unwrap_or_default();
+            tracing::info!(
+                peer = %endpoint_id,
+                torn_down = connections.len(),
+                "peer authorization revoked"
+            );
             for connection in connections.into_values() {
                 connection.close(0_u32.into(), b"peer revoked");
             }
@@ -157,7 +169,13 @@ async fn handle_connection(
         // stream independently so control and history requests are not blocked.
         tokio::spawn(async move {
             let result = async {
-                let request: Request = read_frame(&mut receive).await?;
+                let request: Request =
+                    match tokio::time::timeout(REQUEST_HEADER_TIMEOUT, read_frame(&mut receive))
+                        .await
+                    {
+                        Ok(request) => request?,
+                        Err(_) => return Err(ServerError::RequestHeaderTimeout),
+                    };
                 handle_request(
                     &connection,
                     remote_id,
@@ -196,6 +214,7 @@ async fn handle_request(
     }
 
     let Some(permissions) = runtime.peers.permissions(remote_id)? else {
+        tracing::warn!(peer = %remote_id, "rejected request from an unauthorized peer");
         write_error(send, "auth_error", "peer is not authorized").await?;
         return Ok(());
     };
@@ -231,12 +250,23 @@ async fn handle_pair(
         runtime.pairing_mdns.close().await;
     }
     if verified.is_err() {
+        // Audit trail only: the endpoint ID is the authenticated QUIC identity.
+        // The supplied secret is never logged.
+        tracing::warn!(
+            peer = %remote_id,
+            window_closed,
+            "pairing attempt rejected"
+        );
         write_error(send, "pairing_rejected", "pairing request was rejected").await?;
         return Ok(());
     }
-    runtime
-        .peers
-        .authorize(remote_id, PeerPermissions::default())?;
+    let permissions = runtime.peers.authorize_preserving(remote_id)?;
+    tracing::info!(
+        peer = %remote_id,
+        read_metrics = permissions.read_metrics,
+        read_history = permissions.read_history,
+        "peer paired and authorized"
+    );
     write_response(
         send,
         response::Body::Pair(PairResponse {
@@ -273,8 +303,14 @@ async fn handle_authorized(
             if require_permission(send, permissions.read_metrics, "read_metrics").await?
                 && version_is_compatible(send, &version).await?
             {
-                let health = runtime.health.read().await;
-                write_response(send, response::Body::Health(protocol::health(&health))).await?;
+                // Snapshot before writing. Holding the health read guard across
+                // the QUIC write would let a peer that stops reading block the
+                // sampler's health writer, stalling local collection.
+                let health = {
+                    let guard = runtime.health.read().await;
+                    protocol::health(&guard)
+                };
+                write_response(send, response::Body::Health(health)).await?;
             }
         }
         request::Body::GetConnectionPath(version) => {
