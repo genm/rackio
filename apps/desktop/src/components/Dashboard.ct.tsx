@@ -66,7 +66,9 @@ test("imports a one-time pairing bundle from the desktop", async ({ mount }) => 
   const dialog = component.getByRole("dialog", { name: /pair a machine/i });
   await expect(dialog).toBeVisible();
   await dialog.screenshot({ path: "../../output/playwright/pair-machine.png" });
-  await dialog.getByLabel("Pairing bundle").fill("  rackio-pair:test-bundle  ");
+  // The pairing panel is now a labelled `tabpanel`, so address the field by its
+  // textbox role rather than by the shared accessible name.
+  await dialog.getByRole("textbox", { name: "Pairing bundle" }).fill("  rackio-pair:test-bundle  ");
   await dialog.getByRole("button", { name: /pair machine/i }).click();
   await expect.poll(() => submitted).toBe("rackio-pair:test-bundle");
   await expect(dialog).not.toBeVisible();
@@ -135,6 +137,43 @@ test("does not summarise an empty connected rack as healthy", async ({ mount }) 
   const summary = component.getByLabel("Rack summary");
   await expect(summary).not.toContainText("Healthy");
   await expect(summary.locator("strong").first()).toHaveText("0");
+});
+
+test("closes the pairing dialog with Escape and returns focus to its opener", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const opener = component.getByRole("button", { name: /pair machine/i });
+  await opener.click();
+  const dialog = component.getByRole("dialog", { name: /pair a machine/i });
+  await expect(dialog).toBeVisible();
+  await component.page().keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
+});
+
+test("keeps Tab focus inside the modal pairing dialog", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  await component.getByRole("button", { name: /pair machine/i }).click();
+  const dialog = component.getByRole("dialog", { name: /pair a machine/i });
+  for (let step = 0; step < 12; step += 1) {
+    await component.page().keyboard.press("Tab");
+    await expect(dialog.locator(":focus")).toHaveCount(1);
+  }
+});
+
+test("exposes the pairing methods as a complete tab pattern", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  await component.getByRole("button", { name: /pair machine/i }).click();
+  const bundleTab = component.getByRole("tab", { name: "Pairing bundle" });
+  await expect(bundleTab).toHaveAttribute("aria-controls", "pair-tabpanel");
+  const panel = component.getByRole("tabpanel");
+  await expect(panel).toHaveAttribute("aria-labelledby", "pair-tab-bundle");
+  await bundleTab.focus();
+  await component.page().keyboard.press("ArrowRight");
+  await expect(component.getByRole("tab", { name: "Install over SSH" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(panel).toHaveAttribute("aria-labelledby", "pair-tab-ssh");
 });
 
 test("falls back to the normal window when tray integration is unavailable", async ({ mount }) => {

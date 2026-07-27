@@ -1,6 +1,9 @@
 mod ssh_bootstrap;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use qrcode::{QrCode, render::svg};
 use serde::Deserialize;
 use std::{
@@ -113,6 +116,9 @@ async fn create_pairing_share() -> Result<serde_json::Value, String> {
         .get("data")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| String::from("daemon pairing response did not contain a bundle"))?;
+    // Fail closed: the viewer promises a five-minute window, so a bundle whose
+    // expiry cannot be read must not be presented as an open pairing window.
+    let expires_at_ms = pairing_bundle_expiry(bundle)?;
     let qr = pairing_qr_data_url(bundle);
     let lan_warning = response
         .get("warnings")
@@ -122,15 +128,37 @@ async fn create_pairing_share() -> Result<serde_json::Value, String> {
     Ok(match qr {
         Ok(qr_data_url) => serde_json::json!({
             "bundle": bundle,
+            "expiresAtMs": expires_at_ms,
             "qrDataUrl": qr_data_url,
             "lanWarning": lan_warning,
         }),
         Err(error) => serde_json::json!({
             "bundle": bundle,
+            "expiresAtMs": expires_at_ms,
             "qrError": error,
             "lanWarning": lan_warning,
         }),
     })
+}
+
+/// Read the pairing window's expiry out of the locally generated bundle.
+///
+/// The bundle is `rackio-pair:` plus URL-safe base64 JSON produced by
+/// `rackio-iroh`; only `expires_at_ms` is read here so the desktop does not
+/// take a dependency on the transport crate or touch the one-time secret.
+fn pairing_bundle_expiry(bundle: &str) -> Result<i64, String> {
+    let payload = bundle
+        .strip_prefix("rackio-pair:")
+        .ok_or_else(|| String::from("daemon returned a bundle without a pairing prefix"))?;
+    let decoded = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|_| String::from("daemon pairing bundle is not valid base64"))?;
+    serde_json::from_slice::<serde_json::Value>(&decoded)
+        .ok()
+        .as_ref()
+        .and_then(|value| value.get("expires_at_ms"))
+        .and_then(serde_json::Value::as_i64)
+        .ok_or_else(|| String::from("daemon pairing bundle did not declare an expiry"))
 }
 
 #[tauri::command]
@@ -512,29 +540,32 @@ fn update_machine_trays(app: &AppHandle, snapshot: &TrayFleetSnapshot) {
         active_ids.insert(id);
     }
 
-    let stale_ids = registered_ids
-        .difference(&active_ids)
-        .cloned()
-        .collect::<Vec<_>>();
-    for id in stale_ids {
-        let details = status_details("Machine unavailable");
-        let _ = upsert_tray(
-            app,
-            &id,
-            "stale",
-            "Unavailable ◌",
-            "Machine is no longer reported by the agent",
-            &details,
-            || {
-                tray_menu(app, &details)
-                    .map_err(|error| format!("Could not build tray menu: {error}"))
-            },
-        );
-        active_ids.insert(id);
+    // This runs on Tauri's main thread (see `dispatch_tray_update`), which is
+    // where AppKit requires status-item mutation. Retiring an item is a
+    // response to a deliberate fleet change, not to a poll-to-poll wobble, so
+    // it does not churn an open NSMenu the way a periodic rebuild would.
+    for id in retired_tray_ids(&registered_ids, &active_ids) {
+        app.remove_tray_by_id(&id);
+        if let Ok(mut menus) = registry.menus.lock() {
+            menus.remove(&id);
+        }
     }
     if let Ok(mut ids) = registry.machine_ids.lock() {
         *ids = active_ids;
     }
+}
+
+/// Tray ids to drop because the machine left the fleet.
+///
+/// A connected agent reports every paired machine, including unreachable ones,
+/// which keep their tray item and degrade in place through their own `state`
+/// (and, when the agent itself is gone, through `update_status_tray`). An id
+/// that disappears from a connected agent's snapshot therefore means explicit
+/// removal — an unpaired machine. Relabelling it "Unavailable" and re-adding it
+/// to the registry, as this once did, made a removal indistinguishable from an
+/// outage and kept the item for the process lifetime.
+fn retired_tray_ids(registered: &HashSet<String>, active: &HashSet<String>) -> Vec<String> {
+    registered.difference(active).cloned().collect()
 }
 
 fn fleet_tray_status(nodes: &[TrayNodeSnapshot]) -> String {
@@ -790,8 +821,42 @@ fn machine_json(
     }))
 }
 
-#[cfg(unix)]
+/// A wedged daemon — one that accepts the local connection but never answers —
+/// must be reported as unavailable rather than leaving the last healthy
+/// snapshot on screen. Both the React dashboard and the tray monitor poll every
+/// two seconds and schedule the next poll only after the current request
+/// settles, so the bound has to be shorter than two poll intervals (4s) for a
+/// stall to surface before a second poll would have been due. Three seconds
+/// still leaves room for a slow but live answer on a loaded machine.
+const DAEMON_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Bound every local IPC exchange. Returning an explicit timeout error is what
+/// drives `update_tray_from_daemon` into its `daemon_unavailable` branch and
+/// lets the React poll reschedule from its `finally`.
 async fn daemon_request(
+    command: serde_json::Value,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    bounded_daemon_exchange(daemon_exchange(command)).await
+}
+
+async fn bounded_daemon_exchange<F>(
+    exchange: F,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>>
+where
+    F: Future<Output = Result<serde_json::Value, Box<dyn std::error::Error>>>,
+{
+    match tokio::time::timeout(DAEMON_REQUEST_TIMEOUT, exchange).await {
+        Ok(response) => response,
+        Err(_) => Err(format!(
+            "daemon did not respond within {} seconds",
+            DAEMON_REQUEST_TIMEOUT.as_secs()
+        )
+        .into()),
+    }
+}
+
+#[cfg(unix)]
+async fn daemon_exchange(
     command: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     use directories::ProjectDirs;
@@ -855,7 +920,7 @@ async fn daemon_request(
 }
 
 #[cfg(windows)]
-async fn daemon_request(
+async fn daemon_exchange(
     command: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
@@ -888,7 +953,7 @@ async fn daemon_request(
 }
 
 #[cfg(not(any(unix, windows)))]
-async fn daemon_request(
+async fn daemon_exchange(
     _command: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     Err("local daemon IPC is unsupported on this platform".into())
@@ -929,10 +994,81 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::{
-        TrayMachineMenu, TrayNodeSnapshot, fleet_tray_status, machine_tray_id, pairing_qr_data_url,
-        save_pairing_bundle, tray_machine_menu, tray_node_status, tray_state_color,
+        DAEMON_REQUEST_TIMEOUT, TrayMachineMenu, TrayNodeSnapshot, bounded_daemon_exchange,
+        fleet_tray_status, machine_tray_id, pairing_bundle_expiry, pairing_qr_data_url,
+        retired_tray_ids, save_pairing_bundle, tray_machine_menu, tray_node_status,
+        tray_state_color,
     };
+
+    fn ids(values: &[&str]) -> HashSet<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    /// A daemon that accepts the connection and then never answers must not
+    /// leave the caller pending, which would freeze both the React poll loop
+    /// and the tray monitor on the last healthy snapshot.
+    #[tokio::test]
+    async fn a_wedged_daemon_fails_with_an_explicit_timeout() {
+        tokio::time::pause();
+        let result = bounded_daemon_exchange(std::future::pending()).await;
+        let message = result
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert_eq!(message, "daemon did not respond within 3 seconds");
+    }
+
+    #[test]
+    fn the_ipc_timeout_stays_below_two_dashboard_poll_intervals() {
+        assert!(DAEMON_REQUEST_TIMEOUT < std::time::Duration::from_secs(4));
+    }
+
+    #[tokio::test]
+    async fn a_responsive_daemon_is_not_cut_short() {
+        let response = bounded_daemon_exchange(async { Ok(serde_json::json!({ "ok": true })) })
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(response, serde_json::json!({ "ok": true }));
+    }
+
+    #[test]
+    fn a_machine_removed_from_the_fleet_loses_its_tray_item() {
+        let registered = ids(&["rackio-status", "machine-a", "machine-b"]);
+        let active = ids(&["rackio-status", "machine-a"]);
+        assert_eq!(
+            retired_tray_ids(&registered, &active),
+            vec![String::from("machine-b")]
+        );
+        // An unreachable machine still appears in the snapshot, so it keeps its
+        // item and degrades in place rather than disappearing silently.
+        assert!(retired_tray_ids(&registered, &registered).is_empty());
+    }
+
+    #[test]
+    fn pairing_expiry_is_read_from_the_bundle_and_fails_closed() {
+        let payload = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            serde_json::to_vec(&serde_json::json!({
+                "format_version": 1,
+                "expires_at_ms": 1_750_000_300_000_i64,
+            }))
+            .unwrap_or_else(|error| panic!("{error}")),
+        );
+        assert_eq!(
+            pairing_bundle_expiry(&format!("rackio-pair:{payload}")),
+            Ok(1_750_000_300_000)
+        );
+        assert!(pairing_bundle_expiry("not-a-bundle").is_err());
+        assert!(pairing_bundle_expiry("rackio-pair:!!!").is_err());
+        let without_expiry = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            b"{\"format_version\":1}",
+        );
+        assert!(pairing_bundle_expiry(&format!("rackio-pair:{without_expiry}")).is_err());
+    }
 
     #[test]
     fn pairing_qr_is_generated_locally_as_an_svg_data_url() {

@@ -394,7 +394,14 @@ fn persist_known_hosts(keys: &[String]) -> Result<PathBuf, String> {
         .filter(|line| !line.is_empty())
         .map(str::to_owned)
         .collect();
-    merged.extend(normalized_key_set(keys));
+    let incoming = normalized_key_set(keys);
+    detect_host_key_conflict(&merged, &incoming).map_err(|conflict| {
+        format!(
+            "{conflict} Verify the new key through a trusted channel, then remove the stale entry from {}.",
+            path.display()
+        )
+    })?;
+    merged.extend(incoming);
     let mut file = tempfile::Builder::new()
         .prefix(".known-hosts-")
         .tempfile_in(&directory)
@@ -409,6 +416,47 @@ fn persist_known_hosts(keys: &[String]) -> Result<PathBuf, String> {
     file.persist(&path)
         .map_err(|error| format!("Could not persist Rackio known_hosts: {}", error.error))?;
     Ok(path)
+}
+
+/// Split a `known_hosts` line into `(host token, key type, key material)`.
+///
+/// `ssh-keyscan` is run without `-H`, so Rackio's own entries are plain-text.
+/// Hashed (`|1|…`) or otherwise malformed lines yield `None` and are left
+/// untouched rather than being compared against a plain host token.
+fn known_hosts_entry(line: &str) -> Option<(&str, &str, &str)> {
+    let mut fields = line.split_whitespace();
+    let hosts = fields.next()?;
+    let key_type = fields.next()?;
+    let key = fields.next()?;
+    (!hosts.starts_with('|') && !hosts.starts_with('@')).then_some((hosts, key_type, key))
+}
+
+/// Reject a host key that changed since the last bootstrap of the same host.
+///
+/// Merging into a set is a union, so a replaced key would be trusted *beside*
+/// the original: neither Rackio nor `StrictHostKeyChecking=yes` could then flag
+/// the substitution. Adding a new algorithm for a host is legitimate, so only a
+/// differing key of the *same* type for the *same* host token is a conflict.
+fn detect_host_key_conflict(
+    existing: &BTreeSet<String>,
+    incoming: &BTreeSet<String>,
+) -> Result<(), String> {
+    for line in incoming {
+        let Some((hosts, key_type, key)) = known_hosts_entry(line) else {
+            continue;
+        };
+        for known in existing {
+            let Some((known_hosts, known_type, known_key)) = known_hosts_entry(known) else {
+                continue;
+            };
+            if known_hosts == hosts && known_type == key_type && known_key != key {
+                return Err(format!(
+                    "The {key_type} host key for {hosts} differs from the key Rackio already trusts. Installation was stopped."
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn normalized_key_set(keys: &[String]) -> BTreeSet<String> {
@@ -512,10 +560,49 @@ fn send_progress(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{
-        SshTarget, extract_pairing_bundle, known_hosts_option, remote_target,
-        validate_remote_temp_dir, validate_target,
+        SshTarget, detect_host_key_conflict, extract_pairing_bundle, known_hosts_option,
+        remote_target, validate_remote_temp_dir, validate_target,
     };
+
+    fn key_set(lines: &[&str]) -> BTreeSet<String> {
+        lines.iter().map(|line| (*line).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_changed_host_key_is_rejected_instead_of_trusted_alongside_the_original() {
+        let existing = key_set(&["[server.test]:22 ssh-ed25519 AAAAOriginalKeyMaterial"]);
+        let replaced = key_set(&["[server.test]:22 ssh-ed25519 AAAAAttackerKeyMaterial"]);
+        let error = detect_host_key_conflict(&existing, &replaced)
+            .err()
+            .unwrap_or_default();
+        assert!(error.contains("ssh-ed25519"), "{error}");
+        assert!(error.contains("[server.test]:22"), "{error}");
+    }
+
+    #[test]
+    fn unchanged_and_additional_host_keys_still_merge() {
+        let existing = key_set(&["[server.test]:22 ssh-ed25519 AAAAOriginalKeyMaterial"]);
+        assert!(detect_host_key_conflict(&existing, &existing).is_ok());
+        // A second algorithm for the same host, and any key for a different
+        // host, are legitimate additions rather than a substitution.
+        assert!(
+            detect_host_key_conflict(
+                &existing,
+                &key_set(&["[server.test]:22 ssh-rsa AAAADifferentAlgorithm"]),
+            )
+            .is_ok()
+        );
+        assert!(
+            detect_host_key_conflict(
+                &existing,
+                &key_set(&["[other.test]:22 ssh-ed25519 AAAAAnotherHostKey"]),
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn known_hosts_path_with_spaces_stays_one_file() {

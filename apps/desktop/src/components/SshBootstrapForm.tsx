@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { SshBootstrapInput, SshBootstrapStatus, SshTarget } from "../types";
 
@@ -17,7 +17,12 @@ export function SshBootstrapForm({
   const [archivePath, setArchivePath] = useState("");
   const [checksumPath, setChecksumPath] = useState("");
   const [hostKeyConfirmed, setHostKeyConfirmed] = useState(false);
+  const hostKeyPanelRef = useRef<HTMLElement>(null);
   const busy = status.state === "checking_host" || status.state === "running";
+
+  useEffect(() => {
+    if (status.state === "confirming_host_key") hostKeyPanelRef.current?.focus();
+  }, [status.state]);
 
   const inspect = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -100,7 +105,18 @@ export function SshBootstrapForm({
         />
       </label>
       {status.state === "confirming_host_key" ? (
-        <section className="host-key-panel" aria-label="SSH host key confirmation">
+        // This panel replaces the submit button that had focus, which would
+        // otherwise drop focus to <body> on the one screen whose whole purpose
+        // is deliberate human verification. Take focus here and announce the
+        // fingerprints so keyboard and screen-reader users land on the thing
+        // they are being asked to check.
+        <section
+          className="host-key-panel"
+          aria-label="SSH host key confirmation"
+          aria-live="polite"
+          ref={hostKeyPanelRef}
+          tabIndex={-1}
+        >
           <strong>Confirm the server host key</strong>
           {status.fingerprints.map((fingerprint) => (
             <code key={fingerprint}>{fingerprint}</code>

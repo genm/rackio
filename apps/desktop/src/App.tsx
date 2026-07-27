@@ -103,6 +103,7 @@ export default function App() {
         state: "ready",
         ...(await invoke<{
           bundle: string;
+          expiresAtMs: number;
           qrDataUrl?: string;
           qrError?: string;
           lanWarning?: string;

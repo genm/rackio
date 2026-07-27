@@ -72,6 +72,12 @@ export type PairingShareState =
   | {
       state: "ready";
       bundle: string;
+      /**
+       * Wall-clock expiry of the one-time pairing window, carried from the
+       * bundle the agent generated. Required: a share whose expiry is unknown
+       * must not be rendered as an open window.
+       */
+      expiresAtMs: number;
       qrDataUrl?: string;
       qrError?: string;
       lanWarning?: string;
