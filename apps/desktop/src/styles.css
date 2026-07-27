@@ -338,6 +338,12 @@ h2 {
   background: #f3f6f1;
 }
 
+.pairing-expiry {
+  color: #c5d0c8;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
 .bundle-preview {
   max-height: 80px;
   overflow: auto;

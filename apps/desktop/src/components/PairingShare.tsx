@@ -1,8 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { save as chooseSavePath } from "@tauri-apps/plugin-dialog";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { PairingShareState } from "../types";
+
+function countdownLabel(remainingMs: number): string {
+  const seconds = Math.ceil(remainingMs / 1_000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
 
 export function PairingShare({
   status,
@@ -12,6 +17,13 @@ export function PairingShare({
   onCreate: () => Promise<void>;
 }) {
   const [message, setMessage] = useState("");
+  // The copy promises a five-minute window, so the surface has to track it. A
+  // bundle left on screen after expiry looks usable and fails at the far end.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, []);
   const copy = async (bundle: string) => {
     try {
       await navigator.clipboard.writeText(bundle);
@@ -67,11 +79,27 @@ export function PairingShare({
       </section>
     );
   }
+  const remainingMs = status.expiresAtMs - nowMs;
+  if (remainingMs <= 0) {
+    return (
+      <section className="pairing-share">
+        <p className="form-message error-message" role="alert">
+          This pairing window expired. The bundle and QR code are no longer valid.
+        </p>
+        <button type="button" className="pair-button" onClick={() => void onCreate()}>
+          Create a new pairing window
+        </button>
+      </section>
+    );
+  }
   return (
     <section className="pairing-share">
       <p>
         Scan this QR code from the trusted viewer, or transfer the file directly. It expires after
         five minutes and works once.
+      </p>
+      <p className="pairing-expiry">
+        Expires in <strong>{countdownLabel(remainingMs)}</strong>
       </p>
       {status.lanWarning ? (
         <p className="form-message warning-message" role="status">

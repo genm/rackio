@@ -5,7 +5,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use chrono::Utc;
@@ -28,6 +28,13 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const STREAM_SILENCE_TIMEOUT: Duration = Duration::from_secs(12);
 const STALE_AFTER_MS: i64 = 10_000;
 const OFFLINE_AFTER_MS: i64 = 30_000;
+const HISTORY_RESPONSE_TIMEOUT: Duration = Duration::from_mins(1);
+/// A peer cannot retain more history than the retention contract allows, so
+/// anything beyond it is a malfunctioning or hostile peer rather than a range
+/// this viewer asked for.
+const MAX_REMOTE_HISTORY_SAMPLES: usize = rackio_core::MAX_QUERY_ROWS;
+const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 const HISTORY_POINTS: usize = 120;
 const MAX_HISTORY_RANGE_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 
@@ -51,6 +58,8 @@ pub enum RemoteFleetError {
     UnknownMachine,
     #[error("history range is invalid or exceeds seven days")]
     InvalidHistoryRange,
+    #[error("paired machine returned more history than its retention can hold")]
+    HistoryResponseTooLarge,
     #[error("paired machine registry lock is unavailable")]
     RegistryUnavailable,
     #[error("paired machine registry I/O failed: {0}")]
@@ -244,7 +253,11 @@ impl RemoteMachineSnapshot {
         let Some(last_seen_ms) = self.last_seen_ms else {
             return self.state;
         };
-        let age_ms = now_ms.saturating_sub(last_seen_ms);
+        // `saturating_sub` on i64 does not clamp at zero, so a clock that
+        // moved backwards produced a negative age and froze this derivation at
+        // the stored state. A machine cannot have been seen in the future:
+        // treat that as just-seen rather than silently trusting stale state.
+        let age_ms = now_ms.saturating_sub(last_seen_ms).max(0);
         if age_ms >= OFFLINE_AFTER_MS {
             NodeState::Offline
         } else if age_ms >= STALE_AFTER_MS {
@@ -356,12 +369,23 @@ impl RemoteFleet {
         .await
         .map_err(|_| RemoteFleetError::Timeout("history request"))??;
         let mut samples = Vec::new();
+        // `REQUEST_TIMEOUT` bounds each frame, not the exchange, so a peer
+        // emitting one frame just inside it could stream forever. Bound the
+        // whole response in both time and rows: this daemon is the viewer that
+        // must stay up, and an unbounded peer response would take it down.
+        let deadline = Instant::now() + HISTORY_RESPONSE_TIMEOUT;
         loop {
+            if Instant::now() >= deadline {
+                return Err(RemoteFleetError::Timeout("history response"));
+            }
             let response = tokio::time::timeout(REQUEST_TIMEOUT, stream.next())
                 .await
                 .map_err(|_| RemoteFleetError::Timeout("history response"))??;
             match response.body {
                 Some(response::Body::MetricSample(sample)) => {
+                    if samples.len() >= MAX_REMOTE_HISTORY_SAMPLES {
+                        return Err(RemoteFleetError::HistoryResponseTooLarge);
+                    }
                     samples.push(metric_sample(sample));
                 }
                 Some(response::Body::StreamComplete(_)) => break,
@@ -434,16 +458,28 @@ impl RemoteFleet {
             node: node.clone(),
             endpoint_id: bundle.endpoint_id.clone(),
             latest: None,
-            state: NodeState::Healthy,
+            // Pairing succeeded but health is not yet known. Start degraded so a
+            // machine whose first health request fails is never presented as
+            // healthy; the first successful refresh replaces this.
+            state: NodeState::Degraded,
             path: ConnectionPath::Unknown,
             rtt_ms: None,
             last_seen_ms: Some(Utc::now().timestamp_millis()),
             history: Vec::new(),
-            details: Vec::new(),
+            details: vec![String::from("health_unknown")],
         };
-        if let Ok(health) = get_health(&client).await {
-            snapshot.state = health.state;
-            snapshot.details = health.details;
+        match get_health(&client).await {
+            Ok(health) => {
+                snapshot.state = health.state;
+                snapshot.details = health.details;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    endpoint_id = %snapshot.endpoint_id,
+                    error = %error,
+                    "paired machine did not return health; reporting it as degraded"
+                );
+            }
         }
         if let Ok((path, rtt_ms)) = get_connection_path(&client).await {
             snapshot.path = path;
@@ -495,15 +531,23 @@ async fn monitor_machine(
     registry: RemoteMachineRegistry,
     snapshots: Arc<AsyncRwLock<BTreeMap<String, RemoteMachineSnapshot>>>,
 ) {
-    let mut retry_delay = Duration::from_secs(1);
+    let mut retry_delay = INITIAL_RECONNECT_DELAY;
     loop {
+        let started = Instant::now();
         let result =
             monitor_session(endpoint.clone(), &record, &registry, Arc::clone(&snapshots)).await;
         if let Err(error) = result {
             update_error(&snapshots, &record, &error).await;
         }
+        // A session that outlived the stream-silence timeout was genuinely
+        // established, so the next failure starts from the base delay again.
+        // Without this reset the backoff only ever grows, and a daemon running
+        // for days reconnects at the 30-second ceiling even from healthy peers.
+        if started.elapsed() >= STREAM_SILENCE_TIMEOUT {
+            retry_delay = INITIAL_RECONNECT_DELAY;
+        }
         tokio::time::sleep(retry_delay).await;
-        retry_delay = retry_delay.saturating_mul(2).min(Duration::from_secs(30));
+        retry_delay = retry_delay.saturating_mul(2).min(MAX_RECONNECT_DELAY);
     }
 }
 
@@ -568,7 +612,10 @@ async fn monitor_session(
                     }
                 }
                 snapshot.latest = Some(sample);
-                snapshot.state = health.state;
+                // Do not restamp `state` here. `refresh_remote_state` owns it
+                // and refreshes it every five seconds; re-applying the
+                // session-start health would pin a remote that later degraded
+                // to its original value for the whole session.
                 snapshot.last_seen_ms = Some(Utc::now().timestamp_millis());
                 if should_persist {
                     let snapshot = snapshot.clone();

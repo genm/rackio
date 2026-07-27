@@ -12,8 +12,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: security-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: security-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  # A push to main must not cancel the in-flight scheduled full-history scan,
+  # which is the only run that is not limited to an affected range.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   plan:

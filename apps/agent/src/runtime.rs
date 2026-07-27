@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::time::Instant;
 use std::{
     fs,
     io::Write,
@@ -7,11 +9,10 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
-use chrono::Utc;
 use directories::ProjectDirs;
 use rackio_core::{
-    CapabilityState, HealthSnapshot, HistoryResolution, MetricCapability, MetricStore, NodeInfo,
-    NodeState, ProtocolVersion, SystemCollector,
+    HealthSnapshot, HistoryResolution, MetricCapability, MetricStore, NodeInfo, NodeState,
+    ProtocolVersion, SystemCollector,
 };
 use rackio_iroh::{
     EndpointConfig, NodeRuntime, PairingManager, PairingMdnsState, PeerRegistry, RemoteServer,
@@ -26,6 +27,38 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberI
 use uuid::Uuid;
 
 use crate::remote::{RemoteFleet, RemoteHistoryResolution, RemoteMachineSnapshot};
+
+// The Windows local IPC listener has its own connect loop, so these bound the
+// Unix accept loop only.
+#[cfg(unix)]
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
+#[cfg(unix)]
+const ACCEPT_FAILURE_GRACE: Duration = Duration::from_secs(30);
+const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+const LOCAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+/// The largest `LocalCommand` is a pairing import, whose bundle the desktop
+/// already caps at 16 KiB. 64 KiB leaves ample headroom for every command while
+/// keeping a single request bounded.
+const MAX_LOCAL_REQUEST_BYTES: u64 = 64 * 1024;
+
+/// Resolve on an operator-initiated stop. `systemctl stop`, container runtimes
+/// and package upgrades all send SIGTERM, so waiting only on Ctrl-C would skip
+/// the shutdown path on every real service stop.
+async fn shutdown_signal() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = signal(SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result.map_err(anyhow::Error::from),
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.map_err(anyhow::Error::from)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
@@ -96,6 +129,12 @@ pub fn app_paths() -> anyhow::Result<AppPaths> {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct AgentConfig {
     relay_url: Option<String>,
+    /// Operator-defined local health thresholds. Empty by default: Rackio does
+    /// not invent thresholds for a machine it knows nothing about, and
+    /// `docs/operations.md` documents `warning`/`critical` as "a *configured*
+    /// local health threshold was crossed".
+    #[serde(default)]
+    alerts: Vec<rackio_core::AlertRule>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,7 +236,11 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     )
     .await?;
     let node_id = load_or_create_node_id(&paths.data.join("node-id"))?;
-    let info = node_info(node_id);
+    // Probe the host before advertising what this machine can collect, and
+    // hand the same collector to the sampler so the advertised capabilities
+    // and the published samples come from one source.
+    let collector = SystemCollector::new();
+    let info = node_info(node_id, collector.capabilities());
     let (latest_tx, latest_rx) = watch::channel(None);
     let runtime = Arc::new(NodeRuntime {
         info,
@@ -220,7 +263,14 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         "agent started"
     );
 
-    let mut sampler = tokio::spawn(sample_loop(Arc::clone(&runtime), latest_tx));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mut sampler = tokio::spawn(sample_loop(
+        Arc::clone(&runtime),
+        collector,
+        config.alerts.clone(),
+        latest_tx,
+        shutdown_rx,
+    ));
     let mut remote = tokio::spawn(server.run());
     let mut local = tokio::spawn(run_local_server(
         paths.clone(),
@@ -229,9 +279,15 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         remote_fleet,
     ));
 
+    // Polling a `JoinHandle` that already resolved panics, so remember whether
+    // the sampler is the branch that ended the select.
+    let mut sampler_finished = false;
     let result = tokio::select! {
-        signal = tokio::signal::ctrl_c() => signal.map_err(anyhow::Error::from),
-        stopped = &mut sampler => Err(anyhow!("metric sampler stopped unexpectedly: {stopped:?}")),
+        signal = shutdown_signal() => signal,
+        stopped = &mut sampler => {
+            sampler_finished = true;
+            Err(anyhow!("metric sampler stopped unexpectedly: {stopped:?}"))
+        }
         stopped = &mut remote => Err(anyhow!("remote listener stopped unexpectedly: {stopped:?}")),
         stopped = &mut local => match stopped {
             Ok(Ok(())) => Err(anyhow!("local IPC listener stopped unexpectedly")),
@@ -239,8 +295,21 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
             Err(error) => Err(error.into()),
         },
     };
+    // Let the sampler commit its buffered batch before the process exits.
+    // Aborting it outright would discard up to ten seconds of history on every
+    // service stop, restart and upgrade.
+    let _ = shutdown_tx.send(true);
+    if !sampler_finished {
+        match tokio::time::timeout(SHUTDOWN_FLUSH_TIMEOUT, &mut sampler).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(error = %error, "metric sampler ended abnormally"),
+            Err(_) => {
+                tracing::warn!("metric sampler did not flush within the shutdown timeout");
+                sampler.abort();
+            }
+        }
+    }
     endpoint.close().await;
-    sampler.abort();
     remote.abort();
     local.abort();
     if let Err(error) = &result {
@@ -251,18 +320,112 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     result
 }
 
+/// Reflect the collector's own errors in the published health snapshot, and
+/// clear them again once every source reads. `state` returns to `Healthy` only
+/// when no other subsystem is degraded.
+async fn apply_collector_health(runtime: &NodeRuntime, errors: &[rackio_core::CollectorError]) {
+    let degraded = !errors.is_empty();
+    let mut health = runtime.health.write().await;
+    if health.collector_degraded == degraded {
+        return;
+    }
+    health.collector_degraded = degraded;
+    if degraded {
+        health.state = NodeState::Degraded;
+        if !health
+            .details
+            .iter()
+            .any(|detail| detail == "collector_degraded")
+        {
+            health.details.push(String::from("collector_degraded"));
+        }
+        tracing::warn!(
+            sources = ?errors.iter().map(|error| error.source.as_str()).collect::<Vec<_>>(),
+            "one or more metric sources are unreadable on this host"
+        );
+    } else {
+        health
+            .details
+            .retain(|detail| detail != "collector_degraded");
+        if !health.storage_degraded && !health.remote_listener_degraded {
+            health.state = NodeState::Healthy;
+        }
+    }
+}
+
+/// Publish an operator-configured threshold breach as the machine's state.
+///
+/// Degradation still wins: a machine whose storage or collector is broken is
+/// reported as `Degraded` rather than as a threshold warning, because the
+/// underlying data is no longer trustworthy.
+async fn apply_alert_health(runtime: &NodeRuntime, severity: Option<NodeState>) {
+    let mut health = runtime.health.write().await;
+    if health.collector_degraded || health.storage_degraded || health.remote_listener_degraded {
+        return;
+    }
+    health.state = severity.unwrap_or(NodeState::Healthy);
+}
+
+/// Commit whatever is buffered so a graceful stop does not discard history.
+/// A failure here is reported, never presented as a successful flush.
+async fn flush_pending(runtime: &NodeRuntime, pending: &mut Vec<rackio_core::MetricSample>) {
+    if pending.is_empty() {
+        return;
+    }
+    match runtime.store.lock().await.insert_batch(pending) {
+        Ok(()) => {
+            tracing::info!(
+                samples = pending.len(),
+                "flushed buffered samples on shutdown"
+            );
+            pending.clear();
+        }
+        Err(error) => tracing::error!(
+            error = %error,
+            samples = pending.len(),
+            "failed to flush buffered samples on shutdown; this history is lost"
+        ),
+    }
+}
+
 async fn sample_loop(
     runtime: Arc<NodeRuntime>,
+    mut collector: SystemCollector,
+    alert_rules: Vec<rackio_core::AlertRule>,
     latest: watch::Sender<Option<rackio_core::MetricSample>>,
+    mut shutdown: watch::Receiver<bool>,
 ) {
-    let mut collector = SystemCollector::new();
+    let clock = rackio_core::Clock::new();
+    let mut alerts = rackio_core::AlertEvaluator::default();
     tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
     let mut ticker = tokio::time::interval(Duration::from_secs(2));
     let mut pending = Vec::with_capacity(5);
     let mut prune_counter = 0_u16;
     loop {
-        ticker.tick().await;
+        tokio::select! {
+            _ = ticker.tick() => {}
+            changed = shutdown.changed() => {
+                // A closed sender means the daemon is going away too.
+                if changed.is_err() || *shutdown.borrow() {
+                    flush_pending(&runtime, &mut pending).await;
+                    return;
+                }
+                continue;
+            }
+        }
         let sample = collector.sample();
+        // A source the collector could not read must be visible as a degraded
+        // collector, not hidden behind an otherwise healthy snapshot.
+        apply_collector_health(&runtime, &sample.errors).await;
+        for signal in alerts.evaluate(&sample, &alert_rules) {
+            tracing::info!(
+                rule = %signal.rule_id,
+                active = signal.active,
+                severity = ?signal.severity,
+                "local health threshold transition"
+            );
+        }
+        apply_alert_health(&runtime, alerts.worst_active_severity(&alert_rules)).await;
         let _ = latest.send(Some(sample.clone()));
         pending.push(sample);
         if pending.len() >= 5 {
@@ -303,7 +466,9 @@ async fn sample_loop(
                 .store
                 .lock()
                 .await
-                .prune(Utc::now().timestamp_millis())
+                // Monotonic: a forward clock step must not delete the whole
+                // history, and a backward one must not stop pruning.
+                .prune(clock.now_ms())
             {
                 let mut health = runtime.health.write().await;
                 health.storage_degraded = true;
@@ -346,8 +511,30 @@ async fn run_local_server(
         &paths.local_socket,
         fs::Permissions::from_mode(if shared { 0o660 } else { 0o600 }),
     )?;
+    // A per-connection accept failure (an aborted client, a momentary fd
+    // shortage) must not stop metric collection and remote monitoring. A
+    // listener that never recovers still has to fail closed, so failures are
+    // only tolerated while some accept succeeds within the grace window.
+    let mut failing_since: Option<Instant> = None;
     loop {
-        let (stream, _) = listener.accept().await?;
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => {
+                failing_since = None;
+                stream
+            }
+            Err(error) => {
+                let since = *failing_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= ACCEPT_FAILURE_GRACE {
+                    return Err(anyhow::Error::from(error).context(format!(
+                        "local IPC listener failed continuously for {} seconds",
+                        ACCEPT_FAILURE_GRACE.as_secs()
+                    )));
+                }
+                tracing::warn!(error = %error, "local IPC accept failed; retrying");
+                tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
+                continue;
+            }
+        };
         if let Err(error) = stream.peer_cred() {
             tracing::warn!(error = %error, "local IPC caller credentials unavailable");
             continue;
@@ -431,6 +618,38 @@ async fn run_local_server(
     anyhow::bail!("local IPC is unsupported on this platform")
 }
 
+/// Read one bounded, timely `LocalCommand`, or the failure to report instead.
+///
+/// `reader` must already be limited to [`MAX_LOCAL_REQUEST_BYTES`]; hitting
+/// that limit shows up here as a line with no terminating newline, which is
+/// rejected rather than parsed as a truncated command.
+async fn read_local_request<R>(reader: &mut R) -> Result<LocalCommand, LocalResponse>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let mut line = String::new();
+    match tokio::time::timeout(
+        LOCAL_REQUEST_TIMEOUT,
+        tokio::io::AsyncBufReadExt::read_line(reader, &mut line),
+    )
+    .await
+    {
+        Err(_) => Err(LocalResponse::failure(
+            "local request timed out before a complete command",
+        )),
+        Ok(Err(error)) => Err(LocalResponse::failure(error)),
+        Ok(Ok(0)) => Err(LocalResponse::failure("empty local request")),
+        Ok(Ok(_)) if !line.ends_with('\n') => Err(LocalResponse::failure(format!(
+            "local request exceeded {MAX_LOCAL_REQUEST_BYTES} bytes without a newline"
+        ))),
+        Ok(Ok(_)) => {
+            serde_json::from_str::<LocalCommand>(line.trim_end()).map_err(LocalResponse::failure)
+        }
+    }
+}
+
+// Only the Unix listener hands a bare stream over; the Windows listener has
+// already consumed its first byte and uses the prefixed form.
 #[cfg(unix)]
 async fn serve_local_stream<S>(
     stream: S,
@@ -455,14 +674,18 @@ async fn serve_local_stream_prefixed<S>(
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (read, mut write) = tokio::io::split(stream);
-    let mut lines = BufReader::new(std::io::Cursor::new(prefix).chain(read)).lines();
-    let response = match lines.next_line().await {
-        Ok(Some(line)) => match serde_json::from_str::<LocalCommand>(&line) {
-            Ok(command) => handle_local(&paths, &endpoint, &runtime, &remote_fleet, command).await,
-            Err(error) => LocalResponse::failure(error),
-        },
-        Ok(None) => LocalResponse::failure("empty local request"),
-        Err(error) => LocalResponse::failure(error),
+    // Bound the request itself. On the shared socket every viewer-group member
+    // can connect, and an unbounded `next_line` lets one of them park a task
+    // forever or stream a line until the daemon runs out of memory — stopping
+    // metric collection for everyone.
+    let mut reader = BufReader::new(
+        std::io::Cursor::new(prefix)
+            .chain(read)
+            .take(MAX_LOCAL_REQUEST_BYTES),
+    );
+    let response = match read_local_request(&mut reader).await {
+        Ok(command) => handle_local(&paths, &endpoint, &runtime, &remote_fleet, command).await,
+        Err(response) => response,
     };
     if let Ok(mut bytes) = serde_json::to_vec(&response) {
         bytes.push(b'\n');
@@ -553,7 +776,14 @@ async fn handle_local(
             if let Err(error) = validate_relay_url(relay_url.as_deref()) {
                 return LocalResponse::failure(error);
             }
-            let config = AgentConfig { relay_url };
+            // Preserve every other configured value. Rebuilding the struct
+            // from one field would silently discard the operator's alert
+            // thresholds on the next relay change.
+            let mut config = match load_config(paths) {
+                Ok(config) => config,
+                Err(error) => return LocalResponse::failure(error),
+            };
+            config.relay_url = relay_url;
             match save_config(paths, &config) {
                 Ok(()) => LocalResponse::success(serde_json::json!({
                     "saved": true,
@@ -723,15 +953,11 @@ pub async fn request_local(
     anyhow::bail!("local IPC is unsupported on this platform")
 }
 
-fn node_info(node_id: Uuid) -> NodeInfo {
-    let capabilities = ["cpu", "memory", "swap", "disk", "network"]
-        .into_iter()
-        .map(|name| MetricCapability {
-            name: name.to_owned(),
-            state: CapabilityState::Supported,
-            detail: None,
-        })
-        .collect();
+/// Build the advertised node information from what this host can actually
+/// collect. Declaring a fixed list of `Supported` capabilities made a viewer
+/// trust metrics the collector cannot read on a sandboxed or containerised
+/// host.
+fn node_info(node_id: Uuid, capabilities: Vec<MetricCapability>) -> NodeInfo {
     NodeInfo {
         node_id,
         display_name: sysinfo::System::host_name().unwrap_or_else(|| String::from("Unnamed node")),
@@ -825,7 +1051,50 @@ mod tests {
     #[cfg(unix)]
     use std::path::PathBuf;
 
-    use super::validate_relay_url;
+    use super::{MAX_LOCAL_REQUEST_BYTES, read_local_request, validate_relay_url};
+
+    async fn read_request(payload: &[u8]) -> Result<super::LocalCommand, super::LocalResponse> {
+        let mut reader = tokio::io::BufReader::new(tokio::io::AsyncReadExt::take(
+            payload,
+            MAX_LOCAL_REQUEST_BYTES,
+        ));
+        read_local_request(&mut reader).await
+    }
+
+    #[tokio::test]
+    async fn accepts_a_well_formed_local_command() {
+        let command = read_request(b"{\"command\":\"status\"}\n")
+            .await
+            .unwrap_or_else(|response| panic!("{response:?}"));
+        assert!(matches!(command, super::LocalCommand::Status));
+    }
+
+    #[tokio::test]
+    async fn rejects_a_local_request_that_never_terminates() {
+        // A viewer-group member on the shared socket must not be able to grow
+        // the daemon's memory with one endless line.
+        let oversized =
+            vec![b'x'; usize::try_from(MAX_LOCAL_REQUEST_BYTES).unwrap_or(usize::MAX) + 1];
+        let Err(response) = read_request(&oversized).await else {
+            panic!("an unterminated oversized request must be rejected");
+        };
+        assert!(!response.ok);
+        assert!(
+            response
+                .error
+                .unwrap_or_default()
+                .contains("without a newline")
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_an_empty_local_request() {
+        let Err(response) = read_request(b"").await else {
+            panic!("an empty request must be rejected");
+        };
+        assert!(!response.ok);
+    }
+
     #[cfg(unix)]
     use super::{AppPaths, local_socket_candidates};
 

@@ -56,7 +56,12 @@ features = [
 ]
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# `deny` rather than `forbid` so `rackio-windows-ipc` — the only crate that must
+# call Win32 directly — can opt into the rest of this policy while relaxing this
+# one lint visibly at its crate root. `forbid` cannot be overridden, which had
+# left that crate outside the whole lint policy, including the unwrap/expect
+# denials, despite being the only member containing `unsafe`.
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

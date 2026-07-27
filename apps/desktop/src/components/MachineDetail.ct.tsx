@@ -20,6 +20,21 @@ test("keeps remote history failure visible without hiding live state", async ({ 
   await expect(component.getByText("Healthy")).toBeVisible();
 });
 
+test("closes the history dialog with Escape", async ({ mount }) => {
+  let closed = 0;
+  const component = await mount(
+    <MachineDetail
+      detail={machineDetailStateRegistry.ready}
+      onClose={() => {
+        closed += 1;
+      }}
+    />,
+  );
+  await expect(component.getByRole("dialog", { name: "Home Server" })).toBeVisible();
+  await component.page().keyboard.press("Escape");
+  await expect.poll(() => closed).toBe(1);
+});
+
 test("distinguishes empty history from a zero metric", async ({ mount }) => {
   const component = await mount(
     <MachineDetail detail={machineDetailStateRegistry.empty} onClose={() => undefined} />,

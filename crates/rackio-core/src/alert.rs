@@ -40,16 +40,25 @@ impl AlertEvaluator {
         rules
             .iter()
             .filter_map(|rule| {
-                let value = metric_value(sample, &rule.metric)?;
-                let matches = match rule.comparison {
-                    Comparison::GreaterThanOrEqual => value >= rule.threshold,
-                    Comparison::LessThanOrEqual => value <= rule.threshold,
+                // A metric that became unreadable is not a metric below its
+                // threshold. Skipping the rule outright left an already-raised
+                // alert latched forever with no recovery transition, so clear
+                // it explicitly instead.
+                let now_active = match metric_value(sample, &rule.metric) {
+                    None => {
+                        self.counts.insert(rule.id.clone(), 0);
+                        false
+                    }
+                    Some(value) => {
+                        let matches = match rule.comparison {
+                            Comparison::GreaterThanOrEqual => value >= rule.threshold,
+                            Comparison::LessThanOrEqual => value <= rule.threshold,
+                        };
+                        let count = self.counts.entry(rule.id.clone()).or_default();
+                        *count = if matches { count.saturating_add(1) } else { 0 };
+                        *count >= rule.consecutive_samples.max(1)
+                    }
                 };
-                let count = self.counts.entry(rule.id.clone()).or_default();
-                *count = if matches { count.saturating_add(1) } else { 0 };
-
-                let required = rule.consecutive_samples.max(1);
-                let now_active = *count >= required;
                 let was_active = self
                     .active
                     .insert(rule.id.clone(), now_active)
@@ -62,6 +71,20 @@ impl AlertEvaluator {
                 })
             })
             .collect()
+    }
+
+    /// The most severe currently-active severity, if any.
+    #[must_use]
+    pub fn worst_active_severity(&self, rules: &[AlertRule]) -> Option<NodeState> {
+        rules
+            .iter()
+            .filter(|rule| self.active.get(&rule.id).copied().unwrap_or(false))
+            .map(|rule| rule.severity)
+            .max_by_key(|severity| match severity {
+                NodeState::Critical => 2_u8,
+                NodeState::Warning => 1,
+                _ => 0,
+            })
     }
 }
 
@@ -138,6 +161,38 @@ mod tests {
         );
         let recovered = evaluator.evaluate(&sample(20.0), std::slice::from_ref(&rule));
         assert!(!recovered[0].active);
+    }
+
+    #[test]
+    fn an_alert_clears_when_its_metric_becomes_unreadable() {
+        let rule = AlertRule {
+            id: "cpu".into(),
+            metric: "cpu_percent".into(),
+            comparison: Comparison::GreaterThanOrEqual,
+            threshold: 80.0,
+            consecutive_samples: 1,
+            severity: NodeState::Critical,
+        };
+        let mut evaluator = AlertEvaluator::default();
+
+        let raised = evaluator.evaluate(&sample(90.0), std::slice::from_ref(&rule));
+        assert!(raised[0].active);
+        assert_eq!(
+            evaluator.worst_active_severity(std::slice::from_ref(&rule)),
+            Some(NodeState::Critical)
+        );
+
+        // The CPU source becomes unreadable. Without an explicit recovery the
+        // operator would see a permanently latched critical alert.
+        let mut unreadable = sample(0.0);
+        unreadable.cpu_percent = None;
+        let cleared = evaluator.evaluate(&unreadable, std::slice::from_ref(&rule));
+        assert_eq!(cleared.len(), 1);
+        assert!(!cleared[0].active);
+        assert_eq!(
+            evaluator.worst_active_severity(std::slice::from_ref(&rule)),
+            None
+        );
     }
 
     #[test]

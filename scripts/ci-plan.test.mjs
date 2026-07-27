@@ -59,6 +59,14 @@ test("Rust updates select the cross-platform and security gates", () => {
   assert.equal(plan.security_source, true);
 });
 
+test("Windows-only IPC crate changes select the Windows cross-compile check", () => {
+  const plan = classifyChangedFiles(["crates/rackio-windows-ipc/src/lib.rs"]);
+  assert.equal(plan.rust, true);
+  assert.equal(plan.rust_windows, true);
+  assert.equal(plan.rust_linux, true);
+  assert.equal(plan.rust_macos, true);
+});
+
 test("platform packaging selects only its owning Rust runner", () => {
   for (const [file, selected] of [
     ["install.sh", "rust_linux"],

@@ -5,6 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+# The workspace forbids unsafe code; this crate is the one place that needs it,
+# so it opts into the shared lint policy and relaxes only that single lint in
+# `src/lib.rs`. Without this block it was the only member exempt from Clippy's
+# pedantic, unwrap and expect denials — and the only member with `unsafe`.
+[lints]
+workspace = true
+
 [target.'cfg(windows)'.dependencies]
 tokio.workspace = true
 windows-sys.workspace = true

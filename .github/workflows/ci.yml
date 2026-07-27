@@ -10,8 +10,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  # Superseding a pull-request run is free; cancelling a protected-branch run
+  # would leave that commit without completed gate evidence.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   plan:
@@ -176,6 +178,51 @@ jobs:
           name: rust-${{ matrix.os }}-failure
           path: test-results/
           retention-days: 3
+
+  rust-windows-cross-check:
+    name: Rust Windows cross-compile check
+    needs: plan
+    if: always() && (needs.plan.result == 'success' || needs.plan.result == 'failure')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      RUN_RUST_WINDOWS_CROSS: >-
+        ${{
+          needs.plan.result != 'success' ||
+          needs.plan.outputs.rust_windows != 'false'
+        }}
+    steps:
+      - name: Report unaffected Windows cross-compile gate
+        if: env.RUN_RUST_WINDOWS_CROSS != 'true'
+        run: echo "No Windows-relevant files changed; required context satisfied without heavy work."
+      - name: Check out source
+        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Select pinned Rust toolchain
+        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
+        run: rustup show
+      - name: Install Windows GNU cross-compile target and linker
+        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
+        run: |
+          rustup target add x86_64-pc-windows-gnu
+          sudo apt-get update
+          sudo apt-get install --yes mingw-w64
+      # Every crate whose `cfg(windows)` branches would otherwise compile only
+      # on the Windows runner. `rackio-desktop` is excluded because Tauri needs
+      # a Windows webview SDK that cannot be cross-linked from Linux; the
+      # Windows leg remains its only gate.
+      - name: Check the Windows-owned crates for the Windows GNU target
+        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
+        run: >-
+          cargo check --target x86_64-pc-windows-gnu --all-features
+          -p rackio-windows-ipc -p rackio-core -p rackio-protocol
+          -p rackio-iroh -p rackio-agent
+      - name: Clippy the Windows-owned crates for the Windows GNU target
+        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
+        run: >-
+          cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features
+          -p rackio-windows-ipc -p rackio-core -p rackio-protocol
+          -p rackio-iroh -p rackio-agent -- -D warnings
 
   frontend:
     name: Frontend

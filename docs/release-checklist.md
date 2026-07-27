@@ -33,11 +33,15 @@ are maintained in [`backlog.md`](backlog.md).
 ## Functional blockers
 
 - [ ] Windows named-pipe IPC with explicit ACL and caller verification
-  - [x] implementation uses the `Rackio Viewers` group DACL, rejects remote
-        clients and rechecks the connected process token
-  - [x] GitHub-hosted Windows CI verifies `Rackio Viewers` access,
-        post-removal denial and remote pipe-name rejection in
+  - [x] implementation uses the `Rackio Viewers` group DACL, configures
+        `reject_remote_clients` and rechecks the connected process token
+  - [x] GitHub-hosted Windows CI verifies `Rackio Viewers` access and
+        post-removal denial, and confirms the client-side pipe-name prefix
+        check locally, in
         [run 30199245306](https://github.com/genm/rackio/actions/runs/30199245306)
+  - [ ] clean-host verification that `reject_remote_clients` actually refuses
+        a connection attempt from a separate remote host (the same-host CI
+        run above never reaches the server's remote-client check)
 - [ ] system service installers for Windows, macOS and Linux, including reboot
       recovery and desktop access to the local socket
   - [x] checksum-verified Linux systemd installer and rootless installer tests
@@ -60,9 +64,12 @@ are maintained in [`backlog.md`](backlog.md).
   - [ ] signed macOS package and Windows service installer
     - [x] macOS pkg builder refuses release output without a signing identity
           and optionally waits for notarization and staples the ticket
-    - [x] Windows Service archive installer configures the viewer group,
-          service recovery and secured ProgramData directories; its builder
-          and installer both enforce Authenticode
+    - [ ] Windows Service archive installer configures the viewer group,
+          service recovery and secured ProgramData directories; the installer
+          refuses to run without an explicit expected Authenticode signer
+          thumbprint and rejects a mismatch, but the project's release signing
+          certificate identity does not exist yet, so no pinned publisher is
+          wired into a real release pipeline
     - [ ] real macOS notarization receipt and Windows Authenticode/MSI signature
 - [x] immediate teardown of active connections when a peer is revoked
 - [x] five-minute mDNS advertisement lifecycle during pairing only
