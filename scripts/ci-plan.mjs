@@ -2,22 +2,27 @@
 
 import { appendFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { fullPlan, planForEvent } from "./ci-plan-lib.mjs";
+import { fullPlan, parseChangedFiles, planForEvent } from "./ci-plan-lib.mjs";
 
 function changedFiles(baseSha, headSha) {
   if (!baseSha || !headSha || /^0+$/.test(baseSha)) {
     throw new Error("comparison SHAs are unavailable");
   }
 
-  const result = spawnSync(
-    "git",
-    ["diff", "--name-only", "--diff-filter=ACMR", `${baseSha}...${headSha}`],
-    { encoding: "utf8" },
-  );
-  if (result.status !== 0) {
-    throw new Error(result.stderr.trim() || "git diff failed");
+  const result = spawnSync("git", [
+    "diff",
+    "--name-only",
+    "--no-renames",
+    "-z",
+    `${baseSha}...${headSha}`,
+  ]);
+  if (result.error) {
+    throw new Error(`git diff failed: ${result.error.message}`);
   }
-  return result.stdout.split("\n").filter(Boolean);
+  if (result.status !== 0) {
+    throw new Error(result.stderr.toString("utf8").trim() || "git diff failed");
+  }
+  return parseChangedFiles(result.stdout);
 }
 
 const eventName = process.env.CI_EVENT_NAME ?? "";

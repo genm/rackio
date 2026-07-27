@@ -31,9 +31,11 @@ jobs:
       - name: Require the protected default branch
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          REQUESTED_REF: ${{ github.ref_name }}
+          REQUESTED_REF: ${{ github.ref }}
+          REQUESTED_REF_TYPE: ${{ github.ref_type }}
         run: |
-          if [[ "$REQUESTED_REF" != "$DEFAULT_BRANCH" ]]; then
+          expected_ref="refs/heads/$DEFAULT_BRANCH"
+          if [[ "$REQUESTED_REF_TYPE" != "branch" || "$REQUESTED_REF" != "$expected_ref" ]]; then
             echo "release evidence must be built from the protected default branch" >&2
             exit 1
           fi

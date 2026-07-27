@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { classifyChangedFiles, planForEvent } from "./ci-plan-lib.mjs";
+import { classifyChangedFiles, parseChangedFiles, planForEvent } from "./ci-plan-lib.mjs";
+
+const plannerPath = resolve("scripts/ci-plan.mjs");
+
+function git(directory, ...args) {
+  const result = spawnSync("git", args, {
+    cwd: directory,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
 
 test("docs-only updates select no heavy gates", () => {
   assert.deepEqual(
@@ -71,7 +82,12 @@ test("relay packaging selects only dependency policy", () => {
 });
 
 test("CI routing changes force every gate", () => {
-  for (const file of [".github/workflows/ci.yml", "mise.toml"]) {
+  for (const file of [
+    ".github/workflows/ci.yml",
+    "mise.toml",
+    "scripts/reject-matches.sh",
+    "scripts/reject-matches.test.mjs",
+  ]) {
     const plan = classifyChangedFiles([file]);
     assert.equal(plan.full_run, true);
     assert.equal(plan.rust, true);
@@ -107,6 +123,75 @@ test("unknown events fail closed to every gate", () => {
   const plan = planForEvent({ eventName: "workflow_dispatch", eventAction: "" });
   assert.equal(plan.full_run, true);
   assert.equal(plan.reason, "unknown_event");
+});
+
+test("workflow wiring compares every pull request from its protected base", () => {
+  const pullRequestBase =
+    "github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before";
+  const ciWorkflow = readFileSync(resolve(".github/workflows/ci.yml"), "utf8");
+  const securityWorkflow = readFileSync(resolve(".github/workflows/security.yml"), "utf8");
+
+  assert.equal(ciWorkflow.split(pullRequestBase).length - 1, 1);
+  assert.equal(securityWorkflow.split(pullRequestBase).length - 1, 2);
+  assert.doesNotMatch(
+    `${ciWorkflow}\n${securityWorkflow}`,
+    /github\.event\.before \|\| github\.event\.pull_request\.base\.sha/,
+  );
+});
+
+test("NUL-delimited paths preserve newlines and reject malformed diff output", () => {
+  assert.deepEqual(parseChangedFiles(Buffer.from("docs/line\nbreak.md\0deny.toml\0")), [
+    "docs/line\nbreak.md",
+    "deny.toml",
+  ]);
+  assert.throws(() => parseChangedFiles(Buffer.from("deny.toml")), /NUL terminator/);
+  assert.throws(() => parseChangedFiles(Buffer.from([0xff, 0x00])), /encoded data/);
+});
+
+test("deletions and rename sources still select their original owners", () => {
+  const directory = mkdtempSync(join(tmpdir(), "rackio-ci-plan-git-"));
+  const outputPath = join(directory, "github-output");
+  mkdirSync(join(directory, "crates"), { recursive: true });
+  mkdirSync(join(directory, "docs"), { recursive: true });
+  git(directory, "init", "--quiet");
+  git(directory, "config", "user.name", "Rackio CI");
+  git(directory, "config", "user.email", "ci@example.test");
+  writeFileSync(join(directory, "deny.toml"), "[advisories]\n");
+  writeFileSync(join(directory, "crates", "guard.rs"), "pub fn guarded() {}\n");
+  git(directory, "add", "--all");
+  git(directory, "commit", "--quiet", "-m", "test: add owned fixtures");
+  const baseSha = git(directory, "rev-parse", "HEAD");
+
+  git(directory, "rm", "--quiet", "deny.toml");
+  git(directory, "mv", "crates/guard.rs", "docs/guard.rs");
+  writeFileSync(join(directory, "docs", "line\nbreak.md"), "special path\n");
+  git(directory, "add", "--all");
+  git(directory, "commit", "--quiet", "-m", "test: remove owned fixtures");
+  const headSha = git(directory, "rev-parse", "HEAD");
+
+  const result = spawnSync(process.execPath, [plannerPath], {
+    cwd: directory,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CI_EVENT_NAME: "pull_request",
+      CI_EVENT_ACTION: "synchronize",
+      CI_BASE_SHA: baseSha,
+      CI_HEAD_SHA: headSha,
+      GITHUB_OUTPUT: outputPath,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const plan = JSON.parse(result.stdout);
+  assert.equal(plan.full_run, false);
+  assert.equal(plan.rust, true);
+  assert.equal(plan.security_policy, true);
+  assert.equal(plan.security_source, true);
+  assert.ok(plan.files.includes("deny.toml"));
+  assert.ok(plan.files.includes("crates/guard.rs"));
+  assert.ok(plan.files.includes("docs/guard.rs"));
+  assert.ok(plan.files.includes("docs/line\nbreak.md"));
 });
 
 test("unavailable comparison SHAs fail closed in the CLI", () => {
