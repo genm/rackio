@@ -4,7 +4,12 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use qrcode::{QrCode, render::svg};
 use serde::Deserialize;
 use std::{
-    collections::HashSet, fs::OpenOptions, io::Write, path::PathBuf, sync::Mutex, time::Duration,
+    collections::{HashMap, HashSet},
+    fs::OpenOptions,
+    io::Write,
+    path::PathBuf,
+    sync::Mutex,
+    time::Duration,
 };
 use tauri::{
     AppHandle, Manager, Runtime,
@@ -212,9 +217,30 @@ async fn machine_history(endpoint_id: String, hours: u16) -> Result<serde_json::
     ))
 }
 
-#[derive(Default)]
-struct TrayRegistry {
+struct TrayRegistry<R: Runtime = tauri::Wry> {
     machine_ids: Mutex<HashSet<String>>,
+    menus: Mutex<HashMap<String, TrayMenuState<R>>>,
+}
+
+impl<R: Runtime> Default for TrayRegistry<R> {
+    fn default() -> Self {
+        Self {
+            machine_ids: Mutex::default(),
+            menus: Mutex::default(),
+        }
+    }
+}
+
+struct TrayMenuState<R: Runtime> {
+    detail_items: Vec<MenuItem<R>>,
+}
+
+impl<R: Runtime> Clone for TrayMenuState<R> {
+    fn clone(&self) -> Self {
+        Self {
+            detail_items: self.detail_items.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -278,12 +304,11 @@ fn tray_event_handler<R: Runtime>(app: &AppHandle<R>, event: &tauri::menu::MenuE
     }
 }
 
-fn machine_menu<R: Runtime, M: Manager<R>>(
+fn tray_menu<R: Runtime, M: Manager<R>>(
     app: &M,
-    machine: &TrayMachineMenu,
-) -> Result<Menu<R>, tauri::Error> {
-    let detail_items = machine
-        .details
+    details: &[String],
+) -> Result<(Menu<R>, TrayMenuState<R>), tauri::Error> {
+    let detail_items = details
         .iter()
         .enumerate()
         .map(|(index, text)| {
@@ -302,29 +327,39 @@ fn machine_menu<R: Runtime, M: Manager<R>>(
     for item in &detail_items {
         builder = builder.item(item);
     }
-    builder.separator().item(&show).item(&quit).build()
+    let menu = builder.separator().item(&show).item(&quit).build()?;
+    Ok((menu, TrayMenuState { detail_items }))
 }
 
-fn status_menu<R: Runtime, M: Manager<R>>(app: &M, message: &str) -> Result<Menu<R>, tauri::Error> {
-    let status = MenuItem::with_id(app, "status", message, false, None::<&str>)?;
-    let show = MenuItem::with_id(app, "show", "Open dashboard", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    MenuBuilder::new(app)
-        .item(&status)
-        .separator()
-        .item(&show)
-        .item(&quit)
-        .build()
+fn status_details(message: &str) -> Vec<String> {
+    vec![
+        message.to_owned(),
+        String::from("State · —"),
+        String::from("CPU · —"),
+        String::from("Memory · —"),
+        String::from("Disk · —"),
+        String::from("Path · — · RTT · —"),
+    ]
 }
 
-fn upsert_tray<R: Runtime>(
+fn update_tray_menu<R: Runtime>(menu: &TrayMenuState<R>, details: &[String]) {
+    for (item, text) in menu.detail_items.iter().zip(details) {
+        let _ = item.set_text(text);
+    }
+}
+
+fn upsert_tray<R: Runtime, F>(
     app: &AppHandle<R>,
     id: &str,
     state: &str,
     title: &str,
     tooltip: &str,
-    menu: Menu<R>,
-) -> Result<(), String> {
+    details: &[String],
+    menu_builder: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Result<(Menu<R>, TrayMenuState<R>), String>,
+{
     let color = tray_state_color(state)?;
     if let Some(tray) = app.tray_by_id(id) {
         tray.set_icon(Some(state_icon(color)))
@@ -336,11 +371,28 @@ fn upsert_tray<R: Runtime>(
         #[cfg(target_os = "macos")]
         tray.set_icon_as_template(false)
             .map_err(|error| format!("Could not configure the tray icon: {error}"))?;
-        tray.set_menu(Some(menu))
-            .map_err(|error| format!("Could not update the tray menu: {error}"))?;
+        let registry = app.state::<TrayRegistry<R>>();
+        let existing_menu = registry
+            .menus
+            .lock()
+            .ok()
+            .and_then(|menus| menus.get(id).cloned());
+        if let Some(menu) = existing_menu {
+            // Updating menu items in place keeps an open macOS NSMenu alive.
+            // Replacing the menu causes AppKit to dismiss it on the next poll.
+            update_tray_menu(&menu, details);
+        } else {
+            let (menu, menu_state) = menu_builder()?;
+            tray.set_menu(Some(menu))
+                .map_err(|error| format!("Could not update the tray menu: {error}"))?;
+            if let Ok(mut menus) = registry.menus.lock() {
+                menus.insert(id.to_owned(), menu_state);
+            }
+        }
         return Ok(());
     }
 
+    let (menu, menu_state) = menu_builder()?;
     let builder = TrayIconBuilder::with_id(id)
         .icon(state_icon(color))
         .icon_as_template(false)
@@ -351,7 +403,11 @@ fn upsert_tray<R: Runtime>(
         .on_menu_event(|app, event| tray_event_handler(app, &event));
     builder
         .build(app)
-        .map(|_| ())
+        .map(|_| {
+            if let Ok(mut menus) = app.state::<TrayRegistry<R>>().menus.lock() {
+                menus.insert(id.to_owned(), menu_state);
+            }
+        })
         .map_err(|error| format!("Could not create tray icon {id}: {error}"))
 }
 
@@ -363,10 +419,20 @@ fn update_status_tray(app: &AppHandle, state: &str, message: &str) {
         .map(|ids| ids.iter().cloned().collect::<Vec<_>>())
         .unwrap_or_default();
     if ids.is_empty() {
-        let Ok(menu) = status_menu(app, message) else {
-            return;
-        };
-        if upsert_tray(app, "rackio-status", state, message, message, menu).is_ok()
+        let details = status_details(message);
+        if upsert_tray(
+            app,
+            "rackio-status",
+            state,
+            message,
+            message,
+            &details,
+            || {
+                tray_menu(app, &details)
+                    .map_err(|error| format!("Could not build tray menu: {error}"))
+            },
+        )
+        .is_ok()
             && let Ok(mut ids) = registry.machine_ids.lock()
         {
             ids.insert(String::from("rackio-status"));
@@ -378,10 +444,10 @@ fn update_status_tray(app: &AppHandle, state: &str, message: &str) {
     // AppKit is processing a daemon transition can block the event loop, so a
     // degraded state is rendered in-place and remains observable.
     for id in ids {
-        let Ok(menu) = status_menu(app, message) else {
-            continue;
-        };
-        let _ = upsert_tray(app, &id, state, message, message, menu);
+        let details = status_details(message);
+        let _ = upsert_tray(app, &id, state, message, message, &details, || {
+            tray_menu(app, &details).map_err(|error| format!("Could not build tray menu: {error}"))
+        });
     }
 }
 
@@ -402,11 +468,20 @@ fn update_machine_trays(app: &AppHandle, snapshot: &TrayFleetSnapshot) {
             machine_tray_id(node)
         };
         let machine = tray_machine_menu(node);
-        let Ok(menu) = machine_menu(app, &machine) else {
-            continue;
-        };
         let title = tray_node_status(node);
-        let _ = upsert_tray(app, &id, &node.state, &title, &machine.title, menu);
+        let details = machine.details.clone();
+        let _ = upsert_tray(
+            app,
+            &id,
+            &node.state,
+            &title,
+            &machine.title,
+            &details,
+            || {
+                tray_menu(app, &details)
+                    .map_err(|error| format!("Could not build tray menu: {error}"))
+            },
+        );
         active_ids.insert(id);
     }
 
@@ -415,16 +490,18 @@ fn update_machine_trays(app: &AppHandle, snapshot: &TrayFleetSnapshot) {
         .cloned()
         .collect::<Vec<_>>();
     for id in stale_ids {
-        let Ok(menu) = status_menu(app, "Machine unavailable") else {
-            continue;
-        };
+        let details = status_details("Machine unavailable");
         let _ = upsert_tray(
             app,
             &id,
             "stale",
             "Unavailable ◌",
             "Machine is no longer reported by the agent",
-            menu,
+            &details,
+            || {
+                tray_menu(app, &details)
+                    .map_err(|error| format!("Could not build tray menu: {error}"))
+            },
         );
         active_ids.insert(id);
     }
@@ -753,7 +830,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            app.manage(TrayRegistry::default());
+            app.manage(TrayRegistry::<tauri::Wry>::default());
             #[cfg(target_os = "macos")]
             {
                 // The desktop window is a secondary viewer; the primary surface
