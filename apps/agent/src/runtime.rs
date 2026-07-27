@@ -3,7 +3,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, anyhow};
@@ -26,6 +26,29 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberI
 use uuid::Uuid;
 
 use crate::remote::{RemoteFleet, RemoteHistoryResolution, RemoteMachineSnapshot};
+
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
+const ACCEPT_FAILURE_GRACE: Duration = Duration::from_secs(30);
+const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Resolve on an operator-initiated stop. `systemctl stop`, container runtimes
+/// and package upgrades all send SIGTERM, so waiting only on Ctrl-C would skip
+/// the shutdown path on every real service stop.
+async fn shutdown_signal() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = signal(SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result.map_err(anyhow::Error::from),
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.map_err(anyhow::Error::from)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
@@ -220,7 +243,8 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         "agent started"
     );
 
-    let mut sampler = tokio::spawn(sample_loop(Arc::clone(&runtime), latest_tx));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mut sampler = tokio::spawn(sample_loop(Arc::clone(&runtime), latest_tx, shutdown_rx));
     let mut remote = tokio::spawn(server.run());
     let mut local = tokio::spawn(run_local_server(
         paths.clone(),
@@ -229,9 +253,15 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         remote_fleet,
     ));
 
+    // Polling a `JoinHandle` that already resolved panics, so remember whether
+    // the sampler is the branch that ended the select.
+    let mut sampler_finished = false;
     let result = tokio::select! {
-        signal = tokio::signal::ctrl_c() => signal.map_err(anyhow::Error::from),
-        stopped = &mut sampler => Err(anyhow!("metric sampler stopped unexpectedly: {stopped:?}")),
+        signal = shutdown_signal() => signal,
+        stopped = &mut sampler => {
+            sampler_finished = true;
+            Err(anyhow!("metric sampler stopped unexpectedly: {stopped:?}"))
+        }
         stopped = &mut remote => Err(anyhow!("remote listener stopped unexpectedly: {stopped:?}")),
         stopped = &mut local => match stopped {
             Ok(Ok(())) => Err(anyhow!("local IPC listener stopped unexpectedly")),
@@ -239,8 +269,21 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
             Err(error) => Err(error.into()),
         },
     };
+    // Let the sampler commit its buffered batch before the process exits.
+    // Aborting it outright would discard up to ten seconds of history on every
+    // service stop, restart and upgrade.
+    let _ = shutdown_tx.send(true);
+    if !sampler_finished {
+        match tokio::time::timeout(SHUTDOWN_FLUSH_TIMEOUT, &mut sampler).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(error = %error, "metric sampler ended abnormally"),
+            Err(_) => {
+                tracing::warn!("metric sampler did not flush within the shutdown timeout");
+                sampler.abort();
+            }
+        }
+    }
     endpoint.close().await;
-    sampler.abort();
     remote.abort();
     local.abort();
     if let Err(error) = &result {
@@ -251,9 +294,32 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     result
 }
 
+/// Commit whatever is buffered so a graceful stop does not discard history.
+/// A failure here is reported, never presented as a successful flush.
+async fn flush_pending(runtime: &NodeRuntime, pending: &mut Vec<rackio_core::MetricSample>) {
+    if pending.is_empty() {
+        return;
+    }
+    match runtime.store.lock().await.insert_batch(pending) {
+        Ok(()) => {
+            tracing::info!(
+                samples = pending.len(),
+                "flushed buffered samples on shutdown"
+            );
+            pending.clear();
+        }
+        Err(error) => tracing::error!(
+            error = %error,
+            samples = pending.len(),
+            "failed to flush buffered samples on shutdown; this history is lost"
+        ),
+    }
+}
+
 async fn sample_loop(
     runtime: Arc<NodeRuntime>,
     latest: watch::Sender<Option<rackio_core::MetricSample>>,
+    mut shutdown: watch::Receiver<bool>,
 ) {
     let mut collector = SystemCollector::new();
     tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
@@ -261,7 +327,17 @@ async fn sample_loop(
     let mut pending = Vec::with_capacity(5);
     let mut prune_counter = 0_u16;
     loop {
-        ticker.tick().await;
+        tokio::select! {
+            _ = ticker.tick() => {}
+            changed = shutdown.changed() => {
+                // A closed sender means the daemon is going away too.
+                if changed.is_err() || *shutdown.borrow() {
+                    flush_pending(&runtime, &mut pending).await;
+                    return;
+                }
+                continue;
+            }
+        }
         let sample = collector.sample();
         let _ = latest.send(Some(sample.clone()));
         pending.push(sample);
@@ -346,8 +422,30 @@ async fn run_local_server(
         &paths.local_socket,
         fs::Permissions::from_mode(if shared { 0o660 } else { 0o600 }),
     )?;
+    // A per-connection accept failure (an aborted client, a momentary fd
+    // shortage) must not stop metric collection and remote monitoring. A
+    // listener that never recovers still has to fail closed, so failures are
+    // only tolerated while some accept succeeds within the grace window.
+    let mut failing_since: Option<Instant> = None;
     loop {
-        let (stream, _) = listener.accept().await?;
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => {
+                failing_since = None;
+                stream
+            }
+            Err(error) => {
+                let since = *failing_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= ACCEPT_FAILURE_GRACE {
+                    return Err(anyhow::Error::from(error).context(format!(
+                        "local IPC listener failed continuously for {} seconds",
+                        ACCEPT_FAILURE_GRACE.as_secs()
+                    )));
+                }
+                tracing::warn!(error = %error, "local IPC accept failed; retrying");
+                tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
+                continue;
+            }
+        };
         if let Err(error) = stream.peer_cred() {
             tracing::warn!(error = %error, "local IPC caller credentials unavailable");
             continue;
