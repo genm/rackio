@@ -7,7 +7,6 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
-use chrono::Utc;
 use directories::ProjectDirs;
 use rackio_core::{
     HealthSnapshot, HistoryResolution, MetricCapability, MetricStore, NodeInfo, NodeState,
@@ -124,6 +123,12 @@ pub fn app_paths() -> anyhow::Result<AppPaths> {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct AgentConfig {
     relay_url: Option<String>,
+    /// Operator-defined local health thresholds. Empty by default: Rackio does
+    /// not invent thresholds for a machine it knows nothing about, and
+    /// `docs/operations.md` documents `warning`/`critical` as "a *configured*
+    /// local health threshold was crossed".
+    #[serde(default)]
+    alerts: Vec<rackio_core::AlertRule>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,6 +261,7 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     let mut sampler = tokio::spawn(sample_loop(
         Arc::clone(&runtime),
         collector,
+        config.alerts.clone(),
         latest_tx,
         shutdown_rx,
     ));
@@ -341,6 +347,19 @@ async fn apply_collector_health(runtime: &NodeRuntime, errors: &[rackio_core::Co
     }
 }
 
+/// Publish an operator-configured threshold breach as the machine's state.
+///
+/// Degradation still wins: a machine whose storage or collector is broken is
+/// reported as `Degraded` rather than as a threshold warning, because the
+/// underlying data is no longer trustworthy.
+async fn apply_alert_health(runtime: &NodeRuntime, severity: Option<NodeState>) {
+    let mut health = runtime.health.write().await;
+    if health.collector_degraded || health.storage_degraded || health.remote_listener_degraded {
+        return;
+    }
+    health.state = severity.unwrap_or(NodeState::Healthy);
+}
+
 /// Commit whatever is buffered so a graceful stop does not discard history.
 /// A failure here is reported, never presented as a successful flush.
 async fn flush_pending(runtime: &NodeRuntime, pending: &mut Vec<rackio_core::MetricSample>) {
@@ -366,9 +385,12 @@ async fn flush_pending(runtime: &NodeRuntime, pending: &mut Vec<rackio_core::Met
 async fn sample_loop(
     runtime: Arc<NodeRuntime>,
     mut collector: SystemCollector,
+    alert_rules: Vec<rackio_core::AlertRule>,
     latest: watch::Sender<Option<rackio_core::MetricSample>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let clock = rackio_core::Clock::new();
+    let mut alerts = rackio_core::AlertEvaluator::default();
     tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
     let mut ticker = tokio::time::interval(Duration::from_secs(2));
     let mut pending = Vec::with_capacity(5);
@@ -389,6 +411,15 @@ async fn sample_loop(
         // A source the collector could not read must be visible as a degraded
         // collector, not hidden behind an otherwise healthy snapshot.
         apply_collector_health(&runtime, &sample.errors).await;
+        for signal in alerts.evaluate(&sample, &alert_rules) {
+            tracing::info!(
+                rule = %signal.rule_id,
+                active = signal.active,
+                severity = ?signal.severity,
+                "local health threshold transition"
+            );
+        }
+        apply_alert_health(&runtime, alerts.worst_active_severity(&alert_rules)).await;
         let _ = latest.send(Some(sample.clone()));
         pending.push(sample);
         if pending.len() >= 5 {
@@ -429,7 +460,9 @@ async fn sample_loop(
                 .store
                 .lock()
                 .await
-                .prune(Utc::now().timestamp_millis())
+                // Monotonic: a forward clock step must not delete the whole
+                // history, and a backward one must not stop pruning.
+                .prune(clock.now_ms())
             {
                 let mut health = runtime.health.write().await;
                 health.storage_degraded = true;
@@ -735,7 +768,14 @@ async fn handle_local(
             if let Err(error) = validate_relay_url(relay_url.as_deref()) {
                 return LocalResponse::failure(error);
             }
-            let config = AgentConfig { relay_url };
+            // Preserve every other configured value. Rebuilding the struct
+            // from one field would silently discard the operator's alert
+            // thresholds on the next relay change.
+            let mut config = match load_config(paths) {
+                Ok(config) => config,
+                Err(error) => return LocalResponse::failure(error),
+            };
+            config.relay_url = relay_url;
             match save_config(paths, &config) {
                 Ok(()) => LocalResponse::success(serde_json::json!({
                     "saved": true,

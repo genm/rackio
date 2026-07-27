@@ -184,6 +184,36 @@ actual P2P path separately.
 | `incompatible` | Protocol major versions differ | Upgrade or roll back a machine to a compatible release |
 | `degraded` | A collector, storage, notification or local dependency failed | Read the displayed error and structured agent logs; values are not silently zeroed |
 
+### Configuring local health thresholds
+
+`warning` and `critical` are only reachable when an operator defines a
+threshold. Rackio ships none: it has no basis for deciding what CPU or disk
+level matters on a machine it knows nothing about. Add rules to the `alerts`
+array in the daemon's `config.json`:
+
+```json
+{
+  "alerts": [
+    {
+      "id": "disk-critical",
+      "metric": "disk_percent",
+      "comparison": "greater_than_or_equal",
+      "threshold": 90.0,
+      "consecutive_samples": 3,
+      "severity": "critical"
+    }
+  ]
+}
+```
+
+`metric` accepts `cpu_percent`, `memory_percent` and `disk_percent`
+(`disk_percent` uses the fullest mounted filesystem). `consecutive_samples`
+requires that many two-second samples in a row before the state changes, which
+suppresses flapping. A rule whose metric becomes unreadable clears rather than
+staying latched, and a degraded collector or storage subsystem still reports
+`degraded` in preference to a threshold state, because the underlying values
+are no longer trustworthy. Restart the daemon after editing the file.
+
 When storage is degraded, live sampling continues in memory but history may not
 persist. When a relay is unavailable, a direct peer may stay connected while a
 relay-only peer becomes offline. Those are distinct conditions, not a general

@@ -253,7 +253,11 @@ impl RemoteMachineSnapshot {
         let Some(last_seen_ms) = self.last_seen_ms else {
             return self.state;
         };
-        let age_ms = now_ms.saturating_sub(last_seen_ms);
+        // `saturating_sub` on i64 does not clamp at zero, so a clock that
+        // moved backwards produced a negative age and froze this derivation at
+        // the stored state. A machine cannot have been seen in the future:
+        // treat that as just-seen rather than silently trusting stale state.
+        let age_ms = now_ms.saturating_sub(last_seen_ms).max(0);
         if age_ms >= OFFLINE_AFTER_MS {
             NodeState::Offline
         } else if age_ms >= STALE_AFTER_MS {

@@ -82,10 +82,19 @@ impl MetricStore {
         let transaction = self.connection.transaction()?;
         for sample in samples {
             let json = serde_json::to_string(sample)?;
-            transaction.execute(
-                "INSERT OR REPLACE INTO metric_samples(timestamp_ms, sample_json) VALUES (?1, ?2)",
+            // `INSERT OR REPLACE` silently overwrote an existing row, so a
+            // backward clock step could destroy already-persisted history.
+            // Keep the first sample recorded for a millisecond instead.
+            let inserted = transaction.execute(
+                "INSERT INTO metric_samples(timestamp_ms, sample_json) VALUES (?1, ?2)
+                 ON CONFLICT(timestamp_ms) DO NOTHING",
                 params![sample.timestamp_ms, json],
             )?;
+            if inserted == 0 {
+                // Counting it in the minute aggregate anyway would double-count
+                // a sample that raw history stores once.
+                continue;
+            }
 
             let minute_ms = sample.timestamp_ms.div_euclid(MINUTE_MS) * MINUTE_MS;
             let cpu = sample.cpu_percent.map(f64::from);
@@ -238,6 +247,12 @@ impl MetricStore {
         .collect()
     }
 
+    /// Delete history outside the retention window.
+    ///
+    /// `now_ms` must come from a monotonic source (see [`crate::Clock`]).
+    /// Passing raw wall-clock time let a forward NTP step or a restored VM
+    /// snapshot delete the entire history in one call, silently and
+    /// irreversibly.
     pub fn prune(&mut self, now_ms: i64) -> Result<(), StoreError> {
         let transaction = self.connection.transaction()?;
         transaction.execute(
@@ -389,6 +404,40 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(minute.len(), 1);
         assert_eq!(minute[0].cpu_percent, Some(20.0));
+    }
+
+    #[test]
+    fn a_repeated_timestamp_does_not_overwrite_history_or_double_count_the_minute() {
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        let first = sample(1_000, 10.0);
+        let repeat = sample(1_000, 90.0);
+
+        store
+            .insert_batch(&[first])
+            .unwrap_or_else(|error| panic!("{error}"));
+        store
+            .insert_batch(&[repeat])
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let raw = store
+            .query(0, 10_000, HistoryResolution::Raw)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(raw.len(), 1);
+        assert_eq!(
+            raw[0].cpu_percent,
+            Some(10.0),
+            "the persisted sample must not be replaced"
+        );
+
+        let minute = store
+            .query(0, 60_000, HistoryResolution::Minute)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(minute.len(), 1);
+        assert_eq!(
+            minute[0].cpu_percent,
+            Some(10.0),
+            "the discarded duplicate must not enter the minute average"
+        );
     }
 
     #[test]
