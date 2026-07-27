@@ -342,10 +342,22 @@ fn status_details(message: &str) -> Vec<String> {
     ]
 }
 
-fn update_tray_menu<R: Runtime>(menu: &TrayMenuState<R>, details: &[String]) {
-    for (item, text) in menu.detail_items.iter().zip(details) {
+/// Refresh the existing menu items in place. Returns `false` when the new
+/// details do not fit the menu that was built, so the caller rebuilds instead
+/// of silently dropping them.
+///
+/// Zipping the two slices would leave surplus items showing their pre-outage
+/// text, so an agent outage or an unpaired machine would keep advertising the
+/// last healthy CPU, memory and path values.
+fn update_tray_menu<R: Runtime>(menu: &TrayMenuState<R>, details: &[String]) -> bool {
+    if details.len() > menu.detail_items.len() {
+        return false;
+    }
+    for (index, item) in menu.detail_items.iter().enumerate() {
+        let text = details.get(index).map_or("—", String::as_str);
         let _ = item.set_text(text);
     }
+    true
 }
 
 fn upsert_tray<R: Runtime, F>(
@@ -377,11 +389,11 @@ where
             .lock()
             .ok()
             .and_then(|menus| menus.get(id).cloned());
-        if let Some(menu) = existing_menu {
-            // Updating menu items in place keeps an open macOS NSMenu alive.
-            // Replacing the menu causes AppKit to dismiss it on the next poll.
-            update_tray_menu(&menu, details);
-        } else {
+        // Updating menu items in place keeps an open macOS NSMenu alive.
+        // Replacing the menu causes AppKit to dismiss it on the next poll, so
+        // only rebuild when the detail count no longer fits.
+        let updated_in_place = existing_menu.is_some_and(|menu| update_tray_menu(&menu, details));
+        if !updated_in_place {
             let (menu, menu_state) = menu_builder()?;
             tray.set_menu(Some(menu))
                 .map_err(|error| format!("Could not update the tray menu: {error}"))?;

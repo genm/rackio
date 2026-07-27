@@ -66,8 +66,25 @@ export function Dashboard({
   const [pairingOpen, setPairingOpen] = useState(false);
   const [pairingMethod, setPairingMethod] = useState<"bundle" | "share" | "ssh">("bundle");
   const [bundle, setBundle] = useState("");
+  // A disconnected agent or an empty rack is not a healthy rack. Keep the
+  // summary and the header pulse unknown rather than green when there is
+  // nothing to base a state on.
   const fleetState =
-    snapshot.nodes.length > 0 ? worstState(snapshot.nodes.map((node) => node.state)) : "healthy";
+    snapshot.daemon === "connected" && snapshot.nodes.length > 0
+      ? worstState(snapshot.nodes.map((node) => node.state))
+      : null;
+  const fleetTone =
+    fleetState === null
+      ? snapshot.daemon === "connected"
+        ? "muted"
+        : "bad"
+      : nodeStateRegistry[fleetState].tone;
+  const fleetLabel = fleetState === null ? "—" : nodeStateRegistry[fleetState].label;
+  const machineCount = snapshot.daemon === "connected" ? String(snapshot.nodes.length) : "—";
+  const relayedCount =
+    snapshot.daemon === "connected"
+      ? String(snapshot.nodes.filter((node) => node.path === "relayed").length)
+      : "—";
   const submitPairing = async (event: React.FormEvent) => {
     event.preventDefault();
     const normalized = bundle.trim();
@@ -89,7 +106,7 @@ export function Dashboard({
     <main>
       <header className="topbar">
         <div className="brand">
-          <span className={`pulse tone-${nodeStateRegistry[fleetState].tone}`} aria-hidden="true" />
+          <span className={`pulse tone-${fleetTone}`} aria-hidden="true" />
           <div>
             <p className="eyebrow">YOUR PRIVATE MACHINE RACK</p>
             <h1>Rackio</h1>
@@ -218,15 +235,15 @@ export function Dashboard({
       ) : null}
       <section className="summary" aria-label="Rack summary">
         <div>
-          <strong>{snapshot.nodes.length}</strong>
+          <strong>{machineCount}</strong>
           <span>Machines</span>
         </div>
         <div>
-          <strong>{nodeStateRegistry[fleetState].label}</strong>
+          <strong>{fleetLabel}</strong>
           <span>Rack state</span>
         </div>
         <div>
-          <strong>{snapshot.nodes.filter((node) => node.path === "relayed").length}</strong>
+          <strong>{relayedCount}</strong>
           <span>Relayed</span>
         </div>
         <p>Metrics stay on your machines. No account. No central database.</p>

@@ -275,10 +275,7 @@ fn run_scp(
         OsString::from("-o"),
         OsString::from("StrictHostKeyChecking=yes"),
         OsString::from("-o"),
-        OsString::from(format!(
-            "UserKnownHostsFile={}",
-            known_hosts.to_string_lossy()
-        )),
+        OsString::from(known_hosts_option(known_hosts)),
     ]);
     if let Some(identity_file) = target.identity_file.as_deref() {
         command.arg("-i").arg(identity_file);
@@ -289,6 +286,16 @@ fn run_scp(
         .output()
         .map_err(|error| format!("Could not start SCP: {error}"))?;
     output_text(&output, "release upload").map(|_| ())
+}
+
+/// `UserKnownHostsFile` takes a whitespace-separated *list* of files, so an
+/// unquoted path is split on spaces. The macOS config directory is
+/// `~/Library/Application Support/...`, which would otherwise be read as two
+/// nonexistent files and fail every bootstrap with "Host key verification
+/// failed". `ssh_config(5)` groups an argument containing spaces with double
+/// quotes.
+fn known_hosts_option(known_hosts: &Path) -> String {
+    format!("UserKnownHostsFile=\"{}\"", known_hosts.display())
 }
 
 fn ssh_options(target: &SshTarget, known_hosts: &Path) -> Vec<OsString> {
@@ -302,10 +309,7 @@ fn ssh_options(target: &SshTarget, known_hosts: &Path) -> Vec<OsString> {
         OsString::from("-o"),
         OsString::from("StrictHostKeyChecking=yes"),
         OsString::from("-o"),
-        OsString::from(format!(
-            "UserKnownHostsFile={}",
-            known_hosts.to_string_lossy()
-        )),
+        OsString::from(known_hosts_option(known_hosts)),
     ];
     if let Some(identity_file) = target.identity_file.as_deref() {
         args.push(OsString::from("-i"));
@@ -509,8 +513,20 @@ fn send_progress(
 #[cfg(test)]
 mod tests {
     use super::{
-        SshTarget, extract_pairing_bundle, remote_target, validate_remote_temp_dir, validate_target,
+        SshTarget, extract_pairing_bundle, known_hosts_option, remote_target,
+        validate_remote_temp_dir, validate_target,
     };
+
+    #[test]
+    fn known_hosts_path_with_spaces_stays_one_file() {
+        let option = known_hosts_option(std::path::Path::new(
+            "/Users/rack/Library/Application Support/dev.rackio.rackio/ssh/known_hosts",
+        ));
+        assert_eq!(
+            option,
+            "UserKnownHostsFile=\"/Users/rack/Library/Application Support/dev.rackio.rackio/ssh/known_hosts\""
+        );
+    }
 
     #[test]
     fn rejects_shell_metacharacters_in_ssh_target() {

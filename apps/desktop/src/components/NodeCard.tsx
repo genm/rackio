@@ -49,7 +49,15 @@ export function NodeCard({
         <span>
           Memory {bytes(node.memoryUsedBytes)} / {bytes(node.memoryTotalBytes)}
         </span>
-        <span>{node.detail ?? "Collectors operational"}</span>
+        {/* The daemon derives stale/offline from age without attaching a
+            detail string, so an unconditional "operational" fallback would
+            claim a healthy collector for an unreachable machine. */}
+        <span>
+          {node.detail ??
+            (node.state === "healthy"
+              ? "Collectors operational"
+              : `No detail reported · ${state.label}`)}
+        </span>
       </footer>
       <button
         type="button"

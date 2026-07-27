@@ -116,6 +116,27 @@ test("shows daemon failure as an alert instead of an empty healthy fleet", async
   await expect(component.getByRole("alert")).toContainText("Background monitoring is disconnected");
 });
 
+test("does not summarise an unreachable agent as a healthy rack", async ({ mount }) => {
+  const component = await mount(
+    <Dashboard
+      snapshot={{ daemon: "unavailable", nodes: [], message: "Agent socket not found." }}
+    />,
+  );
+  const summary = component.getByLabel("Rack summary");
+  await expect(summary).not.toContainText("Healthy");
+  await expect(summary).toContainText("Rack state");
+  await expect(summary.locator("strong").first()).toHaveText("—");
+});
+
+test("does not summarise an empty connected rack as healthy", async ({ mount }) => {
+  const component = await mount(
+    <Dashboard snapshot={{ daemon: "connected", nodes: [], message: "No machines paired yet." }} />,
+  );
+  const summary = component.getByLabel("Rack summary");
+  await expect(summary).not.toContainText("Healthy");
+  await expect(summary.locator("strong").first()).toHaveText("0");
+});
+
 test("falls back to the normal window when tray integration is unavailable", async ({ mount }) => {
   const component = await mount(
     <Dashboard snapshot={snapshot} traySurface={traySurfaceStateRegistry.unavailable} />,
