@@ -28,6 +28,11 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const STREAM_SILENCE_TIMEOUT: Duration = Duration::from_secs(12);
 const STALE_AFTER_MS: i64 = 10_000;
 const OFFLINE_AFTER_MS: i64 = 30_000;
+const HISTORY_RESPONSE_TIMEOUT: Duration = Duration::from_mins(1);
+/// A peer cannot retain more history than the retention contract allows, so
+/// anything beyond it is a malfunctioning or hostile peer rather than a range
+/// this viewer asked for.
+const MAX_REMOTE_HISTORY_SAMPLES: usize = rackio_core::MAX_QUERY_ROWS;
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 const HISTORY_POINTS: usize = 120;
@@ -53,6 +58,8 @@ pub enum RemoteFleetError {
     UnknownMachine,
     #[error("history range is invalid or exceeds seven days")]
     InvalidHistoryRange,
+    #[error("paired machine returned more history than its retention can hold")]
+    HistoryResponseTooLarge,
     #[error("paired machine registry lock is unavailable")]
     RegistryUnavailable,
     #[error("paired machine registry I/O failed: {0}")]
@@ -358,12 +365,23 @@ impl RemoteFleet {
         .await
         .map_err(|_| RemoteFleetError::Timeout("history request"))??;
         let mut samples = Vec::new();
+        // `REQUEST_TIMEOUT` bounds each frame, not the exchange, so a peer
+        // emitting one frame just inside it could stream forever. Bound the
+        // whole response in both time and rows: this daemon is the viewer that
+        // must stay up, and an unbounded peer response would take it down.
+        let deadline = Instant::now() + HISTORY_RESPONSE_TIMEOUT;
         loop {
+            if Instant::now() >= deadline {
+                return Err(RemoteFleetError::Timeout("history response"));
+            }
             let response = tokio::time::timeout(REQUEST_TIMEOUT, stream.next())
                 .await
                 .map_err(|_| RemoteFleetError::Timeout("history response"))??;
             match response.body {
                 Some(response::Body::MetricSample(sample)) => {
+                    if samples.len() >= MAX_REMOTE_HISTORY_SAMPLES {
+                        return Err(RemoteFleetError::HistoryResponseTooLarge);
+                    }
                     samples.push(metric_sample(sample));
                 }
                 Some(response::Body::StreamComplete(_)) => break,

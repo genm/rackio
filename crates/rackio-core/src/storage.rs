@@ -9,6 +9,19 @@ const RAW_RETENTION_MS: i64 = 24 * 60 * 60 * 1_000;
 const MINUTE_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 const MINUTE_MS: i64 = 60 * 1_000;
 const SIZE_CAP_BYTES: i64 = 64 * 1_024 * 1_024;
+const SAMPLE_INTERVAL_MS: i64 = 2_000;
+
+/// The most rows any resolution can hold under the retention contract:
+/// 24 hours of two-second raw samples. Minute history retains seven days,
+/// which is far fewer rows, so this bounds both without truncating a
+/// legitimate range.
+pub const MAX_QUERY_ROWS: usize = 24 * 60 * 60 * 1_000 / 2_000;
+
+// Keep the literal above tied to the retention contract it is derived from.
+const _: () = assert!(
+    (RAW_RETENTION_MS / SAMPLE_INTERVAL_MS) == 43_200 && MAX_QUERY_ROWS == 43_200,
+    "MAX_QUERY_ROWS must stay equal to the raw retention divided by the sample interval"
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryResolution {
@@ -120,13 +133,19 @@ impl MetricStore {
         Ok(())
     }
 
+    /// Query without an explicit page size.
+    ///
+    /// Still bounded: the previous `usize::MAX` form compiled to `LIMIT
+    /// i64::MAX`, so a single request could materialise the whole store in one
+    /// `Vec` and one IPC line. [`MAX_QUERY_ROWS`] is what retention can
+    /// actually hold, so no legitimate range loses a row.
     pub fn query(
         &self,
         from_ms: i64,
         to_ms: i64,
         resolution: HistoryResolution,
     ) -> Result<Vec<MetricSample>, StoreError> {
-        self.query_page(from_ms, to_ms, resolution, usize::MAX)
+        self.query_page(from_ms, to_ms, resolution, MAX_QUERY_ROWS)
     }
 
     pub fn query_page(

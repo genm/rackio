@@ -30,6 +30,11 @@ use crate::remote::{RemoteFleet, RemoteHistoryResolution, RemoteMachineSnapshot}
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 const ACCEPT_FAILURE_GRACE: Duration = Duration::from_secs(30);
 const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+const LOCAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+/// The largest `LocalCommand` is a pairing import, whose bundle the desktop
+/// already caps at 16 KiB. 64 KiB leaves ample headroom for every command while
+/// keeping a single request bounded.
+const MAX_LOCAL_REQUEST_BYTES: u64 = 64 * 1024;
 
 /// Resolve on an operator-initiated stop. `systemctl stop`, container runtimes
 /// and package upgrades all send SIGTERM, so waiting only on Ctrl-C would skip
@@ -575,6 +580,36 @@ async fn run_local_server(
 }
 
 #[cfg(unix)]
+/// Read one bounded, timely `LocalCommand`, or the failure to report instead.
+///
+/// `reader` must already be limited to [`MAX_LOCAL_REQUEST_BYTES`]; hitting
+/// that limit shows up here as a line with no terminating newline, which is
+/// rejected rather than parsed as a truncated command.
+async fn read_local_request<R>(reader: &mut R) -> Result<LocalCommand, LocalResponse>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let mut line = String::new();
+    match tokio::time::timeout(
+        LOCAL_REQUEST_TIMEOUT,
+        tokio::io::AsyncBufReadExt::read_line(reader, &mut line),
+    )
+    .await
+    {
+        Err(_) => Err(LocalResponse::failure(
+            "local request timed out before a complete command",
+        )),
+        Ok(Err(error)) => Err(LocalResponse::failure(error)),
+        Ok(Ok(0)) => Err(LocalResponse::failure("empty local request")),
+        Ok(Ok(_)) if !line.ends_with('\n') => Err(LocalResponse::failure(format!(
+            "local request exceeded {MAX_LOCAL_REQUEST_BYTES} bytes without a newline"
+        ))),
+        Ok(Ok(_)) => {
+            serde_json::from_str::<LocalCommand>(line.trim_end()).map_err(LocalResponse::failure)
+        }
+    }
+}
+
 async fn serve_local_stream<S>(
     stream: S,
     paths: AppPaths,
@@ -598,14 +633,18 @@ async fn serve_local_stream_prefixed<S>(
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (read, mut write) = tokio::io::split(stream);
-    let mut lines = BufReader::new(std::io::Cursor::new(prefix).chain(read)).lines();
-    let response = match lines.next_line().await {
-        Ok(Some(line)) => match serde_json::from_str::<LocalCommand>(&line) {
-            Ok(command) => handle_local(&paths, &endpoint, &runtime, &remote_fleet, command).await,
-            Err(error) => LocalResponse::failure(error),
-        },
-        Ok(None) => LocalResponse::failure("empty local request"),
-        Err(error) => LocalResponse::failure(error),
+    // Bound the request itself. On the shared socket every viewer-group member
+    // can connect, and an unbounded `next_line` lets one of them park a task
+    // forever or stream a line until the daemon runs out of memory — stopping
+    // metric collection for everyone.
+    let mut reader = BufReader::new(
+        std::io::Cursor::new(prefix)
+            .chain(read)
+            .take(MAX_LOCAL_REQUEST_BYTES),
+    );
+    let response = match read_local_request(&mut reader).await {
+        Ok(command) => handle_local(&paths, &endpoint, &runtime, &remote_fleet, command).await,
+        Err(response) => response,
     };
     if let Ok(mut bytes) = serde_json::to_vec(&response) {
         bytes.push(b'\n');
@@ -964,7 +1003,50 @@ mod tests {
     #[cfg(unix)]
     use std::path::PathBuf;
 
-    use super::validate_relay_url;
+    use super::{MAX_LOCAL_REQUEST_BYTES, read_local_request, validate_relay_url};
+
+    async fn read_request(payload: &[u8]) -> Result<super::LocalCommand, super::LocalResponse> {
+        let mut reader = tokio::io::BufReader::new(tokio::io::AsyncReadExt::take(
+            payload,
+            MAX_LOCAL_REQUEST_BYTES,
+        ));
+        read_local_request(&mut reader).await
+    }
+
+    #[tokio::test]
+    async fn accepts_a_well_formed_local_command() {
+        let command = read_request(b"{\"command\":\"status\"}\n")
+            .await
+            .unwrap_or_else(|response| panic!("{response:?}"));
+        assert!(matches!(command, super::LocalCommand::Status));
+    }
+
+    #[tokio::test]
+    async fn rejects_a_local_request_that_never_terminates() {
+        // A viewer-group member on the shared socket must not be able to grow
+        // the daemon's memory with one endless line.
+        let oversized =
+            vec![b'x'; usize::try_from(MAX_LOCAL_REQUEST_BYTES).unwrap_or(usize::MAX) + 1];
+        let Err(response) = read_request(&oversized).await else {
+            panic!("an unterminated oversized request must be rejected");
+        };
+        assert!(!response.ok);
+        assert!(
+            response
+                .error
+                .unwrap_or_default()
+                .contains("without a newline")
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_an_empty_local_request() {
+        let Err(response) = read_request(b"").await else {
+            panic!("an empty request must be rejected");
+        };
+        assert!(!response.ok);
+    }
+
     #[cfg(unix)]
     use super::{AppPaths, local_socket_candidates};
 

@@ -9,4 +9,4 @@ pub use model::{
     CapabilityState, CollectorError, ConnectionPath, DiskMetric, HealthSnapshot, MetricCapability,
     MetricSample, NetworkMetric, NodeInfo, NodeState, ProtocolVersion,
 };
-pub use storage::{HistoryResolution, MetricStore, StoreError};
+pub use storage::{HistoryResolution, MAX_QUERY_ROWS, MetricStore, StoreError};
