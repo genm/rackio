@@ -3,11 +3,13 @@ mod ssh_bootstrap;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use qrcode::{QrCode, render::svg};
 use serde::Deserialize;
-use std::{fs::OpenOptions, io::Write, path::PathBuf, time::Duration};
+use std::{
+    collections::HashSet, fs::OpenOptions, io::Write, path::PathBuf, sync::Mutex, time::Duration,
+};
 use tauri::{
-    AppHandle, Manager,
+    AppHandle, Manager, Runtime,
     image::Image,
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuBuilder, MenuItem},
     tray::TrayIconBuilder,
 };
 
@@ -210,27 +212,9 @@ async fn machine_history(endpoint_id: String, hours: u16) -> Result<serde_json::
     ))
 }
 
-fn apply_tray_details(app: &AppHandle, state: &str, tooltip: &str) -> Result<(), String> {
-    let color = match state {
-        "healthy" => [84, 217, 139, 255],
-        "warning" | "degraded" => [230, 189, 89, 255],
-        "stale" => [164, 173, 168, 255],
-        "critical" | "offline" | "auth_error" | "incompatible" | "daemon_unavailable" => {
-            [255, 111, 103, 255]
-        }
-        _ => return Err(String::from("Unknown fleet state for tray icon.")),
-    };
-    let tray = app
-        .tray_by_id("main")
-        .ok_or_else(|| String::from("Rackio tray icon is unavailable."))?;
-    tray.set_icon(Some(state_icon(color)))
-        .map_err(|error| format!("Could not update the Rackio tray icon: {error}"))?;
-    tray.set_tooltip(Some(tooltip.to_owned()))
-        .map_err(|error| format!("Could not update the Rackio tray tooltip: {error}"))?;
-    #[cfg(target_os = "macos")]
-    tray.set_icon_as_template(false)
-        .map_err(|error| format!("Could not configure the Rackio tray icon: {error}"))?;
-    Ok(())
+#[derive(Default)]
+struct TrayRegistry {
+    machine_ids: Mutex<HashSet<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -241,67 +225,294 @@ struct TrayFleetSnapshot {
 
 #[derive(Debug, Deserialize)]
 struct TrayNodeSnapshot {
+    id: String,
+    name: String,
     state: String,
+    path: String,
     #[serde(rename = "cpuPercent")]
     cpu_percent: Option<f64>,
     #[serde(rename = "memoryUsedBytes")]
     memory_used_bytes: Option<u64>,
     #[serde(rename = "memoryTotalBytes")]
     memory_total_bytes: Option<u64>,
+    #[serde(rename = "diskUsedBytes")]
+    disk_used_bytes: Option<u64>,
+    #[serde(rename = "diskTotalBytes")]
+    disk_total_bytes: Option<u64>,
+    #[serde(rename = "rttMs")]
+    rtt_ms: Option<u64>,
 }
 
-fn tray_snapshot_details(snapshot: &TrayFleetSnapshot) -> (String, String) {
-    if snapshot.daemon != "connected" {
-        return (
-            String::from("daemon_unavailable"),
-            String::from("Rackio · Agent unavailable"),
-        );
-    }
-    if snapshot.nodes.is_empty() {
-        return (
-            String::from("healthy"),
-            String::from("Rackio · No paired machines"),
-        );
-    }
-
-    let state = snapshot
-        .nodes
-        .iter()
-        .map(|node| node.state.as_str())
-        .max_by_key(|state| tray_state_rank(state))
-        .unwrap_or("degraded")
-        .to_owned();
-    let machine_label = if snapshot.nodes.len() == 1 {
-        "machine"
-    } else {
-        "machines"
-    };
-    let cpu = average_cpu(&snapshot.nodes)
-        .map(|value| format!(" · CPU {value:.0}%"))
-        .unwrap_or_default();
-    let memory = memory_usage_percent(&snapshot.nodes)
-        .map(|value| format!(" · Memory {value:.0}%"))
-        .unwrap_or_default();
-    let tooltip = format!(
-        "Rackio · {} · {} {}{}{}",
-        tray_state_label(&state),
-        snapshot.nodes.len(),
-        machine_label,
-        cpu,
-        memory
-    );
-    (state, tooltip)
+#[derive(Debug, PartialEq, Eq)]
+struct TrayMachineMenu {
+    title: String,
+    details: Vec<String>,
 }
 
-fn tray_state_rank(state: &str) -> u8 {
+fn machine_tray_id(node: &TrayNodeSnapshot) -> String {
+    format!("machine-{}", node.id)
+}
+
+fn tray_state_color(state: &str) -> Result<[u8; 4], String> {
     match state {
-        "healthy" => 0,
-        "warning" => 1,
-        "degraded" => 2,
-        "stale" => 3,
-        "critical" => 4,
-        "offline" | "auth_error" | "incompatible" => 5,
-        _ => 6,
+        "healthy" => Ok([84, 217, 139, 255]),
+        "warning" | "degraded" => Ok([230, 189, 89, 255]),
+        "stale" => Ok([164, 173, 168, 255]),
+        "critical" | "offline" | "auth_error" | "incompatible" | "daemon_unavailable" => {
+            Ok([255, 111, 103, 255])
+        }
+        _ => Err(String::from("Unknown fleet state for tray icon.")),
+    }
+}
+
+fn tray_event_handler<R: Runtime>(app: &AppHandle<R>, event: &tauri::menu::MenuEvent) {
+    match event.id().as_ref() {
+        "show" => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }
+        "quit" => app.exit(0),
+        _ => {}
+    }
+}
+
+fn machine_menu<R: Runtime, M: Manager<R>>(
+    app: &M,
+    machine: &TrayMachineMenu,
+) -> Result<Menu<R>, tauri::Error> {
+    let detail_items = machine
+        .details
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            MenuItem::with_id(
+                app,
+                format!("machine-detail-{index}"),
+                text,
+                false,
+                None::<&str>,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let show = MenuItem::with_id(app, "show", "Open dashboard", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let mut builder = MenuBuilder::new(app);
+    for item in &detail_items {
+        builder = builder.item(item);
+    }
+    builder.separator().item(&show).item(&quit).build()
+}
+
+fn status_menu<R: Runtime, M: Manager<R>>(app: &M, message: &str) -> Result<Menu<R>, tauri::Error> {
+    let status = MenuItem::with_id(app, "status", message, false, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "Open dashboard", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    MenuBuilder::new(app)
+        .item(&status)
+        .separator()
+        .item(&show)
+        .item(&quit)
+        .build()
+}
+
+fn upsert_tray<R: Runtime>(
+    app: &AppHandle<R>,
+    id: &str,
+    state: &str,
+    title: &str,
+    tooltip: &str,
+    menu: Menu<R>,
+) -> Result<(), String> {
+    let color = tray_state_color(state)?;
+    if let Some(tray) = app.tray_by_id(id) {
+        tray.set_icon(Some(state_icon(color)))
+            .map_err(|error| format!("Could not update the tray icon: {error}"))?;
+        tray.set_title(Some(title.to_owned()))
+            .map_err(|error| format!("Could not update the tray title: {error}"))?;
+        tray.set_tooltip(Some(tooltip.to_owned()))
+            .map_err(|error| format!("Could not update the tray tooltip: {error}"))?;
+        #[cfg(target_os = "macos")]
+        tray.set_icon_as_template(false)
+            .map_err(|error| format!("Could not configure the tray icon: {error}"))?;
+        tray.set_menu(Some(menu))
+            .map_err(|error| format!("Could not update the tray menu: {error}"))?;
+        return Ok(());
+    }
+
+    let builder = TrayIconBuilder::with_id(id)
+        .icon(state_icon(color))
+        .icon_as_template(false)
+        .title(title)
+        .tooltip(tooltip)
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| tray_event_handler(app, &event));
+    builder
+        .build(app)
+        .map(|_| ())
+        .map_err(|error| format!("Could not create tray icon {id}: {error}"))
+}
+
+fn update_status_tray(app: &AppHandle, state: &str, message: &str) {
+    let registry = app.state::<TrayRegistry>();
+    let ids = registry
+        .machine_ids
+        .lock()
+        .map(|ids| ids.iter().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    if ids.is_empty() {
+        let Ok(menu) = status_menu(app, message) else {
+            return;
+        };
+        if upsert_tray(app, "rackio-status", state, message, message, menu).is_ok()
+            && let Ok(mut ids) = registry.machine_ids.lock()
+        {
+            ids.insert(String::from("rackio-status"));
+        }
+        return;
+    }
+
+    // Keep existing status items alive on macOS. Removing an NSStatusItem while
+    // AppKit is processing a daemon transition can block the event loop, so a
+    // degraded state is rendered in-place and remains observable.
+    for id in ids {
+        let Ok(menu) = status_menu(app, message) else {
+            continue;
+        };
+        let _ = upsert_tray(app, &id, state, message, message, menu);
+    }
+}
+
+fn update_machine_trays(app: &AppHandle, snapshot: &TrayFleetSnapshot) {
+    let registry = app.state::<TrayRegistry>();
+    let registered_ids = registry
+        .machine_ids
+        .lock()
+        .map(|ids| ids.clone())
+        .unwrap_or_default();
+    let status_slot =
+        registered_ids.contains("rackio-status") && app.tray_by_id("rackio-status").is_some();
+    let mut active_ids = HashSet::new();
+    for (index, node) in snapshot.nodes.iter().enumerate() {
+        let id = if index == 0 && status_slot {
+            String::from("rackio-status")
+        } else {
+            machine_tray_id(node)
+        };
+        let machine = tray_machine_menu(node);
+        let Ok(menu) = machine_menu(app, &machine) else {
+            continue;
+        };
+        let title = tray_node_status(node);
+        let _ = upsert_tray(app, &id, &node.state, &title, &machine.title, menu);
+        active_ids.insert(id);
+    }
+
+    let stale_ids = registered_ids
+        .difference(&active_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    for id in stale_ids {
+        let Ok(menu) = status_menu(app, "Machine unavailable") else {
+            continue;
+        };
+        let _ = upsert_tray(
+            app,
+            &id,
+            "stale",
+            "Unavailable ◌",
+            "Machine is no longer reported by the agent",
+            menu,
+        );
+        active_ids.insert(id);
+    }
+    if let Ok(mut ids) = registry.machine_ids.lock() {
+        *ids = active_ids;
+    }
+}
+
+fn tray_node_status(node: &TrayNodeSnapshot) -> String {
+    // Keep the status item narrow enough that multiple machines remain visible
+    // beside other menu-bar extras; the click menu carries the full metrics.
+    format!("{} {}", node.name, tray_state_symbol(&node.state))
+}
+
+fn tray_machine_menu(node: &TrayNodeSnapshot) -> TrayMachineMenu {
+    TrayMachineMenu {
+        title: format!(
+            "{} · {} · CPU {} · Memory {}",
+            node.name,
+            tray_state_label(&node.state),
+            percentage_label(node.cpu_percent),
+            memory_percentage_label(node)
+        ),
+        details: vec![
+            format!("State · {}", tray_state_label(&node.state)),
+            format!("CPU · {}", percentage_label(node.cpu_percent)),
+            format!("Memory · {}", memory_percentage_label(node)),
+            format!("Disk · {}", disk_percentage_label(node)),
+            format!("Path · {}", tray_path_label(&node.path)),
+            format!("RTT · {}", rtt_label(node.rtt_ms)),
+        ],
+    }
+}
+
+fn disk_percentage_label(node: &TrayNodeSnapshot) -> String {
+    match (node.disk_used_bytes, node.disk_total_bytes) {
+        (Some(used), Some(total)) if total > 0 => {
+            let basis_points = used
+                .saturating_mul(10_000)
+                .checked_div(total)
+                .unwrap_or_default()
+                .min(10_000);
+            let percentage = f64::from(u32::try_from(basis_points).unwrap_or(10_000)) / 100.0;
+            format!("{percentage:.0}%")
+        }
+        _ => String::from("—"),
+    }
+}
+
+fn tray_path_label(path: &str) -> &str {
+    match path {
+        "lan_direct" => "LAN direct",
+        "wan_direct" => "WAN direct",
+        "relayed" => "Relayed",
+        _ => "Unknown path",
+    }
+}
+
+fn rtt_label(rtt_ms: Option<u64>) -> String {
+    rtt_ms.map_or_else(|| String::from("—"), |value| format!("{value} ms"))
+}
+
+fn tray_state_symbol(state: &str) -> &str {
+    match state {
+        "healthy" => "●",
+        "warning" | "degraded" => "▲",
+        "stale" => "◌",
+        "critical" | "offline" | "auth_error" | "incompatible" => "✕",
+        _ => "?",
+    }
+}
+
+fn percentage_label(value: Option<f64>) -> String {
+    value.map_or_else(|| String::from("—"), |value| format!("{value:.0}%"))
+}
+
+fn memory_percentage_label(node: &TrayNodeSnapshot) -> String {
+    match (node.memory_used_bytes, node.memory_total_bytes) {
+        (Some(used), Some(total)) if total > 0 => {
+            let basis_points = used
+                .saturating_mul(10_000)
+                .checked_div(total)
+                .unwrap_or_default()
+                .min(10_000);
+            let percentage = f64::from(u32::try_from(basis_points).unwrap_or(10_000)) / 100.0;
+            format!("{percentage:.0}%")
+        }
+        _ => String::from("—"),
     }
 }
 
@@ -319,49 +530,19 @@ fn tray_state_label(state: &str) -> &str {
     }
 }
 
-fn average_cpu(nodes: &[TrayNodeSnapshot]) -> Option<f64> {
-    let values: Vec<f64> = nodes.iter().filter_map(|node| node.cpu_percent).collect();
-    (!values.is_empty()).then(|| {
-        let count = u32::try_from(values.len()).unwrap_or(u32::MAX);
-        values.iter().sum::<f64>() / f64::from(count)
-    })
-}
-
-fn memory_usage_percent(nodes: &[TrayNodeSnapshot]) -> Option<f64> {
-    let (used, total) = nodes.iter().fold((0_u128, 0_u128), |(used, total), node| {
-        match (node.memory_used_bytes, node.memory_total_bytes) {
-            (Some(node_used), Some(node_total)) if node_total > 0 => (
-                used.saturating_add(u128::from(node_used)),
-                total.saturating_add(u128::from(node_total)),
-            ),
-            _ => (used, total),
-        }
-    });
-    (total > 0).then(|| {
-        let basis_points = used
-            .saturating_mul(10_000)
-            .checked_div(total)
-            .unwrap_or_default()
-            .min(10_000);
-        f64::from(u32::try_from(basis_points).unwrap_or(10_000)) / 100.0
-    })
-}
-
 async fn update_tray_from_daemon(app: &AppHandle) {
-    let (state, tooltip) = match fleet_snapshot().await {
+    match fleet_snapshot().await {
         Ok(value) => match serde_json::from_value::<TrayFleetSnapshot>(value) {
-            Ok(snapshot) => tray_snapshot_details(&snapshot),
-            Err(_) => (
-                String::from("degraded"),
-                String::from("Rackio · Degraded · Invalid agent snapshot"),
-            ),
+            Ok(snapshot) if snapshot.daemon == "connected" && !snapshot.nodes.is_empty() => {
+                update_machine_trays(app, &snapshot);
+            }
+            Ok(snapshot) if snapshot.daemon == "connected" => {
+                update_status_tray(app, "warning", "No paired machines");
+            }
+            Ok(_) | Err(_) => update_status_tray(app, "degraded", "Invalid agent snapshot"),
         },
-        Err(_) => (
-            String::from("daemon_unavailable"),
-            String::from("Rackio · Agent unavailable"),
-        ),
-    };
-    let _ = apply_tray_details(app, &state, &tooltip);
+        Err(_) => update_status_tray(app, "daemon_unavailable", "Agent unavailable"),
+    }
 }
 
 async fn run_tray_monitor(app: AppHandle) {
@@ -572,41 +753,18 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let show = MenuItem::with_id(app, "show", "Open Rackio", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit tray", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
-            let mut builder = TrayIconBuilder::with_id("main")
-                .tooltip("Rackio")
-                .menu(&menu)
-                .show_menu_on_left_click(true)
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                });
-            if let Some(icon) = app.default_window_icon() {
-                builder = builder.icon(icon.clone());
+            app.manage(TrayRegistry::default());
+            #[cfg(target_os = "macos")]
+            {
+                // The desktop window is a secondary viewer; the primary surface
+                // is the set of status items, so keep the app in the menu bar.
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
-            match builder.build(app) {
-                Ok(_) => {
-                    // The hidden WebView is a viewer; tray monitoring must keep
-                    // running even when it is not loaded or has been closed.
-                    tauri::async_runtime::spawn(run_tray_monitor(app.handle().clone()));
-                }
-                Err(_) => {
-                    // A normal window is the explicit fallback on Linux desktops
-                    // without a tray implementation.
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
-            }
+            // The first poll chooses either the machine tabs or a degraded
+            // status item. Avoid creating a temporary status item here: on
+            // macOS replacing it immediately after startup can block AppKit's
+            // status bar before the machine tabs become visible.
+            tauri::async_runtime::spawn(run_tray_monitor(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -625,8 +783,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        TrayFleetSnapshot, TrayNodeSnapshot, pairing_qr_data_url, save_pairing_bundle,
-        tray_snapshot_details,
+        TrayMachineMenu, TrayNodeSnapshot, machine_tray_id, pairing_qr_data_url,
+        save_pairing_bundle, tray_machine_menu, tray_node_status, tray_state_color,
     };
 
     #[test]
@@ -672,46 +830,44 @@ mod tests {
     }
 
     #[test]
-    fn tray_summary_contains_live_cpu_and_memory_for_the_fleet() {
-        let snapshot = TrayFleetSnapshot {
-            daemon: String::from("connected"),
-            nodes: vec![
-                TrayNodeSnapshot {
-                    state: String::from("healthy"),
-                    cpu_percent: Some(20.0),
-                    memory_used_bytes: Some(20),
-                    memory_total_bytes: Some(100),
-                },
-                TrayNodeSnapshot {
-                    state: String::from("warning"),
-                    cpu_percent: Some(60.0),
-                    memory_used_bytes: Some(30),
-                    memory_total_bytes: Some(100),
-                },
-            ],
+    fn each_machine_gets_a_distinct_tray_tab_and_detail_menu() {
+        let node = TrayNodeSnapshot {
+            id: String::from("server-id"),
+            name: String::from("Server"),
+            state: String::from("warning"),
+            path: String::from("relayed"),
+            cpu_percent: Some(60.0),
+            memory_used_bytes: Some(30),
+            memory_total_bytes: Some(100),
+            disk_used_bytes: Some(45),
+            disk_total_bytes: Some(100),
+            rtt_ms: None,
         };
 
-        let (state, tooltip) = tray_snapshot_details(&snapshot);
-        assert_eq!(state, "warning");
+        assert_eq!(machine_tray_id(&node), "machine-server-id");
+        assert_eq!(tray_node_status(&node), "Server ▲");
         assert_eq!(
-            tooltip,
-            "Rackio · Warning · 2 machines · CPU 40% · Memory 25%"
+            tray_machine_menu(&node),
+            TrayMachineMenu {
+                title: String::from("Server · Warning · CPU 60% · Memory 30%"),
+                details: vec![
+                    String::from("State · Warning"),
+                    String::from("CPU · 60%"),
+                    String::from("Memory · 30%"),
+                    String::from("Disk · 45%"),
+                    String::from("Path · Relayed"),
+                    String::from("RTT · —"),
+                ],
+            }
         );
     }
 
     #[test]
-    fn tray_summary_fails_closed_when_the_daemon_is_unavailable() {
-        let snapshot = TrayFleetSnapshot {
-            daemon: String::from("unavailable"),
-            nodes: Vec::new(),
-        };
-
+    fn tray_state_color_fails_closed_for_unknown_states() {
+        assert!(tray_state_color("unknown").is_err());
         assert_eq!(
-            tray_snapshot_details(&snapshot),
-            (
-                String::from("daemon_unavailable"),
-                String::from("Rackio · Agent unavailable")
-            )
+            tray_state_color("offline").unwrap_or_default(),
+            [255, 111, 103, 255]
         );
     }
 }
