@@ -1,12 +1,18 @@
 [graph]
+# Every target that a release actually ships. scripts/generate-third-party-licenses.sh
+# derives cargo-about's target list from here, so an omission silently excludes a
+# shipped target from both the advisory scan and the bundled license notices.
 targets = [
   "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
   "x86_64-pc-windows-msvc",
+  "aarch64-unknown-linux-gnu",
   "x86_64-unknown-linux-gnu",
 ]
 
 [advisories]
 unmaintained = "workspace"
+yanked = "deny"
 ignore = [
   { id = "RUSTSEC-2024-0429", reason = "Tauri 2.11.5's Linux GTK backend still pins glib 0.18; Linux release remains blocked in docs/release-checklist.md until upstream removes it" },
 ]

@@ -25,8 +25,22 @@ if [ ! -f "$binary_path" ]; then
   exit 2
 fi
 
+# Without this guard a host that lacks binutils produces an empty match set and
+# the gate reports "passed" without ever having scanned the binary.
+if ! command -v strings >/dev/null 2>&1; then
+  report error strings_unavailable
+  cat "$report_path" >&2
+  exit 2
+fi
+
+strings_output="$(LC_ALL=C strings "$binary_path")" || {
+  report error strings_failed
+  cat "$report_path" >&2
+  exit 2
+}
+
 matches="$(
-  LC_ALL=C strings "$binary_path" |
+  printf '%s\n' "$strings_output" |
     grep -Eo 'relay\.n0\.iroh\.link|staging-relay\.n0\.iroh\.link|dns\.iroh\.link' |
     sort -u ||
     true

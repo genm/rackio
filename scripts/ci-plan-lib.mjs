@@ -21,7 +21,7 @@ const CROSS_PLATFORM_RUST_PATHS = [
 const LINUX_RUST_PATHS = [
   /^install\.sh$/,
   /^packaging\/linux\/(?!.*\.md$)/,
-  /^scripts\/(?:benchmark-agent-resources|test-two-daemon-pairing)\.sh$/,
+  /^scripts\/(?:benchmark-agent-resources|test-two-daemon-pairing|check-release-binary-cloud-independence)\.sh$/,
 ];
 
 const MACOS_RUST_PATHS = [/^packaging\/macos\/(?!.*\.md$)/];

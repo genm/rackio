@@ -1,4 +1,7 @@
 #![cfg(windows)]
+// Named-pipe DACL construction and caller-token verification have no safe Win32
+// wrapper. This is the only crate in the workspace permitted to use `unsafe`.
+#![allow(unsafe_code)]
 
 use std::{
     ffi::{OsStr, c_void},
@@ -181,7 +184,12 @@ impl PipeSecurity {
         // SAFETY: This thread successfully impersonated the connected client
         // above and must return to the daemon identity before doing more work.
         if unsafe { RevertToSelf() } == 0 {
-            return Err(io::Error::last_os_error());
+            // Returning an error would leave this pooled worker thread running
+            // as the viewer for every later task. There is no way to drop the
+            // impersonation token, so the only fail-closed outcome is to stop.
+            let error = io::Error::last_os_error();
+            eprintln!("rackio: could not drop client impersonation ({error}); aborting");
+            std::process::abort();
         }
         if !authorized? {
             return Err(io::Error::new(
