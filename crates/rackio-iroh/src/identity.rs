@@ -44,10 +44,12 @@ fn create_secret_key(path: &Path) -> Result<SecretKey, IdentityError> {
         // permanently. The 0600 mode on the key file below is the guarantee
         // this function owns; an installer or service manager owns the
         // directory permissions of a directory it provisioned.
+        // Windows does not provide the Unix mode bit contract we enforce here.
+        // Keep both the check and the permission change inside the platform
+        // that can guarantee it, so neither is dead code elsewhere.
+        #[cfg(unix)]
         let parent_already_existed = parent.exists();
         fs::create_dir_all(parent)?;
-        // Windows does not provide the Unix mode bit contract we enforce here.
-        // Keep the permission change inside the platform that can guarantee it.
         #[cfg(unix)]
         if !parent_already_existed {
             set_owner_only_dir(parent)?;

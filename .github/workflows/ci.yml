@@ -180,7 +180,7 @@ jobs:
           retention-days: 3
 
   rust-windows-cross-check:
-    name: Rust Windows cross-compile check (rackio-windows-ipc)
+    name: Rust Windows cross-compile check
     needs: plan
     if: always() && (needs.plan.result == 'success' || needs.plan.result == 'failure')
     runs-on: ubuntu-24.04
@@ -207,14 +207,22 @@ jobs:
           rustup target add x86_64-pc-windows-gnu
           sudo apt-get update
           sudo apt-get install --yes mingw-w64
-      - name: Check rackio-windows-ipc for the Windows GNU target
-        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
-        run: cargo check --target x86_64-pc-windows-gnu -p rackio-windows-ipc --all-features
-      - name: Clippy rackio-windows-ipc for the Windows GNU target
+      # Every crate whose `cfg(windows)` branches would otherwise compile only
+      # on the Windows runner. `rackio-desktop` is excluded because Tauri needs
+      # a Windows webview SDK that cannot be cross-linked from Linux; the
+      # Windows leg remains its only gate.
+      - name: Check the Windows-owned crates for the Windows GNU target
         if: env.RUN_RUST_WINDOWS_CROSS == 'true'
         run: >-
-          cargo clippy --target x86_64-pc-windows-gnu -p rackio-windows-ipc
-          --all-targets --all-features -- -D warnings
+          cargo check --target x86_64-pc-windows-gnu --all-features
+          -p rackio-windows-ipc -p rackio-core -p rackio-protocol
+          -p rackio-iroh -p rackio-agent
+      - name: Clippy the Windows-owned crates for the Windows GNU target
+        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
+        run: >-
+          cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features
+          -p rackio-windows-ipc -p rackio-core -p rackio-protocol
+          -p rackio-iroh -p rackio-agent -- -D warnings
 
   frontend:
     name: Frontend

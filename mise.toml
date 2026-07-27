@@ -69,12 +69,15 @@ run = "packaging/linux/install.test.sh"
 description = "Verify two-daemon pairing, live metrics, reuse rejection, and reconnect"
 run = "scripts/test-two-daemon-pairing.sh"
 
-[tasks."check:windows-ipc-cross"]
-description = "Cross-compile-check the Windows-only IPC crate on a non-Windows host"
+[tasks."check:windows-cross"]
+description = "Cross-compile-check the Windows-only code paths on a non-Windows host"
+# Needs a mingw-w64 linker (`brew install mingw-w64`, `apt install mingw-w64`).
+# `rackio-desktop` is excluded: Tauri needs a Windows webview SDK that cannot be
+# cross-linked from Linux or macOS.
 run = [
   "rustup target add x86_64-pc-windows-gnu",
-  "cargo check --target x86_64-pc-windows-gnu -p rackio-windows-ipc --all-features",
-  "cargo clippy --target x86_64-pc-windows-gnu -p rackio-windows-ipc --all-targets --all-features -- -D warnings",
+  "cargo check --target x86_64-pc-windows-gnu --all-features -p rackio-windows-ipc -p rackio-core -p rackio-protocol -p rackio-iroh -p rackio-agent",
+  "cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features -p rackio-windows-ipc -p rackio-core -p rackio-protocol -p rackio-iroh -p rackio-agent -- -D warnings",
 ]
 
 [tasks."benchmark:agent"]

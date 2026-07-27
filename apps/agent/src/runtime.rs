@@ -1,9 +1,11 @@
+#[cfg(unix)]
+use std::time::Instant;
 use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::{Context, anyhow};
@@ -26,7 +28,11 @@ use uuid::Uuid;
 
 use crate::remote::{RemoteFleet, RemoteHistoryResolution, RemoteMachineSnapshot};
 
+// The Windows local IPC listener has its own connect loop, so these bound the
+// Unix accept loop only.
+#[cfg(unix)]
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
+#[cfg(unix)]
 const ACCEPT_FAILURE_GRACE: Duration = Duration::from_secs(30);
 const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 const LOCAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -612,7 +618,6 @@ async fn run_local_server(
     anyhow::bail!("local IPC is unsupported on this platform")
 }
 
-#[cfg(unix)]
 /// Read one bounded, timely `LocalCommand`, or the failure to report instead.
 ///
 /// `reader` must already be limited to [`MAX_LOCAL_REQUEST_BYTES`]; hitting
@@ -643,6 +648,9 @@ where
     }
 }
 
+// Only the Unix listener hands a bare stream over; the Windows listener has
+// already consumed its first byte and uses the prefixed form.
+#[cfg(unix)]
 async fn serve_local_stream<S>(
     stream: S,
     paths: AppPaths,
