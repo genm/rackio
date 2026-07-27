@@ -460,6 +460,8 @@ fn update_machine_trays(app: &AppHandle, snapshot: &TrayFleetSnapshot) {
         .unwrap_or_default();
     let status_slot =
         registered_ids.contains("rackio-status") && app.tray_by_id("rackio-status").is_some();
+    let fleet_title = fleet_tray_status(&snapshot.nodes);
+    let fleet_details = fleet_tray_details(&snapshot.nodes);
     let mut active_ids = HashSet::new();
     for (index, node) in snapshot.nodes.iter().enumerate() {
         let id = if index == 0 && status_slot {
@@ -468,14 +470,27 @@ fn update_machine_trays(app: &AppHandle, snapshot: &TrayFleetSnapshot) {
             machine_tray_id(node)
         };
         let machine = tray_machine_menu(node);
-        let title = tray_node_status(node);
-        let details = machine.details.clone();
+        let is_primary_machine = index == 0;
+        let title = if is_primary_machine {
+            fleet_title.clone()
+        } else {
+            tray_node_status(node)
+        };
+        let details = if is_primary_machine {
+            fleet_details.clone()
+        } else {
+            machine.details.clone()
+        };
         let _ = upsert_tray(
             app,
             &id,
             &node.state,
             &title,
-            &machine.title,
+            if is_primary_machine {
+                &fleet_title
+            } else {
+                &machine.title
+            },
             &details,
             || {
                 tray_menu(app, &details)
@@ -508,6 +523,24 @@ fn update_machine_trays(app: &AppHandle, snapshot: &TrayFleetSnapshot) {
     if let Ok(mut ids) = registry.machine_ids.lock() {
         *ids = active_ids;
     }
+}
+
+fn fleet_tray_status(nodes: &[TrayNodeSnapshot]) -> String {
+    nodes
+        .iter()
+        .map(tray_node_status)
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+fn fleet_tray_details(nodes: &[TrayNodeSnapshot]) -> Vec<String> {
+    nodes
+        .iter()
+        .flat_map(|node| {
+            let machine = tray_machine_menu(node);
+            std::iter::once(machine.title).chain(machine.details)
+        })
+        .collect()
 }
 
 fn tray_node_status(node: &TrayNodeSnapshot) -> String {
@@ -608,17 +641,42 @@ fn tray_state_label(state: &str) -> &str {
 }
 
 async fn update_tray_from_daemon(app: &AppHandle) {
-    match fleet_snapshot().await {
-        Ok(value) => match serde_json::from_value::<TrayFleetSnapshot>(value) {
-            Ok(snapshot) if snapshot.daemon == "connected" && !snapshot.nodes.is_empty() => {
-                update_machine_trays(app, &snapshot);
-            }
-            Ok(snapshot) if snapshot.daemon == "connected" => {
-                update_status_tray(app, "warning", "No paired machines");
-            }
-            Ok(_) | Err(_) => update_status_tray(app, "degraded", "Invalid agent snapshot"),
-        },
-        Err(_) => update_status_tray(app, "daemon_unavailable", "Agent unavailable"),
+    let Ok(value) = fleet_snapshot().await else {
+        dispatch_tray_update(app, |app| {
+            update_status_tray(app, "daemon_unavailable", "Agent unavailable");
+        });
+        return;
+    };
+    let Ok(snapshot) = serde_json::from_value::<TrayFleetSnapshot>(value) else {
+        dispatch_tray_update(app, |app| {
+            update_status_tray(app, "degraded", "Invalid agent snapshot");
+        });
+        return;
+    };
+    if snapshot.daemon == "connected" && !snapshot.nodes.is_empty() {
+        dispatch_tray_update(app, move |app| {
+            // AppKit status items must be mutated on Tauri's main thread;
+            // keeping the IPC poll off-thread prevents multi-machine tray updates from deadlocking.
+            update_machine_trays(app, &snapshot);
+        });
+    } else if snapshot.daemon == "connected" {
+        dispatch_tray_update(app, |app| {
+            update_status_tray(app, "warning", "No paired machines");
+        });
+    } else {
+        dispatch_tray_update(app, |app| {
+            update_status_tray(app, "degraded", "Invalid agent snapshot");
+        });
+    }
+}
+
+fn dispatch_tray_update<F>(app: &AppHandle, update: F)
+where
+    F: FnOnce(&AppHandle) + Send + 'static,
+{
+    let app_handle = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || update(&app_handle)) {
+        tracing::error!(%error, "Could not dispatch tray update to the main thread");
     }
 }
 
@@ -860,7 +918,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        TrayMachineMenu, TrayNodeSnapshot, machine_tray_id, pairing_qr_data_url,
+        TrayMachineMenu, TrayNodeSnapshot, fleet_tray_status, machine_tray_id, pairing_qr_data_url,
         save_pairing_bundle, tray_machine_menu, tray_node_status, tray_state_color,
     };
 
@@ -936,6 +994,23 @@ mod tests {
                     String::from("RTT · —"),
                 ],
             }
+        );
+
+        let steamdeck = TrayNodeSnapshot {
+            id: String::from("steamdeck-id"),
+            name: String::from("steamdeck"),
+            state: String::from("healthy"),
+            path: String::from("lan_direct"),
+            cpu_percent: None,
+            memory_used_bytes: None,
+            memory_total_bytes: None,
+            disk_used_bytes: None,
+            disk_total_bytes: None,
+            rtt_ms: Some(8),
+        };
+        assert_eq!(
+            fleet_tray_status(&[node, steamdeck]),
+            "Server ▲ · steamdeck ●"
         );
     }
 
