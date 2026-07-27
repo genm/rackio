@@ -69,6 +69,14 @@ run = "packaging/linux/install.test.sh"
 description = "Verify two-daemon pairing, live metrics, reuse rejection, and reconnect"
 run = "scripts/test-two-daemon-pairing.sh"
 
+[tasks."check:windows-ipc-cross"]
+description = "Cross-compile-check the Windows-only IPC crate on a non-Windows host"
+run = [
+  "rustup target add x86_64-pc-windows-gnu",
+  "cargo check --target x86_64-pc-windows-gnu -p rackio-windows-ipc --all-features",
+  "cargo clippy --target x86_64-pc-windows-gnu -p rackio-windows-ipc --all-targets --all-features -- -D warnings",
+]
+
 [tasks."benchmark:agent"]
 description = "Enforce the release agent CPU and RSS budgets"
 run = [

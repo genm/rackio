@@ -26,7 +26,7 @@ use windows_sys::{
                 SDDL_REVISION_1,
             },
             CheckTokenMembership, CreateWellKnownSid, LookupAccountNameW, PSECURITY_DESCRIPTOR,
-            PSID, RevertToSelf, SECURITY_MAX_SID_SIZE, SID_NAME_USE, WinBuiltinAdministratorsSid,
+            PSID, RevertToSelf, SECURITY_MAX_SID_SIZE, WinBuiltinAdministratorsSid,
         },
         Storage::FileSystem::{
             CreateFileW, FILE_FLAG_OVERLAPPED, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
@@ -95,8 +95,8 @@ pub async fn connect_client(pipe_name: &str) -> io::Result<NamedPipeClient> {
             Err(error)
                 if attempt < 19
                     && matches!(
-                        error.raw_os_error().map(|code| code as u32),
-                        Some(ERROR_PIPE_BUSY) | Some(ERROR_FILE_NOT_FOUND)
+                        error.raw_os_error().map(i32::cast_unsigned),
+                        Some(ERROR_PIPE_BUSY | ERROR_FILE_NOT_FOUND)
                     ) =>
             {
                 sleep(Duration::from_millis(50)).await;
@@ -216,7 +216,9 @@ impl Drop for PipeSecurity {
 fn token_is_member(token: HANDLE, sid: &[u8]) -> io::Result<bool> {
     let mut is_member = 0;
     // SAFETY: The token handle and SID buffer remain valid for this call.
-    if unsafe { CheckTokenMembership(token, sid.as_ptr().cast_mut().cast(), &mut is_member) } == 0 {
+    if unsafe { CheckTokenMembership(token, sid.as_ptr().cast_mut().cast(), &raw mut is_member) }
+        == 0
+    {
         return Err(io::Error::last_os_error());
     }
     Ok(is_member != 0)
@@ -227,7 +229,14 @@ fn well_known_sid(kind: i32) -> io::Result<Vec<u8>> {
     let mut sid = vec![0_u8; size as usize];
     // SAFETY: `sid` has the documented maximum SID size and the size pointer
     // references initialized writable storage.
-    if unsafe { CreateWellKnownSid(kind, ptr::null_mut(), sid.as_mut_ptr().cast(), &mut size) } == 0
+    if unsafe {
+        CreateWellKnownSid(
+            kind,
+            ptr::null_mut(),
+            sid.as_mut_ptr().cast(),
+            &raw mut size,
+        )
+    } == 0
     {
         return Err(io::Error::last_os_error());
     }
@@ -246,10 +255,10 @@ fn lookup_account_sid(name: &str) -> io::Result<Vec<u8>> {
             ptr::null(),
             name.as_ptr(),
             ptr::null_mut(),
-            &mut sid_size,
+            &raw mut sid_size,
             ptr::null_mut(),
-            &mut domain_size,
-            &mut use_type as *mut SID_NAME_USE,
+            &raw mut domain_size,
+            &raw mut use_type,
         );
     }
     // SAFETY: GetLastError has no preconditions and reads thread-local state.
@@ -266,10 +275,10 @@ fn lookup_account_sid(name: &str) -> io::Result<Vec<u8>> {
             ptr::null(),
             name.as_ptr(),
             sid.as_mut_ptr().cast(),
-            &mut sid_size,
+            &raw mut sid_size,
             domain.as_mut_ptr(),
-            &mut domain_size,
-            &mut use_type as *mut SID_NAME_USE,
+            &raw mut domain_size,
+            &raw mut use_type,
         )
     } == 0
     {
@@ -282,7 +291,7 @@ fn sid_to_string(sid: PSID) -> io::Result<String> {
     let mut value: PWSTR = ptr::null_mut();
     // SAFETY: `sid` points into the caller-owned valid SID buffer and `value`
     // is a writable output pointer.
-    if unsafe { ConvertSidToStringSidW(sid, &mut value) } == 0 {
+    if unsafe { ConvertSidToStringSidW(sid, &raw mut value) } == 0 {
         return Err(io::Error::last_os_error());
     }
     let result = wide_ptr_to_string(value);
@@ -302,7 +311,7 @@ fn security_descriptor(sddl: &str) -> io::Result<PSECURITY_DESCRIPTOR> {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
             sddl.as_ptr(),
             SDDL_REVISION_1,
-            &mut descriptor,
+            &raw mut descriptor,
             ptr::null_mut(),
         )
     } == 0

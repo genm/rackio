@@ -179,6 +179,43 @@ jobs:
           path: test-results/
           retention-days: 3
 
+  rust-windows-cross-check:
+    name: Rust Windows cross-compile check (rackio-windows-ipc)
+    needs: plan
+    if: always() && (needs.plan.result == 'success' || needs.plan.result == 'failure')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      RUN_RUST_WINDOWS_CROSS: >-
+        ${{
+          needs.plan.result != 'success' ||
+          needs.plan.outputs.rust_windows != 'false'
+        }}
+    steps:
+      - name: Report unaffected Windows cross-compile gate
+        if: env.RUN_RUST_WINDOWS_CROSS != 'true'
+        run: echo "No Windows-relevant files changed; required context satisfied without heavy work."
+      - name: Check out source
+        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Select pinned Rust toolchain
+        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
+        run: rustup show
+      - name: Install Windows GNU cross-compile target and linker
+        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
+        run: |
+          rustup target add x86_64-pc-windows-gnu
+          sudo apt-get update
+          sudo apt-get install --yes mingw-w64
+      - name: Check rackio-windows-ipc for the Windows GNU target
+        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
+        run: cargo check --target x86_64-pc-windows-gnu -p rackio-windows-ipc --all-features
+      - name: Clippy rackio-windows-ipc for the Windows GNU target
+        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
+        run: >-
+          cargo clippy --target x86_64-pc-windows-gnu -p rackio-windows-ipc
+          --all-targets --all-features -- -D warnings
+
   frontend:
     name: Frontend
     needs: plan
