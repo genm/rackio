@@ -9,7 +9,6 @@ use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
 };
-use tauri_plugin_autostart::MacosLauncher;
 
 #[tauri::command]
 async fn fleet_snapshot() -> Result<serde_json::Value, String> {
@@ -441,10 +440,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_autostart::init(
-            MacosLauncher::LaunchAgent,
-            None,
-        ))
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Open Rackio", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit tray", true, None::<&str>)?;

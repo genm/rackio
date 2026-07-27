@@ -51,6 +51,7 @@ mise run doctor:relay
 mise run agent:daemon
 mise run desktop:dev
 mise run frontend:dev
+mise run measure:desktop-build
 mise run test:pairing
 mise run test:installer
 mise run check
@@ -63,6 +64,14 @@ a required check and fails until the self-hosted relay runtime is ready.
 Environment contract tests write JUnit XML to
 `test-results/environment-doctor.junit.xml`. Rust, Vitest and Playwright reports
 are stored in the same ignored directory.
+
+`measure:desktop-build` performs a clean desktop debug build in an isolated
+temporary target directory, writes machine-readable size evidence to
+`test-results/desktop-build-footprint.json`, enforces the 1.5 GiB target
+directory budget, and removes its temporary build output. Normal development
+and test builds retain line-number backtraces while omitting full dependency
+debug data. Run `cargo build --profile debugging` when a source-level debugger
+needs full symbols.
 
 `test:installer` builds a synthetic Linux release archive, installs it under an
 isolated temporary root and verifies checksum rejection. It does not modify the
