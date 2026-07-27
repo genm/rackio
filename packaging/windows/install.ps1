@@ -3,7 +3,15 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Archive,
     [Parameter(Mandatory = $true)]
-    [string]$Checksum
+    [string]$Checksum,
+    # The SHA-1 thumbprint of the certificate that must have signed
+    # rackio.exe. There is deliberately no built-in default: the project's
+    # release signing certificate identity does not exist yet, and accepting
+    # any trusted-root signature (the prior behavior) let any signed binary
+    # register as an auto-start LocalSystem service. Falls back to the
+    # RACKIO_EXPECTED_SIGNING_THUMBPRINT environment variable, then to
+    # expected-thumbprint.txt next to this script, if not passed explicitly.
+    [string]$ExpectedThumbprint
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,11 +19,34 @@ $serviceName = "RackioAgent"
 $viewerGroup = "Rackio Viewers"
 $installDir = Join-Path $env:ProgramFiles "Rackio"
 $dataRoot = Join-Path $env:ProgramData "Rackio"
+# Well-known SIDs: LocalSystem, and the built-in Administrators group.
+$trustedOwnerSids = @("S-1-5-18", "S-1-5-32-544")
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw "Rackio installation requires an elevated PowerShell"
+}
+
+if ([string]::IsNullOrWhiteSpace($ExpectedThumbprint)) {
+    $ExpectedThumbprint = $env:RACKIO_EXPECTED_SIGNING_THUMBPRINT
+}
+if ([string]::IsNullOrWhiteSpace($ExpectedThumbprint)) {
+    $thumbprintFile = Join-Path $PSScriptRoot "expected-thumbprint.txt"
+    if (Test-Path -LiteralPath $thumbprintFile) {
+        $ExpectedThumbprint = (Get-Content -Raw -LiteralPath $thumbprintFile).Trim()
+    }
+}
+if ([string]::IsNullOrWhiteSpace($ExpectedThumbprint)) {
+    throw ("an expected Authenticode signer thumbprint is required; supply " +
+        "-ExpectedThumbprint, set RACKIO_EXPECTED_SIGNING_THUMBPRINT, or " +
+        "check in packaging/windows/expected-thumbprint.txt. Refusing to " +
+        "install: any signature chaining to a trusted root is not a " +
+        "publisher check")
+}
+$ExpectedThumbprint = $ExpectedThumbprint.Trim().ToUpperInvariant() -replace '[^0-9A-F]', ''
+if ($ExpectedThumbprint.Length -ne 40) {
+    throw "expected signer thumbprint must be a 40-character SHA-1 hex thumbprint"
 }
 
 $checksumLine = (Get-Content -Raw -LiteralPath $Checksum).Trim()
@@ -51,6 +82,15 @@ try {
     if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
         throw "rackio.exe must have a valid Authenticode signature"
     }
+    if ($null -eq $signature.SignerCertificate) {
+        throw "rackio.exe Authenticode signature has no signer certificate"
+    }
+    $actualThumbprint = $signature.SignerCertificate.Thumbprint.Trim().ToUpperInvariant()
+    if ($actualThumbprint -ne $ExpectedThumbprint) {
+        throw ("rackio.exe is signed by an unexpected certificate " +
+            "(thumbprint $actualThumbprint, expected $ExpectedThumbprint); " +
+            "refusing to install a binary from an unpinned publisher")
+    }
 
     if (-not (Get-LocalGroup -Name $viewerGroup -ErrorAction SilentlyContinue)) {
         New-LocalGroup -Name $viewerGroup -Description "Users allowed to view Rackio metrics" | Out-Null
@@ -60,6 +100,24 @@ try {
         Where-Object { $_.Name -eq $currentUser }
     if (-not $alreadyMember) {
         Add-LocalGroupMember -Group $viewerGroup -Member $currentUser
+    }
+
+    # C:\ProgramData grants BUILTIN\Users create-folder rights, so a standard
+    # user can pre-create Rackio's data root before this installer ever runs.
+    # `icacls /inheritance:r /grant:r` below only replaces grants for the
+    # principals it names and never touches the owner, so an attacker-created
+    # directory would keep WRITE_DAC via its original owner and could
+    # re-grant itself access later. Refuse to reuse such a directory instead
+    # of silently taking it over.
+    if (Test-Path -LiteralPath $dataRoot -PathType Container) {
+        $existingAcl = Get-Acl -LiteralPath $dataRoot
+        $existingOwnerSid = $existingAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($trustedOwnerSids -notcontains $existingOwnerSid) {
+            throw ("refusing to install: $dataRoot already exists and is " +
+                "owned by $($existingAcl.Owner), not SYSTEM or " +
+                "Administrators. Remove it (after verifying it holds no " +
+                "identity you need to keep) and re-run the installer")
+        }
     }
 
     New-Item -ItemType Directory -Force -Path $installDir, $dataRoot | Out-Null
@@ -74,10 +132,24 @@ try {
     Copy-Item -Force -LiteralPath $apacheLicense.FullName -Destination (Join-Path $installDir "LICENSE-APACHE")
     Copy-Item -Force -LiteralPath $thirdPartyNotices.FullName -Destination (Join-Path $installDir "THIRDPARTY.html")
 
+    & icacls.exe $installDir /setowner "SYSTEM" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to set the owner of $installDir to SYSTEM"
+    }
     & icacls.exe $installDir /inheritance:r /grant:r `
         "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "${viewerGroup}:(OI)(CI)RX" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to set the ACL on $installDir"
+    }
+    & icacls.exe $dataRoot /setowner "SYSTEM" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to set the owner of $dataRoot to SYSTEM"
+    }
     & icacls.exe $dataRoot /inheritance:r /grant:r `
         "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to set the ACL on $dataRoot"
+    }
 
     $installedBinary = Join-Path $installDir "rackio.exe"
     $binPath = "`"$installedBinary`" daemon"

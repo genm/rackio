@@ -154,19 +154,35 @@ Run the installer from an elevated PowerShell:
 ```powershell
 .\packaging\windows\install.ps1 `
   -Archive .\rackio-v0.1.0-x86_64-pc-windows-msvc.zip `
-  -Checksum .\rackio-v0.1.0-x86_64-pc-windows-msvc.zip.sha256
+  -Checksum .\rackio-v0.1.0-x86_64-pc-windows-msvc.zip.sha256 `
+  -ExpectedThumbprint "<the release signing certificate's SHA-1 thumbprint>"
 ```
 
+`-ExpectedThumbprint` (or the `RACKIO_EXPECTED_SIGNING_THUMBPRINT` environment
+variable, or a checked-in `packaging/windows/expected-thumbprint.txt`) is
+required. The project's release signing certificate identity does not exist
+yet, so there is no built-in default; the installer refuses to run without an
+explicit expected thumbprint rather than accepting any binary that merely
+chains to a trusted root.
+
 It verifies SHA-256 before extraction, creates the `Rackio Viewers` local
-group, installs an automatic LocalSystem service with recovery actions, applies
-explicit filesystem ACLs, starts the service and requires a successful secured
-named-pipe health check. Sign out and back in after the first install so the
-non-elevated tray token contains its new viewer-group membership.
+group, refuses to reuse a pre-existing `C:\ProgramData\Rackio` unless it is
+already owned by SYSTEM or Administrators, installs an automatic LocalSystem
+service with recovery actions, sets the installation and data directory owner
+to SYSTEM and applies explicit filesystem ACLs, starts the service and
+requires a successful secured named-pipe health check. Sign out and back in
+after the first install so the non-elevated tray token contains its new
+viewer-group membership.
 
 Named-pipe access is enforced twice: its DACL grants only LocalSystem,
-administrators and `Rackio Viewers`, and the server rejects remote clients then
-checks the connected process token. Build the archive on Windows with a
-code-signing certificate installed in the certificate store:
+administrators and `Rackio Viewers`, and the server is configured to reject
+remote clients and then checks the connected process token after a read. The
+CI named-pipe check exercises the token check and the client-side pipe-name
+prefix validation on a same-host runner; it does not connect from a remote
+host, so `reject_remote_clients` itself is not exercised by that evidence and
+still needs verification from a clean Windows host (see
+[`release-checklist.md`](../docs/release-checklist.md)). Build the archive on
+Windows with a code-signing certificate installed in the certificate store:
 
 ```powershell
 $env:RACKIO_SIGNTOOL_CERT_SHA1 = "CERTIFICATE_THUMBPRINT"
@@ -178,4 +194,6 @@ $env:RACKIO_SIGNTOOL_CERT_SHA1 = "CERTIFICATE_THUMBPRINT"
 
 The builder fails closed without the signing certificate, timestamps
 `rackio.exe`, and verifies Authenticode before archiving it. The installer
-checks that signature again before copying or registering the service.
+independently verifies that the signature is `Valid` and that its signer
+certificate thumbprint matches the expected thumbprint supplied to
+`install.ps1`, refusing to install otherwise.

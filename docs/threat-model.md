@@ -50,8 +50,14 @@ out of scope for v1. Operators must document retention of relay access logs.
   socket. Windows local IPC rejects remote pipe clients, grants access only to
   LocalSystem, administrators and the `Rackio Viewers` local group, then
   independently verifies the connected process token.
-- OS keystore integration is not complete. The private key is stored in a
-  daemon-owned 0600 file inside a 0700 directory on Unix.
+- OS keystore integration is not complete. The private key is always stored in
+  a daemon-owned 0600 file on Unix. The daemon narrows a directory to 0700
+  only when it creates that directory itself (Linux's systemd-managed
+  `/var/lib/rackio` state directory); it never narrows a directory an
+  installer already provisioned. On macOS the installer provisions the shared
+  data directory as 0750 `_rackio:_rackio-viewers` so the viewer group can
+  keep traversing it to reach the adjacent runtime socket — the file mode is
+  the guarantee there, not the directory mode.
 - Relay endpoint allowlisting and token delivery need an operator-facing secret
   workflow before internet exposure.
 - `ssh-keyscan` cannot authenticate a host key by itself. A mistaken fingerprint

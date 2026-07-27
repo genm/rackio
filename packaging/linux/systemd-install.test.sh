@@ -80,6 +80,17 @@ sudo -u "$viewer_user" -g rackio-viewers \
   env RACKIO_SOCKET=/run/rackio/agent.sock /usr/local/bin/rackio status |
   jq -e '.ok == true' >/dev/null
 
+# The threat model guarantees the private key is a 0600 file inside a
+# daemon-owned 0700 directory. Prove both halves: a rackio-viewers member
+# (who legitimately reaches the IPC socket above) must still be denied
+# traversal into /var/lib/rackio and read access to identity.key.
+[[ "$(sudo stat -c '%a' /var/lib/rackio)" == "700" ]]
+sudo test -e /var/lib/rackio/identity.key
+[[ "$(sudo stat -c '%a' /var/lib/rackio/identity.key)" == "600" ]]
+if sudo -u "$viewer_user" -g rackio-viewers cat /var/lib/rackio/identity.key >/dev/null 2>&1; then
+  fail "a rackio-viewers member could read /var/lib/rackio/identity.key"
+fi
+
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin "$denied_user"
 denied_output=""
 if denied_output="$(
@@ -139,6 +150,7 @@ jq --null-input \
     service_active: true,
     root_health: true,
     viewer_group_health: true,
+    state_directory_isolated_from_viewers: true,
     unauthorized_user_rejected: true,
     restart_health: true,
     preserving_uninstall: true,
