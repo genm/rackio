@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repo_root/scripts/reject-matches.sh"
 integration_root="$(mktemp -d "${TMPDIR:-/tmp}/rackio-two-daemon.XXXXXX")"
 viewer_pid=""
 server_pid=""
@@ -142,16 +143,16 @@ if viewer pairing import "$bundle" >/dev/null 2>&1; then
   echo "the same pairing bundle was accepted twice" >&2
   exit 1
 fi
-if rg -q 'one_time_secret' "$integration_root/viewer/data/monitored-machines.json"; then
-  echo "the viewer persisted a one-time pairing secret" >&2
-  exit 1
-fi
-if rg -q 'rackio-pair:|one_time_secret|"cpu_percent"' \
+rackio_reject_matches \
+  "the viewer persisted a one-time pairing secret" \
+  "persisted pairing-secret scan" \
+  grep -q -E 'one_time_secret' "$integration_root/viewer/data/monitored-machines.json"
+rackio_reject_matches \
+  "daemon logs exposed a pairing bundle, secret, or metric payload" \
+  "daemon sensitive-log scan" \
+  grep -R -q -E 'rackio-pair:|one_time_secret|"cpu_percent"' \
   "$integration_root/viewer.log" "$integration_root/server.log" \
-  "$integration_root/viewer/log" "$integration_root/server/log"; then
-  echo "daemon logs exposed a pairing bundle, secret, or metric payload" >&2
-  exit 1
-fi
+  "$integration_root/viewer/log" "$integration_root/server/log"
 
 kill "$viewer_pid"
 wait "$viewer_pid" 2>/dev/null || true

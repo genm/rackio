@@ -29,20 +29,44 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - name: Check out trusted pull request planner
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .ci-trusted-base
+          persist-credentials: false
       - name: Select affected gates
         id: plan
         env:
           CI_EVENT_NAME: ${{ github.event_name }}
           CI_EVENT_ACTION: ${{ github.event.action }}
-          CI_BASE_SHA: ${{ github.event.before || github.event.pull_request.base.sha }}
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: node scripts/ci-plan.mjs
+        run: |
+          planner="scripts/ci-plan.mjs"
+          # A script-only PR change must not choose which gates may become no-ops.
+          if [[ "$CI_EVENT_NAME" == "pull_request" ]]; then
+            planner=".ci-trusted-base/scripts/ci-plan.mjs"
+          fi
+          node "$planner"
 
   dependency-policy:
     needs: plan
     if: always() && (needs.plan.result == 'success' || needs.plan.result == 'failure')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      RUN_SECURITY_POLICY: >-
+        ${{
+          needs.plan.result != 'success' ||
+          needs.plan.outputs.security_policy != 'false'
+        }}
+      RUN_SECURITY_SOURCE: >-
+        ${{
+          needs.plan.result != 'success' ||
+          needs.plan.outputs.security_source != 'false'
+        }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,7 +88,7 @@ jobs:
           printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
       - name: Scan affected Git history for secrets
         env:
-          BASE_SHA: ${{ github.event.before || github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           mkdir -p test-results
@@ -75,84 +99,90 @@ jobs:
           gitleaks git . "${log_options[@]}" --redact=100 --report-format json \
             --report-path test-results/gitleaks.json --exit-code 1 --no-banner
       - name: Select pinned Rust toolchain
-        if: needs.plan.result != 'success' || needs.plan.outputs.security_policy == 'true'
+        if: env.RUN_SECURITY_POLICY == 'true'
         run: rustup show
       - name: Install Rust policy tools
-        if: needs.plan.result != 'success' || needs.plan.outputs.security_policy == 'true'
+        if: env.RUN_SECURITY_POLICY == 'true'
         uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
         with:
           tool: cargo-deny@0.20.2,cargo-machete@0.9.2,cargo-about@0.9.1
           fallback: none
       - name: Check Rust advisories, licenses and sources
-        if: needs.plan.result != 'success' || needs.plan.outputs.security_policy == 'true'
+        if: env.RUN_SECURITY_POLICY == 'true'
         run: cargo deny check
       - name: Verify bundled third-party license notices
-        if: needs.plan.result != 'success' || needs.plan.outputs.security_policy == 'true'
+        if: env.RUN_SECURITY_POLICY == 'true'
         run: |
           scripts/generate-third-party-licenses.sh /tmp/rackio-THIRDPARTY.html
           cmp THIRDPARTY.html /tmp/rackio-THIRDPARTY.html
       - name: Check unused Rust dependencies
-        if: needs.plan.result != 'success' || needs.plan.outputs.security_policy == 'true'
+        if: env.RUN_SECURITY_POLICY == 'true'
         run: cargo machete
       - name: Set up Node
-        if: needs.plan.result != 'success' || needs.plan.outputs.security_policy == 'true'
+        if: env.RUN_SECURITY_POLICY == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.15.0
       - name: Activate pinned pnpm
-        if: needs.plan.result != 'success' || needs.plan.outputs.security_policy == 'true'
+        if: env.RUN_SECURITY_POLICY == 'true'
         run: |
           corepack enable
           corepack install
       - name: Install dependencies
-        if: needs.plan.result != 'success' || needs.plan.outputs.security_policy == 'true'
+        if: env.RUN_SECURITY_POLICY == 'true'
         run: pnpm install --frozen-lockfile
       - name: Verify bundled JavaScript license notices
-        if: needs.plan.result != 'success' || needs.plan.outputs.security_policy == 'true'
+        if: env.RUN_SECURITY_POLICY == 'true'
         run: |
           node scripts/generate-javascript-licenses.mjs /tmp/rackio-THIRDPARTY-JAVASCRIPT.html
           cmp THIRDPARTY-JAVASCRIPT.html /tmp/rackio-THIRDPARTY-JAVASCRIPT.html
       - name: Audit JavaScript dependencies
-        if: needs.plan.result != 'success' || needs.plan.outputs.security_policy == 'true'
+        if: env.RUN_SECURITY_POLICY == 'true'
         run: pnpm audit --audit-level=high
       - name: Scan source and lockfiles
-        if: needs.plan.result != 'success' || needs.plan.outputs.security_policy == 'true'
+        if: env.RUN_SECURITY_POLICY == 'true'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
+          version: v0.72.0
           scan-type: fs
           scan-ref: .
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
       - name: Generate CycloneDX SBOM
-        if: github.event_name != 'pull_request' && (needs.plan.result != 'success' || needs.plan.outputs.security_policy == 'true')
+        if: github.event_name != 'pull_request' && env.RUN_SECURITY_POLICY == 'true'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
+          version: v0.72.0
           scan-type: fs
           scan-ref: .
           format: cyclonedx
           output: rackio.cdx.json
           exit-code: "0"
       - name: Upload SBOM
-        if: github.event_name != 'pull_request' && (needs.plan.result != 'success' || needs.plan.outputs.security_policy == 'true')
+        if: github.event_name != 'pull_request' && env.RUN_SECURITY_POLICY == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rackio-sbom
           path: rackio.cdx.json
           retention-days: 7
       - name: Reject upstream relay or discovery defaults in application source
-        if: needs.plan.result != 'success' || needs.plan.outputs.security_source == 'true'
+        if: env.RUN_SECURITY_SOURCE == 'true'
         run: |
-          if rg --glob '!docs/**' --glob '!README.md' \
+          source scripts/reject-matches.sh
+          rackio_reject_matches \
+            "vendor networking default found in application source" \
+            "tracked vendor-networking source scan" \
+            git grep -n -E \
             'presets::N0|RelayMode::Default|dns_discovery|PortmapperConfig::Enabled' \
-            crates apps; then
-            echo "vendor networking default found in application source" >&2
-            exit 1
-          fi
+            -- crates apps
       - name: Verify secret terms are absent from structured-log fields
-        if: needs.plan.result != 'success' || needs.plan.outputs.security_source == 'true'
+        if: env.RUN_SECURITY_SOURCE == 'true'
         run: |
-          if rg 'tracing::[a-z]+!.*(one_time_secret|private_key|metric_sample)' crates apps; then
-            echo "sensitive structured-log field found" >&2
-            exit 1
-          fi
+          source scripts/reject-matches.sh
+          rackio_reject_matches \
+            "sensitive structured-log field found" \
+            "tracked structured-log source scan" \
+            git grep -n -E \
+            'tracing::[a-z]+!.*(one_time_secret|private_key|metric_sample)' \
+            -- crates apps
