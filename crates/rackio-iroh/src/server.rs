@@ -243,7 +243,7 @@ async fn handle_pair(
             .pairing
             .lock()
             .map_err(|_| ServerError::PairingStateUnavailable)?;
-        let verified = pairing.verify_and_consume(&pair.one_time_secret);
+        let verified = pairing.verify_and_consume(remote_id, &pair.one_time_secret);
         (verified, !pairing.is_open())
     };
     if window_closed {

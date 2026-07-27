@@ -21,6 +21,7 @@ use zeroize::Zeroizing;
 const PAIRING_SECRET_BYTES: usize = 32;
 const PAIRING_WINDOW: Duration = Duration::from_mins(5);
 const MAX_FAILURES: u8 = 5;
+const MAX_TRACKED_FAILING_PEERS: usize = 64;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PairingBundle {
@@ -137,7 +138,41 @@ pub enum PairingError {
 struct PairingWindow {
     secret: Zeroizing<[u8; PAIRING_SECRET_BYTES]>,
     expires_at_ms: i64,
-    failures: u8,
+    /// Failures per authenticated peer, in insertion order.
+    ///
+    /// Counting failures on the window instead let any host that could reach
+    /// the agent destroy the operator's pairing window with five garbage
+    /// secrets, and the operator's real device then saw the same generic
+    /// rejection it would get from a typo. The QUIC peer identity cannot be
+    /// spoofed, so per-peer counting keeps the five-attempt rule meaningful
+    /// against the peer it is aimed at without letting a bystander close the
+    /// window for everyone.
+    failures: Vec<(EndpointId, u8)>,
+}
+
+impl PairingWindow {
+    /// Record a failed attempt by `peer`.
+    ///
+    /// The table is bounded so a peer minting fresh endpoint IDs cannot grow
+    /// it without limit; the oldest entry is evicted instead. Losing lockout
+    /// state only returns a peer to five fresh guesses against a 256-bit
+    /// secret, which is not a meaningful advantage.
+    fn record_failure(&mut self, peer: EndpointId) {
+        if let Some(entry) = self.failures.iter_mut().find(|(id, _)| *id == peer) {
+            entry.1 = entry.1.saturating_add(1);
+            return;
+        }
+        if self.failures.len() >= MAX_TRACKED_FAILING_PEERS {
+            self.failures.remove(0);
+        }
+        self.failures.push((peer, 1));
+    }
+
+    fn is_locked_out(&self, peer: EndpointId) -> bool {
+        self.failures
+            .iter()
+            .any(|(id, count)| *id == peer && *count >= MAX_FAILURES)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -166,7 +201,7 @@ impl PairingManager {
         self.active = Some(PairingWindow {
             secret,
             expires_at_ms,
-            failures: 0,
+            failures: Vec::new(),
         });
         PairingBundle {
             format_version: 1,
@@ -179,11 +214,22 @@ impl PairingManager {
         }
     }
 
-    pub fn verify_and_consume(&mut self, supplied: &str) -> Result<(), PairingError> {
+    /// Verify a secret supplied by `peer`, which must be the authenticated
+    /// QUIC peer identity rather than anything the request claimed.
+    pub fn verify_and_consume(
+        &mut self,
+        peer: EndpointId,
+        supplied: &str,
+    ) -> Result<(), PairingError> {
         let window = self.active.as_mut().ok_or(PairingError::WindowClosed)?;
         if Utc::now().timestamp_millis() > window.expires_at_ms {
             self.active = None;
             return Err(PairingError::Expired);
+        }
+        // A locked-out peer never reaches the comparison again, so it cannot
+        // keep guessing and cannot learn anything from the response either.
+        if window.is_locked_out(peer) {
+            return Err(PairingError::Rejected);
         }
         let supplied = URL_SAFE_NO_PAD.decode(supplied).ok();
         let valid = supplied.as_ref().is_some_and(|supplied| {
@@ -194,10 +240,7 @@ impl PairingManager {
             self.active = None;
             return Ok(());
         }
-        window.failures = window.failures.saturating_add(1);
-        if window.failures >= MAX_FAILURES {
-            self.active = None;
-        }
+        window.record_failure(peer);
         Err(PairingError::Rejected)
     }
 }
@@ -344,7 +387,10 @@ mod tests {
     use iroh::SecretKey;
     use uuid::Uuid;
 
-    use super::{PairingBundle, PairingError, PairingManager, PeerPermissions, PeerRegistry};
+    use super::{
+        MAX_TRACKED_FAILING_PEERS, PairingBundle, PairingError, PairingManager, PeerPermissions,
+        PeerRegistry,
+    };
 
     #[test]
     fn pairing_bundle_debug_redacts_the_one_time_secret() {
@@ -408,12 +454,17 @@ mod tests {
     #[test]
     fn pairing_secret_is_single_use() {
         let key = SecretKey::generate();
+        let viewer = SecretKey::generate().public();
         let mut manager = PairingManager::default();
         let bundle = manager.open(Uuid::new_v4(), key.public(), Vec::new(), Vec::new());
 
-        assert!(manager.verify_and_consume(&bundle.one_time_secret).is_ok());
+        assert!(
+            manager
+                .verify_and_consume(viewer, &bundle.one_time_secret)
+                .is_ok()
+        );
         assert!(matches!(
-            manager.verify_and_consume(&bundle.one_time_secret),
+            manager.verify_and_consume(viewer, &bundle.one_time_secret),
             Err(PairingError::WindowClosed)
         ));
         assert_eq!(
@@ -424,22 +475,65 @@ mod tests {
     }
 
     #[test]
-    fn closes_window_after_five_failures() {
+    fn locks_out_a_peer_after_five_failures() {
+        let key = SecretKey::generate();
+        let attacker = SecretKey::generate().public();
+        let mut manager = PairingManager::default();
+        let bundle = manager.open(Uuid::new_v4(), key.public(), Vec::new(), Vec::new());
+
+        for _ in 0..5 {
+            assert!(manager.verify_and_consume(attacker, "invalid").is_err());
+        }
+        // Even the real secret no longer helps this peer.
+        assert!(matches!(
+            manager.verify_and_consume(attacker, &bundle.one_time_secret),
+            Err(PairingError::Rejected)
+        ));
+    }
+
+    #[test]
+    fn a_failing_peer_cannot_burn_the_window_for_the_operators_device() {
+        let key = SecretKey::generate();
+        let attacker = SecretKey::generate().public();
+        let viewer = SecretKey::generate().public();
+        let mut manager = PairingManager::default();
+        let bundle = manager.open(Uuid::new_v4(), key.public(), Vec::new(), Vec::new());
+
+        for _ in 0..20 {
+            assert!(manager.verify_and_consume(attacker, "invalid").is_err());
+        }
+
+        assert!(manager.is_open(), "the window must survive another peer");
+        assert!(
+            manager
+                .verify_and_consume(viewer, &bundle.one_time_secret)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn failure_tracking_is_bounded_against_minted_endpoint_ids() {
         let key = SecretKey::generate();
         let mut manager = PairingManager::default();
         manager.open(Uuid::new_v4(), key.public(), Vec::new(), Vec::new());
-        for _ in 0..5 {
-            assert!(manager.verify_and_consume("invalid").is_err());
+
+        for _ in 0..(MAX_TRACKED_FAILING_PEERS * 3) {
+            let peer = SecretKey::generate().public();
+            assert!(manager.verify_and_consume(peer, "invalid").is_err());
         }
-        assert!(matches!(
-            manager.verify_and_consume("invalid"),
-            Err(PairingError::WindowClosed)
-        ));
+
+        let tracked = manager
+            .active
+            .as_ref()
+            .map_or(0, |window| window.failures.len());
+        assert_eq!(tracked, MAX_TRACKED_FAILING_PEERS);
+        assert!(manager.is_open());
     }
 
     #[test]
     fn expired_window_fails_closed_and_is_consumed() {
         let key = SecretKey::generate();
+        let viewer = SecretKey::generate().public();
         let mut manager = PairingManager::default();
         let bundle = manager.open(Uuid::new_v4(), key.public(), Vec::new(), Vec::new());
         if let Some(window) = manager.active.as_mut() {
@@ -447,11 +541,11 @@ mod tests {
         }
 
         assert!(matches!(
-            manager.verify_and_consume(&bundle.one_time_secret),
+            manager.verify_and_consume(viewer, &bundle.one_time_secret),
             Err(PairingError::Expired)
         ));
         assert!(matches!(
-            manager.verify_and_consume(&bundle.one_time_secret),
+            manager.verify_and_consume(viewer, &bundle.one_time_secret),
             Err(PairingError::WindowClosed)
         ));
     }

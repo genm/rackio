@@ -82,7 +82,13 @@ a major mismatch fails closed. A pairing request must:
 1. arrive while a five-minute local pairing window is open;
 2. claim the same viewer endpoint ID observed on the QUIC connection;
 3. present the 256-bit one-time secret;
-4. succeed before five failed attempts close the window.
+4. succeed before that endpoint ID's fifth failed attempt locks it out for the
+   remainder of the window.
+
+Failures are counted per authenticated endpoint ID, not per window, so a
+reachable bystander cannot destroy the operator's pairing window by guessing.
+The failure table is bounded, and evicting an entry only returns that peer to
+five fresh guesses against a 256-bit secret.
 
 Secrets are compared in constant time and removed immediately after success.
 Mutual monitoring requires a separate pairing in the opposite direction.
