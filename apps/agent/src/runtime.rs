@@ -10,8 +10,8 @@ use anyhow::{Context, anyhow};
 use chrono::Utc;
 use directories::ProjectDirs;
 use rackio_core::{
-    CapabilityState, HealthSnapshot, HistoryResolution, MetricCapability, MetricStore, NodeInfo,
-    NodeState, ProtocolVersion, SystemCollector,
+    HealthSnapshot, HistoryResolution, MetricCapability, MetricStore, NodeInfo, NodeState,
+    ProtocolVersion, SystemCollector,
 };
 use rackio_iroh::{
     EndpointConfig, NodeRuntime, PairingManager, PairingMdnsState, PeerRegistry, RemoteServer,
@@ -220,7 +220,11 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     )
     .await?;
     let node_id = load_or_create_node_id(&paths.data.join("node-id"))?;
-    let info = node_info(node_id);
+    // Probe the host before advertising what this machine can collect, and
+    // hand the same collector to the sampler so the advertised capabilities
+    // and the published samples come from one source.
+    let collector = SystemCollector::new();
+    let info = node_info(node_id, collector.capabilities());
     let (latest_tx, latest_rx) = watch::channel(None);
     let runtime = Arc::new(NodeRuntime {
         info,
@@ -244,7 +248,12 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     );
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let mut sampler = tokio::spawn(sample_loop(Arc::clone(&runtime), latest_tx, shutdown_rx));
+    let mut sampler = tokio::spawn(sample_loop(
+        Arc::clone(&runtime),
+        collector,
+        latest_tx,
+        shutdown_rx,
+    ));
     let mut remote = tokio::spawn(server.run());
     let mut local = tokio::spawn(run_local_server(
         paths.clone(),
@@ -294,6 +303,39 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     result
 }
 
+/// Reflect the collector's own errors in the published health snapshot, and
+/// clear them again once every source reads. `state` returns to `Healthy` only
+/// when no other subsystem is degraded.
+async fn apply_collector_health(runtime: &NodeRuntime, errors: &[rackio_core::CollectorError]) {
+    let degraded = !errors.is_empty();
+    let mut health = runtime.health.write().await;
+    if health.collector_degraded == degraded {
+        return;
+    }
+    health.collector_degraded = degraded;
+    if degraded {
+        health.state = NodeState::Degraded;
+        if !health
+            .details
+            .iter()
+            .any(|detail| detail == "collector_degraded")
+        {
+            health.details.push(String::from("collector_degraded"));
+        }
+        tracing::warn!(
+            sources = ?errors.iter().map(|error| error.source.as_str()).collect::<Vec<_>>(),
+            "one or more metric sources are unreadable on this host"
+        );
+    } else {
+        health
+            .details
+            .retain(|detail| detail != "collector_degraded");
+        if !health.storage_degraded && !health.remote_listener_degraded {
+            health.state = NodeState::Healthy;
+        }
+    }
+}
+
 /// Commit whatever is buffered so a graceful stop does not discard history.
 /// A failure here is reported, never presented as a successful flush.
 async fn flush_pending(runtime: &NodeRuntime, pending: &mut Vec<rackio_core::MetricSample>) {
@@ -318,10 +360,10 @@ async fn flush_pending(runtime: &NodeRuntime, pending: &mut Vec<rackio_core::Met
 
 async fn sample_loop(
     runtime: Arc<NodeRuntime>,
+    mut collector: SystemCollector,
     latest: watch::Sender<Option<rackio_core::MetricSample>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let mut collector = SystemCollector::new();
     tokio::time::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL).await;
     let mut ticker = tokio::time::interval(Duration::from_secs(2));
     let mut pending = Vec::with_capacity(5);
@@ -339,6 +381,9 @@ async fn sample_loop(
             }
         }
         let sample = collector.sample();
+        // A source the collector could not read must be visible as a degraded
+        // collector, not hidden behind an otherwise healthy snapshot.
+        apply_collector_health(&runtime, &sample.errors).await;
         let _ = latest.send(Some(sample.clone()));
         pending.push(sample);
         if pending.len() >= 5 {
@@ -821,15 +866,11 @@ pub async fn request_local(
     anyhow::bail!("local IPC is unsupported on this platform")
 }
 
-fn node_info(node_id: Uuid) -> NodeInfo {
-    let capabilities = ["cpu", "memory", "swap", "disk", "network"]
-        .into_iter()
-        .map(|name| MetricCapability {
-            name: name.to_owned(),
-            state: CapabilityState::Supported,
-            detail: None,
-        })
-        .collect();
+/// Build the advertised node information from what this host can actually
+/// collect. Declaring a fixed list of `Supported` capabilities made a viewer
+/// trust metrics the collector cannot read on a sandboxed or containerised
+/// host.
+fn node_info(node_id: Uuid, capabilities: Vec<MetricCapability>) -> NodeInfo {
     NodeInfo {
         node_id,
         display_name: sysinfo::System::host_name().unwrap_or_else(|| String::from("Unnamed node")),
