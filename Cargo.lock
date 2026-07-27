@@ -4362,6 +4362,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
