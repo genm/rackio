@@ -103,6 +103,19 @@ reserved example; replace it with the TLS hostname of your own relay.
 
 ## Installation and operations
 
+Published evaluation pre-releases of the headless Linux agent install without a
+local build:
+
+```sh
+sh install.sh --version <VERSION> \
+  --releases-url https://github.com/genm/rackio/releases/download
+```
+
+They are immutable GitHub pre-releases with per-architecture checksums and
+build-provenance attestations, and they are explicitly unsupported: no version
+pointer advertises them, and the publication workflow refuses to create a
+supported release.
+
 The end-to-end operator workflow—source evaluation, intended Linux server
 installation, pairing, SSH-assisted air-gapped bootstrap, relay configuration,
 state interpretation and decommissioning—is in

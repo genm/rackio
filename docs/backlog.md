@@ -73,7 +73,10 @@ headless release.
 Scope:
 
 - build `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` artifacts;
+  *(done: the shared `Linux release artifacts` workflow, published to immutable
+  GitHub pre-releases by the gated `Release` workflow)*
 - add independent artifact signature or provenance verification;
+  *(done for provenance: per-archive GitHub build attestations)*
 - exercise `curl | sh` and client-pushed SSH installation on clean supported
   distributions;
 - verify systemd enablement, reboot recovery, viewer-group socket access,

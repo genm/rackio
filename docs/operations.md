@@ -40,6 +40,7 @@ internet.
 | Situation | Path | What it requires |
 | --- | --- | --- |
 | Developer evaluation on any supported desktop | Run from the source checkout | `mise`, the host prerequisites in [`development.md`](development.md) and a local build |
+| Headless Linux evaluation now | Install a published pre-release from its GitHub Release | systemd, `x86_64` or `aarch64`, root or `sudo`, and acceptance that it is unsupported |
 | Headless Linux after a supported release exists | Download installer or use the documented HTTPS command | systemd, `x86_64` or `aarch64`, root or `sudo` |
 | A Linux host cannot reach a release server | Desktop **Pair machine → SSH** | Existing SSH key/agent access, verified host key, local archive plus checksum, and non-interactive root access |
 | macOS or Windows agent | Signed platform package | Not yet supported for public installation; see the release checklist |
@@ -83,6 +84,44 @@ The first remote metric normally appears within a few seconds for a reachable
 peer. `lan_direct`, `wan_direct` and `relayed` are connection-path results,
 not user-selected labels. A failed or expired import must remain an error; it
 must not create a healthy-looking machine entry.
+
+## Headless Linux evaluation pre-release
+
+An evaluation pre-release is a real, installable build of the headless Linux
+agent published as an immutable GitHub pre-release. It removes the need to build
+an archive yourself before using either the `curl`-based install or the
+desktop's SSH bootstrap. It is not a supported release: the signed macOS and
+Windows packages, reboot recovery, and the NAT matrix in
+[`release-checklist.md`](release-checklist.md) are still open. Do not run it on
+a machine whose monitoring you depend on.
+
+Download the installer and the archive from the release, inspect the installer,
+then install the exact version:
+
+```sh
+tag=v0.1.0-rc.1
+curl --proto '=https' --tlsv1.2 -O "https://github.com/genm/rackio/releases/download/$tag/install.sh"
+less install.sh
+sh install.sh --version "${tag#v}" \
+  --releases-url https://github.com/genm/rackio/releases/download
+```
+
+`--version` is mandatory here. A pre-release publishes no version pointer, so a
+plain `latest` install cannot select it and fails with that explanation instead
+of silently picking another build.
+
+Verify provenance independently before trusting the archive. The checksum
+detects transfer corruption and asset mismatch; the GitHub attestation is what
+ties the archive to the workflow and commit that produced it:
+
+```sh
+gh attestation verify rackio-v0.1.0-rc.1-x86_64-unknown-linux-gnu.tar.gz \
+  --repo genm/rackio
+```
+
+The desktop SSH bootstrap accepts the same downloaded `.tar.gz` and `.sha256`
+pair, which is the fastest way to install and pair a server that has no
+internet access.
 
 ## Headless Linux release installation
 

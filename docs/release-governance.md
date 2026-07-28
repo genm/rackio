@@ -37,6 +37,11 @@ Rackio binaries, installers, checksums, signatures, attestations, SBOMs, and
 license notices. Published assets are never replaced in place. A correction
 requires a new version and tag.
 
+A GitHub Release is self-sufficient. Its asset URLs
+(`https://github.com/genm/rackio/releases/download/v<VERSION>/<ASSET>`) are the
+versioned release root that [`../install.sh`](../install.sh) accepts through
+`--releases-url`, so distribution does not depend on the custom domain existing.
+
 `https://rackio.genm.dev` is the planned stable operator-facing entry point:
 
 - `/install.sh` serves the reviewed installer;
@@ -48,10 +53,39 @@ The custom domain must not contain independently built variants. Mirrored or
 cached files must match the canonical asset digest. GitHub Release URLs remain
 the recovery path when the custom domain is unavailable.
 
+## Evaluation pre-releases
+
+An evaluation pre-release exists so that operators can install and pair a real
+build while the supported-release evidence is still open. It is a distinct
+release class, not an early supported release.
+
+A pre-release uses a version with a pre-release suffix (`0.1.0-rc.1`) and its
+matching tag. The [`Release`](../.github/workflows/release.yml) workflow
+publishes it automatically and fails closed unless:
+
+- the pushed ref is a tag whose commit is contained in protected `main`;
+- the tag names exactly the built `rackio-agent` package version;
+- that version carries a pre-release suffix;
+- CI and Security both have a successful push run for the same commit.
+
+A pre-release is marked as a GitHub pre-release, publishes no `latest.txt`, and
+is therefore reachable only by an explicit `--version`. Contents are limited to
+what the workflow actually builds and verifies: the headless `x86_64` and
+`aarch64` Linux agent archives, their checksums, their build-provenance
+attestations, and the reviewed installer. The desktop application, macOS package
+and Windows service installer are not published as pre-releases.
+
+A pre-release must not be described as supported, must not receive a
+`latest.txt` pointer, and must not be mirrored to a custom-domain path that
+implies it is the current version.
+
 ## Publication gate
 
-Publication is fail-closed. Do not create a supported release or update
-`latest.txt` when any of these conditions applies:
+Publication is fail-closed. The release workflow refuses a version without a
+pre-release suffix precisely because it cannot verify the conditions below;
+automation may assemble and upload artifacts, but a supported release is created
+only through the recorded approval in this document. Do not create a supported
+release or update `latest.txt` when any of these conditions applies:
 
 - the release checklist still has a blocking gate;
 - the commit is not on protected `main`, or required checks are not successful;
