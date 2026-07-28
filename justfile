@@ -18,6 +18,15 @@ test-rust:
 coverage:
     mise exec -- cargo llvm-cov nextest --workspace --lcov --output-path test-results/coverage/lcov.info
 
+mutants:
+    mise run mutants
+
+fuzz:
+    mise run fuzz
+
+links:
+    mise run links:check
+
 dependencies:
     mise exec -- cargo deny check
     mise exec -- cargo machete

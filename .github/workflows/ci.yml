@@ -32,6 +32,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Check out trusted pull request planner
         if: github.event_name == 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,6 +55,51 @@ jobs:
           fi
           node "$planner"
 
+  hygiene:
+    name: Repository hygiene
+    # Deliberately outside the affected plan. These three checks read the whole
+    # repository in seconds without a build, so narrowing them would cost more
+    # planner surface than it saves runner time — and workflow linting must not
+    # depend on a gate that a workflow-only change can route around.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="${RUNNER_TEMP:?}/actionlint.tar.gz"
+          install_dir="${RUNNER_TEMP:?}/actionlint"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            --output "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" "$archive" | sha256sum --check -
+          mkdir -p "$install_dir"
+          tar -xzf "$archive" -C "$install_dir" actionlint
+          printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
+      - name: Install pinned workflow and spelling auditors
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: zizmor@1.28.0,typos@1.48.0
+          fallback: none
+      - name: Validate GitHub Actions workflow syntax
+        run: actionlint
+      - name: Audit GitHub Actions workflow security
+        env:
+          # Online mode resolves every pinned action hash back to its tag, which
+          # is what detects a hash whose version comment no longer matches the
+          # ref it claims — the failure mode a rewritten upstream tag produces.
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --no-progress .github/workflows/
+      - name: Check spelling
+        run: typos
+
   commits:
     name: Conventional Commits
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
@@ -64,6 +110,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -121,6 +168,8 @@ jobs:
       - name: Check out source
         if: env.RUN_RUST == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Validate Windows PowerShell syntax
         if: env.RUN_RUST == 'true' && runner.os == 'Windows'
         shell: pwsh
@@ -153,9 +202,22 @@ jobs:
       - name: Clippy
         if: env.RUN_RUST == 'true'
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Documentation
+        if: env.RUN_RUST == 'true' && runner.os == 'Linux'
+        env:
+          # A broken intra-doc link or invalid doc attribute is a silent
+          # documentation regression that `cargo doc` otherwise only warns about.
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --all-features --no-deps
       - name: Test
         if: env.RUN_RUST == 'true'
         run: cargo nextest run --workspace
+      - name: Check the fuzz targets
+        # The fuzz crate is built by the scheduled deep-verification run on
+        # nightly. Type-checking it here on stable means a refactor that breaks
+        # a target fails on the pull request that caused it, not a week later.
+        if: env.RUN_RUST == 'true' && runner.os == 'Linux'
+        run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
       - name: Exercise two-daemon pairing and reconnect
         if: env.RUN_RUST == 'true' && runner.os == 'Linux'
         run: scripts/test-two-daemon-pairing.sh
@@ -198,6 +260,8 @@ jobs:
       - name: Check out source
         if: env.RUN_RUST_WINDOWS_CROSS == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Select pinned Rust toolchain
         if: env.RUN_RUST_WINDOWS_CROSS == 'true'
         run: rustup show
@@ -243,24 +307,8 @@ jobs:
       - name: Check out source
         if: env.RUN_FRONTEND == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install pinned actionlint
-        if: env.RUN_FRONTEND == 'true'
-        env:
-          ACTIONLINT_VERSION: 1.7.12
-          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-        run: |
-          archive="${RUNNER_TEMP:?}/actionlint.tar.gz"
-          install_dir="${RUNNER_TEMP:?}/actionlint"
-          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
-            --output "$archive" \
-            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          printf '%s  %s\n' "$ACTIONLINT_SHA256" "$archive" | sha256sum --check -
-          mkdir -p "$install_dir"
-          tar -xzf "$archive" -C "$install_dir" actionlint
-          printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
-      - name: Validate GitHub Actions workflows
-        if: env.RUN_FRONTEND == 'true'
-        run: actionlint
+        with:
+          persist-credentials: false
       - name: Set up Node
         if: env.RUN_FRONTEND == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

@@ -78,6 +78,11 @@ in [`docs/development.md`](docs/development.md).
 - Update owning documentation when a contract, command, or runbook changes.
 - Use English Conventional Commit messages without generated-by trailers.
 
-The default branch accepts changes only after required CI and Security checks
-pass. A green local run is useful evidence but does not replace platform or
-network checks that require another environment.
+The default branch accepts changes only after required CI, Security and CodeQL
+checks pass. A green local run is useful evidence but does not replace platform
+or network checks that require another environment.
+
+Mutation testing, fuzzing and link checking run on a schedule instead, in the
+`Deep verification` workflow. They do not gate a merge, but a failure there is a
+real gap in the evidence this repository claims to have — see
+[`docs/development.md`](docs/development.md) for how to reproduce one locally.

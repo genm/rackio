@@ -1,0 +1,139 @@
+name: Deep verification
+
+# Checks that cost far more runner time than a pull request should wait for, and
+# whose findings are test-suite and robustness debt rather than a verdict on one
+# diff. They run on a schedule so a red result here never blocks a merge, and it
+# is never downgraded to a warning either: a missed mutant or a fuzz crash is a
+# real gap in the evidence this repository claims to have.
+
+on:
+  schedule:
+    # Sunday, well clear of the Monday Security and CodeQL runs.
+    - cron: "23 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      fuzz-seconds:
+        description: Seconds to run each fuzz target
+        required: false
+        default: "900"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deep-verification-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mutants:
+    name: Mutation testing (${{ matrix.package }})
+    runs-on: ubuntu-24.04
+    # Mutation testing rebuilds and re-tests the crate once per mutant. Each
+    # package gets its own job so one slow crate cannot exhaust the budget of
+    # the others.
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [rackio-core, rackio-protocol, rackio-iroh]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select pinned Rust toolchain
+        run: rustup show
+      - name: Install mutation and test tools
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.140
+          fallback: none
+      - name: Mutate and re-test
+        env:
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          # A mutant that survives means the suite passes with the behaviour
+          # changed, so it is reported as a failure rather than as a note.
+          cargo mutants \
+            --package "$PACKAGE" \
+            --test-tool=nextest \
+            --timeout-multiplier 5 \
+            --jobs 4 \
+            --output test-results/mutants
+      - name: Upload the mutation report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutants-${{ matrix.package }}
+          path: test-results/mutants/
+          retention-days: 14
+
+  fuzz:
+    name: Fuzzing (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [pairing_bundle, metric_frame]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the nightly toolchain required by libFuzzer
+        # cargo-fuzz needs the sanitizer and coverage instrumentation that is
+        # nightly-only. The shipped workspace stays on the pinned stable
+        # toolchain; only the detached fuzz crate is built this way.
+        run: |
+          rustup toolchain install nightly --profile minimal --component rust-src
+          cargo +nightly install cargo-fuzz --version 0.13.2 --locked
+      - name: Restore the accumulated corpus
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # Each run starts from what previous runs found interesting instead of
+          # rediscovering the same coverage from the tracked seeds every week.
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Fuzz
+        env:
+          TARGET: ${{ matrix.target }}
+          FUZZ_SECONDS: ${{ inputs.fuzz-seconds || '900' }}
+        run: |
+          cargo +nightly fuzz run "$TARGET" -- \
+            -max_total_time="$FUZZ_SECONDS" \
+            -rss_limit_mb=2048
+      - name: Upload the crashing input
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # The reproducer is the whole point of a failed run: without it the
+          # crash cannot be turned into a regression test.
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          retention-days: 30
+
+  links:
+    name: Documentation links
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check every documented link resolves
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: >-
+            --no-progress
+            --max-concurrency 4
+            --accept 200,204,206,429
+            "*.md"
+            "docs/**/*.md"
+            "packaging/**/*.md"
+          fail: true
+          # Third-party rate limiting is why this is scheduled rather than a
+          # pull-request gate, but a rejected link is still reported, not hidden.
+          jobSummary: true

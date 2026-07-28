@@ -82,6 +82,23 @@ test("platform packaging selects only its owning Rust runner", () => {
   }
 });
 
+test("fuzz target changes select only the Linux Rust runner", () => {
+  const plan = classifyChangedFiles(["fuzz/fuzz_targets/pairing_bundle.rs"]);
+  assert.equal(plan.rust, true);
+  assert.equal(plan.rust_linux, true);
+  assert.equal(plan.rust_macos, false);
+  assert.equal(plan.rust_windows, false);
+});
+
+test("fuzz corpus additions select no build gate", () => {
+  // A corpus file is fuzzer input, never compiled, so a new reproducer must not
+  // charge a full Rust matrix to the pull request that records it.
+  const plan = classifyChangedFiles(["fuzz/corpus/pairing_bundle/crash-0000"]);
+  assert.equal(plan.rust, false);
+  assert.equal(plan.frontend, false);
+  assert.equal(plan.security_policy, false);
+});
+
 test("relay packaging selects only dependency policy", () => {
   const plan = classifyChangedFiles(["relay-package/Dockerfile"]);
   assert.equal(plan.rust, false);
