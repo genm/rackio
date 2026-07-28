@@ -1,0 +1,7 @@
+# RFC 6761 reserved names are unresolvable by definition. Documentation and
+# fixtures use them precisely so that no example can ever reach a real host, so
+# a failed lookup here is the intended behaviour rather than a broken link.
+^https?://([^/]*\.)?example\.(test|com|org|net)(/|$)
+^https?://([^/]*\.)?(localhost|invalid)(:\d+)?(/|$)
+^https?://127\.0\.0\.1(:\d+)?(/|$)
+^https?://\[::1\](:\d+)?(/|$)
