@@ -4,6 +4,12 @@ set -eu
 DEFAULT_RELEASES_URL="https://rackio.genm.dev/releases"
 VERSION="${RACKIO_VERSION:-latest}"
 RELEASES_URL="${RACKIO_RELEASES_URL:-$DEFAULT_RELEASES_URL}"
+# The version pointer is configurable because a release root does not always
+# expose one at a predictable relative path. A static host serves
+# `<root>/latest.txt`, while GitHub Releases only resolves a moving pointer
+# through `releases/latest/download/<asset>`, which is not below the versioned
+# `releases/download` root.
+LATEST_URL="${RACKIO_LATEST_URL:-}"
 INSTALL_ROOT="${RACKIO_INSTALL_ROOT:-}"
 SKIP_SERVICE="${RACKIO_SKIP_SERVICE:-0}"
 LOCAL_ARCHIVE=""
@@ -14,12 +20,19 @@ usage() {
 Install the Rackio headless agent and systemd service.
 
 Usage:
-  install.sh [--version VERSION] [--releases-url URL]
+  install.sh [--version VERSION] [--releases-url URL] [--latest-url URL]
   install.sh --archive FILE --checksum FILE
 
 Environment:
   RACKIO_VERSION       Version to install (default: latest)
-  RACKIO_RELEASES_URL  Static release root
+  RACKIO_RELEASES_URL  Versioned release root
+  RACKIO_LATEST_URL    Version pointer used when VERSION is "latest"
+                       (default: <release root>/latest.txt)
+
+Install a specific version straight from the canonical GitHub Release:
+
+  install.sh --version <VERSION> \
+    --releases-url https://github.com/genm/rackio/releases/download
 
 The installer downloads and verifies a versioned release archive before it
 requests root privileges. RACKIO_INSTALL_ROOT and RACKIO_SKIP_SERVICE are only
@@ -45,6 +58,11 @@ while [ "$#" -gt 0 ]; do
     --releases-url)
       [ "$#" -ge 2 ] || fail "--releases-url requires a value"
       RELEASES_URL="$2"
+      shift 2
+      ;;
+    --latest-url)
+      [ "$#" -ge 2 ] || fail "--latest-url requires a value"
+      LATEST_URL="$2"
       shift 2
       ;;
     --archive)
@@ -93,20 +111,6 @@ case "$TEST_ARCH" in
   *) fail "unsupported Linux architecture: $TEST_ARCH" ;;
 esac
 
-if [ -n "$LOCAL_ARCHIVE" ]; then
-  ASSET="rackio-local-${TARGET}.tar.gz"
-else
-  RELEASES_URL="${RELEASES_URL%/}"
-  if [ "$VERSION" = "latest" ]; then
-    VERSION="$(curl --proto '=https' --tlsv1.2 -fsSL "$RELEASES_URL/latest.txt" 2>/dev/null || true)"
-    [ -n "$VERSION" ] || fail "could not resolve the latest Rackio version"
-  fi
-  case "$VERSION" in
-    *[!0-9A-Za-z._-]*|'') fail "invalid version: $VERSION" ;;
-  esac
-  ASSET="rackio-v${VERSION}-${TARGET}.tar.gz"
-  BASE_URL="$RELEASES_URL/v${VERSION}"
-fi
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rackio-install.XXXXXX")"
 cleanup() {
   rm -rf "$TEMP_DIR"
@@ -125,6 +129,26 @@ download() {
     *) fail "release URL must use HTTPS" ;;
   esac
 }
+
+if [ -n "$LOCAL_ARCHIVE" ]; then
+  ASSET="rackio-local-${TARGET}.tar.gz"
+else
+  RELEASES_URL="${RELEASES_URL%/}"
+  [ -n "$LATEST_URL" ] || LATEST_URL="$RELEASES_URL/latest.txt"
+  if [ "$VERSION" = "latest" ]; then
+    # An unresolvable pointer must name the operator's way out. A pre-release is
+    # deliberately advertised by no pointer, so "latest" cannot reach one.
+    download "$LATEST_URL" "$TEMP_DIR/latest.txt" ||
+      fail "could not read the version pointer at $LATEST_URL; install an exact version with --version VERSION, or point --latest-url at the pointer this release root publishes"
+    VERSION="$(tr -d '\r' <"$TEMP_DIR/latest.txt" | awk 'NR == 1 { print $1 }')"
+    [ -n "$VERSION" ] || fail "the version pointer at $LATEST_URL named no version"
+  fi
+  case "$VERSION" in
+    *[!0-9A-Za-z._-]*|'') fail "invalid version: $VERSION" ;;
+  esac
+  ASSET="rackio-v${VERSION}-${TARGET}.tar.gz"
+  BASE_URL="$RELEASES_URL/v${VERSION}"
+fi
 
 if [ -n "$LOCAL_ARCHIVE" ]; then
   cp "$LOCAL_ARCHIVE" "$TEMP_DIR/$ASSET"

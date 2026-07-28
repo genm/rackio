@@ -42,7 +42,7 @@ NAT and mixed-OS release matrices.
 | Pairing | Five-minute, attempt-limited, single-use secret, window-scoped mDNS endpoint advertisement, copy/paste import, local QR generation and private file import/export | Cross-LAN pairing depends on transferred direct addresses or a configured self-hosted relay |
 | Viewer daemon | Secret-free remote inventory, reconnect loop, persisted last-known snapshot, bounded remote history query, periodic health/path refresh, structured path events and stale/offline derivation | NAT and relay migration evidence remains incomplete |
 | Desktop | Local/remote cards, 24-hour remote history detail, dynamic worst-state tray icon, configurable OS notifications, QR/file/bundle pairing, SSH bootstrap, and explicit degraded states | Cross-platform packaging |
-| Linux packaging | Native x86_64/arm64 release archives with independently verified SLSA provenance, clean Ubuntu systemd lifecycle evidence, HTTPS or client-pushed archive install, checksum verification, viewer-group isolation and preserving/purge uninstaller | No supported immutable public release; SSH client, reboot and supported-distribution coverage are not proven |
+| Linux packaging | Native x86_64/arm64 release archives with independently verified SLSA provenance, clean Ubuntu systemd lifecycle evidence, HTTPS or client-pushed archive install, checksum verification, viewer-group isolation, preserving/purge uninstaller and gated GitHub pre-release publication | No supported release: the publication workflow refuses a non-pre-release version; SSH client, reboot and supported-distribution coverage are not proven |
 | macOS | Dedicated daemon user/group, LaunchDaemon lifecycle, preserving uninstaller and fail-closed signed/notarized pkg builder | A real Developer ID signature, notarization receipt and reboot evidence require release credentials and a clean macOS host |
 | Windows | Explicit-DACL named-pipe IPC with caller-token verification, Windows Service installer/uninstaller and a GitHub-hosted CI integration scenario | Authenticode/MSI signing, clean-host remote-client rejection and reboot evidence require a Windows release host |
 | Relay | Version-pinned upstream relay container and configuration | Internet-exposure workflow, token delivery and NAT evidence |
@@ -93,16 +93,29 @@ events and surfaced without presenting relayed traffic as direct.
 
 ## Distribution status
 
-The Linux installer contract is implemented, but there is no supported public
-release to install yet. The intended interface is:
+The Linux installer contract is implemented, and publication of the headless
+Linux agent is automated: a `v*` tag whose commit is contained in protected
+`main` drives [`Release`](../.github/workflows/release.yml), which reuses the
+verified artifact build and creates the immutable GitHub pre-release described in
+[`release-governance.md`](release-governance.md). Both architectures ship with a
+checksum and a build-provenance attestation, and the reviewed `install.sh` is
+published beside them:
+
+```sh
+sh install.sh --version <VERSION> \
+  --releases-url https://github.com/genm/rackio/releases/download
+```
+
+There is still no *supported* release. The workflow refuses any version without a
+pre-release suffix, because the signed cross-platform, reboot and NAT evidence in
+[`release-checklist.md`](release-checklist.md) remains open, and a pre-release
+publishes no `latest.txt`. The stable interface
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://rackio.genm.dev/install.sh | sh
 ```
 
-That URL is a target interface, not a claim that artifacts are live. Publication
-remains blocked by the outstanding signed cross-platform, reboot and NAT
-evidence in [`release-checklist.md`](release-checklist.md). See
+is therefore still a target interface, not a claim that artifacts are live. See
 [`../packaging/README.md`](../packaging/README.md) for the archive contract and
 rootless installer test.
 

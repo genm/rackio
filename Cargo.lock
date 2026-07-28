@@ -4309,7 +4309,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rackio-agent"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4334,7 +4334,7 @@ dependencies = [
 
 [[package]]
 name = "rackio-core"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "chrono",
  "rusqlite",
@@ -4347,7 +4347,7 @@ dependencies = [
 
 [[package]]
 name = "rackio-desktop"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "base64 0.23.0",
  "chrono",
@@ -4367,7 +4367,7 @@ dependencies = [
 
 [[package]]
 name = "rackio-iroh"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "base64 0.23.0",
  "chrono",
@@ -4389,7 +4389,7 @@ dependencies = [
 
 [[package]]
 name = "rackio-protocol"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "prost",
  "prost-build",
@@ -4400,7 +4400,7 @@ dependencies = [
 
 [[package]]
 name = "rackio-windows-ipc"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "tokio",
  "windows-sys 0.61.2",

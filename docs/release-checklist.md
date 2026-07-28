@@ -118,8 +118,25 @@ duration, packet loss and relay byte count.
 - [ ] independent security review completed
 
 `cargo deny` contains one scoped exception for `RUSTSEC-2024-0429`. It is an
-upstream Linux Tauri/GTK dependency, not accepted release risk: Linux artifacts
-must not be published while the functional blocker above remains open.
+upstream Linux Tauri/GTK dependency, not accepted release risk: **Linux desktop**
+artifacts must not be published while the functional blocker above remains open.
+
+The scope is the desktop application, not every Linux artifact. `glib 0.18`
+enters the graph only through `rackio-desktop`; the published headless archive
+builds `rackio-agent`, whose Linux dependency graph contains no `glib`, GTK or
+Tauri crate. Verify that separation rather than assuming it:
+
+```sh
+cargo tree -p rackio-agent --target x86_64-unknown-linux-gnu -e normal |
+  grep -E 'glib|gtk|tauri' && echo 'desktop dependency reached the agent' >&2
+```
+
+The command must print nothing. Any match means the headless archive no longer
+excludes the advisory and must not be published.
+
+A headless Linux agent archive may therefore be published as the evaluation
+pre-release defined in [`release-governance.md`](release-governance.md). The
+desktop application stays unpublished on Linux until the advisory is resolved.
 
 The exact `iroh 1.0.3` dependency is built without default features. Rackio
 clears relay transports for direct-only operation and constructs only the

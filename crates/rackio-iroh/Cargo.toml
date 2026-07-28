@@ -18,8 +18,8 @@ tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-rackio-core = { version = "0.1.0", path = "../rackio-core" }
-rackio-protocol = { version = "0.1.0", path = "../rackio-protocol" }
+rackio-core = { version = "0.1.0-rc.1", path = "../rackio-core" }
+rackio-protocol = { version = "0.1.0-rc.1", path = "../rackio-protocol" }
 uuid.workspace = true
 zeroize.workspace = true
 

@@ -17,8 +17,9 @@ a public release is available.
 ## Linux system service
 
 [`../install.sh`](../install.sh) automates the Linux headless installation. It
-downloads a versioned release archive from
-`https://rackio.genm.dev/releases`, verifies its SHA-256 digest before executing
+downloads a versioned release archive from the release root
+(`https://rackio.genm.dev/releases` by default, `--releases-url` for any other,
+including a GitHub Release), verifies its SHA-256 digest before executing
 the binary, creates a non-login `rackio` user and `rackio-viewers` group,
 installs the binary and unit, enables the service, and fails unless both
 systemd and the local daemon health check succeed.
@@ -44,22 +45,41 @@ to be available for every accepted local connection.
 The release archive contract is:
 
 ```text
-releases/
-├── latest.txt
+<release root>/
+├── latest.txt                                   (supported releases only)
 └── v<VERSION>/
     ├── rackio-v<VERSION>-<TARGET>.tar.gz
     └── rackio-v<VERSION>-<TARGET>.tar.gz.sha256
 ```
 
+A GitHub Release satisfies that contract without the custom domain: its download
+root is `https://github.com/genm/rackio/releases/download`, under which the tag
+directory `v<VERSION>` holds the same asset names. Install a specific version
+directly from it:
+
+```sh
+sh install.sh --version <VERSION> \
+  --releases-url https://github.com/genm/rackio/releases/download
+```
+
+`latest` resolution reads a version pointer, by default `<release root>/latest.txt`.
+GitHub serves a moving pointer outside the versioned root, so a release root that
+publishes one there needs `--latest-url`
+(`https://github.com/genm/rackio/releases/latest/download/latest.txt`). An
+evaluation pre-release publishes no pointer at all and is reachable only through
+an explicit `--version`; the installer fails closed and says so.
+
 Each archive contains `rackio`, `rackio.service`, `uninstall.sh`, the project
 licenses, and the generated `THIRDPARTY.html` Rust dependency-license bundle. CI
 regenerates that bundle from `Cargo.lock` and rejects drift. Build the archive
-from an already compiled binary:
+from an already compiled binary, naming the version the binary actually reports
+(`cargo metadata --locked --no-deps` for `rackio-agent`), because a release tag
+must match it exactly:
 
 ```sh
 packaging/linux/package-release.sh \
   target/release/rackio \
-  0.1.0 \
+  <VERSION> \
   x86_64-unknown-linux-gnu
 ```
 
@@ -75,8 +95,8 @@ client, then invokes the same installer implementation:
 
 ```sh
 sudo sh install.sh \
-  --archive rackio-v0.1.0-x86_64-unknown-linux-gnu.tar.gz \
-  --checksum rackio-v0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+  --archive rackio-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz \
+  --checksum rackio-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
 SSH bootstrap requires key or agent authentication and non-interactive root
@@ -96,18 +116,30 @@ and mismatched artifacts, but does not independently protect against compromise
 of that origin. Public release publication must additionally provide signed
 provenance or artifact attestation; it remains blocked by `just release-check`.
 
-The manually dispatched
-[`Linux release evidence`](../.github/workflows/linux-release-evidence.yml)
-workflow builds the headless agent natively on GitHub-hosted x86_64 and arm64
-Linux runners, rejects vendor relay/discovery defaults, verifies the archive
-checksum and contents, records GitHub build-provenance attestations, then
-installs that same archive on the clean runner. The system test verifies
-systemd enablement and restart, root and viewer-group health, denial outside the
-viewer group, preserving reinstall, and explicit purge on both architectures.
-It accepts only the protected default branch. Its one-day workflow artifacts
-are test evidence, not reboot evidence, a supported release, or the canonical
-immutable publication defined in
-[`release-governance.md`](../docs/release-governance.md).
+[`Linux release artifacts`](../.github/workflows/linux-release-artifacts.yml) is
+the single authoritative build. It compiles the headless agent natively on
+GitHub-hosted x86_64 and arm64 Linux runners, rejects vendor relay/discovery
+defaults, verifies the archive checksum and contents, records GitHub
+build-provenance attestations, then installs that same archive on the clean
+runner. The system test verifies systemd enablement and restart, root and
+viewer-group health, denial outside the viewer group, preserving reinstall, and
+explicit purge on both architectures.
+
+Two workflows call it, so a published asset is produced by exactly the steps the
+evidence run verifies:
+
+- [`Linux release evidence`](../.github/workflows/linux-release-evidence.yml) is
+  dispatched manually, accepts only the protected default branch, and keeps its
+  one-day workflow artifacts. They are test evidence, not reboot evidence, a
+  supported release, or a publication.
+- [`Release`](../.github/workflows/release.yml) runs on a `v*` tag. It requires
+  the tag's commit to be contained in protected `main`, the tag to name the built
+  package version, that version to carry a pre-release suffix, and CI plus
+  Security to have a successful push run for the same commit. It then re-verifies
+  every checksum and creates the immutable GitHub pre-release with the archives,
+  their checksums and the reviewed `install.sh`. Publishing a supported version
+  is refused by design; see
+  [`release-governance.md`](../docs/release-governance.md).
 
 Download an evidence archive from its workflow run and independently verify
 the GitHub attestation:

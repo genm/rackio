@@ -23,14 +23,14 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
-rackio-core = { version = "0.1.0", path = "../../crates/rackio-core" }
-rackio-iroh = { version = "0.1.0", path = "../../crates/rackio-iroh" }
-rackio-protocol = { version = "0.1.0", path = "../../crates/rackio-protocol" }
+rackio-core = { version = "0.1.0-rc.1", path = "../../crates/rackio-core" }
+rackio-iroh = { version = "0.1.0-rc.1", path = "../../crates/rackio-iroh" }
+rackio-protocol = { version = "0.1.0-rc.1", path = "../../crates/rackio-protocol" }
 thiserror.workspace = true
 uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-rackio-windows-ipc = { version = "0.1.0", path = "../../crates/rackio-windows-ipc" }
+rackio-windows-ipc = { version = "0.1.0-rc.1", path = "../../crates/rackio-windows-ipc" }
 
 [lints]
 workspace = true
