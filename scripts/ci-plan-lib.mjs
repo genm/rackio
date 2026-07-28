@@ -22,6 +22,9 @@ const LINUX_RUST_PATHS = [
   /^install\.sh$/,
   /^packaging\/linux\/(?!.*\.md$)/,
   /^scripts\/(?:benchmark-agent-resources|test-two-daemon-pairing|check-release-binary-cloud-independence)\.sh$/,
+  // The fuzz crate is type-checked only on the Linux leg, so a change to it
+  // must reach that leg without pulling in the macOS and Windows runners.
+  /^fuzz\/(?!corpus\/)/,
 ];
 
 const MACOS_RUST_PATHS = [/^packaging\/macos\/(?!.*\.md$)/];
