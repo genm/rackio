@@ -70,16 +70,14 @@ impl SystemCollector {
         if self.system.cpus().is_empty() {
             return None;
         }
-        let usage = self.system.global_cpu_usage();
-        usage.is_finite().then_some(usage)
+        readable_cpu_percent(self.system.global_cpu_usage())
     }
 
     /// `None` when the total is zero: every machine has memory, so a zero
     /// total means the source could not be read rather than that the machine
     /// has none.
     fn memory_total(&self) -> Option<u64> {
-        let total = self.system.total_memory();
-        (total > 0).then_some(total)
+        readable_memory_total(self.system.total_memory())
     }
 
     #[must_use]
@@ -112,44 +110,35 @@ impl SystemCollector {
             .list()
             .iter()
             .filter_map(|disk| {
-                let total = disk.total_space();
-                (total > 0).then(|| DiskMetric {
-                    mount: disk.mount_point().to_string_lossy().into_owned(),
-                    total_bytes: total,
-                    used_bytes: total.saturating_sub(disk.available_space()),
-                })
+                disk_metric(
+                    &disk.mount_point().to_string_lossy(),
+                    disk.total_space(),
+                    disk.available_space(),
+                )
             })
             .collect();
         if disks.is_empty() {
             errors.push(unavailable("disk", "no filesystem could be enumerated"));
         }
 
-        // With no readable interface there is no traffic to divide, and
-        // reporting 0 B/s would present an unreadable source as an idle one.
-        let network = if self.networks.list().is_empty() || elapsed.is_zero() {
-            if self.networks.list().is_empty() {
-                errors.push(unavailable(
-                    "network",
-                    "no network interface could be enumerated",
-                ));
-            }
-            None
-        } else {
-            let (received, sent) =
-                self.networks
-                    .list()
-                    .values()
-                    .fold((0_u64, 0_u64), |(received, sent), network| {
-                        (
-                            received.saturating_add(network.received()),
-                            sent.saturating_add(network.transmitted()),
-                        )
-                    });
-            Some(NetworkMetric {
-                received_bytes_per_second: rate_per_second(received, elapsed),
-                sent_bytes_per_second: rate_per_second(sent, elapsed),
-            })
-        };
+        let interfaces = self.networks.list();
+        if interfaces.is_empty() {
+            errors.push(unavailable(
+                "network",
+                "no network interface could be enumerated",
+            ));
+        }
+        let totals = (!interfaces.is_empty()).then(|| {
+            interfaces
+                .values()
+                .fold((0_u64, 0_u64), |(received, sent), network| {
+                    (
+                        received.saturating_add(network.received()),
+                        sent.saturating_add(network.transmitted()),
+                    )
+                })
+        });
+        let network = network_metric(totals, elapsed);
 
         MetricSample {
             timestamp_ms: Utc::now().timestamp_millis(),
@@ -165,6 +154,43 @@ impl SystemCollector {
             errors,
         }
     }
+}
+
+/// An idle machine legitimately reports `Some(0.0)`, so zero is never treated
+/// as absence. A non-finite reading is not a percentage and is reported absent.
+fn readable_cpu_percent(usage: f32) -> Option<f32> {
+    usage.is_finite().then_some(usage)
+}
+
+/// Every machine has memory, so a zero total means the source could not be read
+/// rather than that the machine has none.
+fn readable_memory_total(total: u64) -> Option<u64> {
+    (total > 0).then_some(total)
+}
+
+/// A filesystem with no total is a pseudo-filesystem, not a full one. Including
+/// it would put a meaningless 0-byte entry into the fleet's disk view.
+fn disk_metric(mount: &str, total: u64, available: u64) -> Option<DiskMetric> {
+    (total > 0).then(|| DiskMetric {
+        mount: mount.to_owned(),
+        total_bytes: total,
+        used_bytes: total.saturating_sub(available),
+    })
+}
+
+/// `totals` is `None` when no interface could be enumerated. With no readable
+/// interface there is no traffic to divide, and with no elapsed time there is
+/// nothing to divide by — reporting 0 B/s in either case would present an
+/// unreadable source as an idle one.
+fn network_metric(totals: Option<(u64, u64)>, elapsed: Duration) -> Option<NetworkMetric> {
+    let (received, sent) = totals?;
+    if elapsed.is_zero() {
+        return None;
+    }
+    Some(NetworkMetric {
+        received_bytes_per_second: rate_per_second(received, elapsed),
+        sent_bytes_per_second: rate_per_second(sent, elapsed),
+    })
 }
 
 fn capability(name: &str, supported: bool, detail: &str) -> MetricCapability {
@@ -205,8 +231,78 @@ fn rate_per_second(bytes: u64, elapsed: Duration) -> u64 {
 mod tests {
     use std::time::Duration;
 
-    use super::{SystemCollector, rate_per_second};
+    use super::{
+        SystemCollector, capability, disk_metric, network_metric, rate_per_second,
+        readable_cpu_percent, readable_memory_total,
+    };
     use crate::CapabilityState;
+
+    #[test]
+    fn an_unreadable_cpu_is_absent_but_an_idle_one_is_zero() {
+        assert_eq!(readable_cpu_percent(0.0), Some(0.0), "idle is not absent");
+        assert_eq!(readable_cpu_percent(42.5), Some(42.5));
+        assert_eq!(readable_cpu_percent(f32::NAN), None);
+        assert_eq!(readable_cpu_percent(f32::INFINITY), None);
+    }
+
+    #[test]
+    fn a_zero_memory_total_means_unreadable() {
+        assert_eq!(readable_memory_total(0), None);
+        assert_eq!(readable_memory_total(1), Some(1));
+        assert_eq!(readable_memory_total(u64::MAX), Some(u64::MAX));
+    }
+
+    #[test]
+    fn a_filesystem_without_a_total_is_not_reported() {
+        assert_eq!(disk_metric("/proc", 0, 0), None);
+
+        let root = disk_metric("/", 100, 30)
+            .unwrap_or_else(|| panic!("a filesystem with a total is reported"));
+        assert_eq!(root.mount, "/");
+        assert_eq!(root.total_bytes, 100);
+        assert_eq!(root.used_bytes, 70, "used is total minus available");
+
+        // More available than total cannot underflow into a huge used value.
+        let odd = disk_metric("/odd", 100, 500)
+            .unwrap_or_else(|| panic!("a filesystem with a total is reported"));
+        assert_eq!(odd.used_bytes, 0);
+    }
+
+    #[test]
+    fn an_unreadable_network_is_absent_rather_than_idle() {
+        // No interface enumerated, and no elapsed interval, are both "cannot
+        // tell" rather than "no traffic".
+        assert!(network_metric(None, Duration::from_secs(1)).is_none());
+        assert!(network_metric(Some((1_024, 2_048)), Duration::ZERO).is_none());
+
+        let metric = network_metric(Some((2_048, 4_096)), Duration::from_secs(2))
+            .unwrap_or_else(|| panic!("a readable interval produces a rate"));
+        assert_eq!(metric.received_bytes_per_second, 1_024);
+        assert_eq!(metric.sent_bytes_per_second, 2_048);
+
+        // A genuinely idle interface does report zero.
+        let idle = network_metric(Some((0, 0)), Duration::from_secs(1))
+            .unwrap_or_else(|| panic!("an enumerated idle interface still reports"));
+        assert_eq!(idle.received_bytes_per_second, 0);
+    }
+
+    #[test]
+    fn an_unsupported_capability_carries_its_reason() {
+        let supported = capability("cpu", true, "no CPU is readable");
+        assert_eq!(supported.state, CapabilityState::Supported);
+        assert_eq!(
+            supported.detail, None,
+            "a supported source needs no explanation"
+        );
+
+        let unsupported = capability("cpu", false, "no CPU is readable");
+        assert_eq!(unsupported.state, CapabilityState::Unsupported);
+        assert_eq!(unsupported.detail.as_deref(), Some("no CPU is readable"));
+
+        // Swap is declared supported with no reason text; an empty reason must
+        // stay absent rather than become an empty string.
+        assert_eq!(capability("swap", false, "").detail, None);
+    }
 
     #[test]
     fn declares_only_the_capabilities_this_host_can_actually_read() {
