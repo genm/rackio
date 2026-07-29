@@ -17,6 +17,12 @@ concurrency:
   # which is the only run that is not limited to an affected range.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # See ci.yml: enableGlobalVirtualStore breaks the license-notice generator's
+  # assumption of a physical node_modules/.pnpm/<pkg> store layout, and
+  # ephemeral runners get no benefit from the shared global store.
+  PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE: "false"
+
 jobs:
   plan:
     name: Plan affected security checks
