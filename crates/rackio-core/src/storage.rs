@@ -520,6 +520,307 @@ mod tests {
     }
 
     #[test]
+    fn samples_are_bucketed_by_the_minute_they_fall_in() {
+        // The bucket key is the minute floor in milliseconds. Any other
+        // arithmetic still produces one row per minute, so only querying by an
+        // exact minute boundary distinguishes a correct key from a plausible one.
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        store
+            .insert_batch(&[
+                sample(61_000, 10.0),
+                sample(119_999, 30.0),
+                sample(120_000, 50.0),
+            ])
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let first = store
+            .query(60_000, 60_000, HistoryResolution::Minute)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(first.len(), 1, "both samples belong to the minute at 60000");
+        assert_eq!(first[0].timestamp_ms, 60_000);
+        assert_eq!(first[0].cpu_percent, Some(20.0));
+
+        let second = store
+            .query(120_000, 120_000, HistoryResolution::Minute)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(second.len(), 1, "the next minute is a separate bucket");
+        assert_eq!(second[0].cpu_percent, Some(50.0));
+    }
+
+    #[test]
+    fn minute_history_averages_rather_than_sums() {
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        let mut low = sample(1_000, 10.0);
+        low.memory_used_bytes = Some(100);
+        let mut high = sample(2_000, 30.0);
+        high.memory_used_bytes = Some(300);
+        high.network = Some(NetworkMetric {
+            received_bytes_per_second: 30,
+            sent_bytes_per_second: 60,
+        });
+        store
+            .insert_batch(&[low, high])
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let minute = store
+            .query(0, 60_000, HistoryResolution::Minute)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(minute[0].cpu_percent, Some(20.0), "(10 + 30) / 2");
+        assert_eq!(minute[0].memory_used_bytes, Some(200), "(100 + 300) / 2");
+        let network = minute[0]
+            .network
+            .as_ref()
+            .unwrap_or_else(|| panic!("both samples carried a network reading"));
+        assert_eq!(network.received_bytes_per_second, 20, "(10 + 30) / 2");
+        assert_eq!(network.sent_bytes_per_second, 40, "(20 + 60) / 2");
+    }
+
+    #[test]
+    fn a_minute_without_any_network_reading_reports_no_network() {
+        // Reporting 0 B/s here would present an unreadable source as an idle
+        // one, which is the same rule the collector enforces at sample time.
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        let mut without_network = sample(1_000, 10.0);
+        without_network.network = None;
+        store
+            .insert_batch(&[without_network])
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let minute = store
+            .query(0, 60_000, HistoryResolution::Minute)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(minute[0].network.is_none());
+    }
+
+    #[test]
+    fn a_minute_with_only_one_readable_direction_still_reports_network() {
+        // A rate too large for the signed SQLite column is dropped on the way
+        // in, leaving one direction counted and the other not. Either direction
+        // surviving alone must still produce a reading rather than lose both.
+        for (received, sent, expected_received, expected_sent) in
+            [(u64::MAX, 40, 0, 40), (40, u64::MAX, 40, 0)]
+        {
+            let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+            let mut half_readable = sample(1_000, 10.0);
+            half_readable.network = Some(NetworkMetric {
+                received_bytes_per_second: received,
+                sent_bytes_per_second: sent,
+            });
+            store
+                .insert_batch(&[half_readable])
+                .unwrap_or_else(|error| panic!("{error}"));
+
+            let minute = store
+                .query(0, 60_000, HistoryResolution::Minute)
+                .unwrap_or_else(|error| panic!("{error}"));
+            let network = minute[0]
+                .network
+                .as_ref()
+                .unwrap_or_else(|| panic!("the readable direction must survive"));
+            assert_eq!(network.received_bytes_per_second, expected_received);
+            assert_eq!(network.sent_bytes_per_second, expected_sent);
+        }
+    }
+
+    #[test]
+    fn prune_keeps_each_resolution_for_its_own_retention_window() {
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        let now = 30 * 24 * 60 * 60 * 1_000;
+        // One sample just inside and one just outside each window, so a
+        // cut-off computed by any other arithmetic lands on the wrong side.
+        let raw_kept = now - RAW_RETENTION_MS + MINUTE_MS;
+        let raw_dropped = now - RAW_RETENTION_MS - MINUTE_MS;
+        let minute_kept = now - MINUTE_RETENTION_MS + MINUTE_MS;
+        let minute_dropped = now - MINUTE_RETENTION_MS - MINUTE_MS;
+
+        store
+            .insert_batch(&[
+                sample(minute_dropped, 10.0),
+                sample(minute_kept, 20.0),
+                sample(raw_dropped, 30.0),
+                sample(raw_kept, 40.0),
+            ])
+            .unwrap_or_else(|error| panic!("{error}"));
+        store.prune(now).unwrap_or_else(|error| panic!("{error}"));
+
+        let raw = store
+            .query(0, now, HistoryResolution::Raw)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let raw_timestamps: Vec<_> = raw.iter().map(|entry| entry.timestamp_ms).collect();
+        assert_eq!(
+            raw_timestamps,
+            vec![raw_kept],
+            "raw history keeps exactly the last {RAW_RETENTION_MS} ms"
+        );
+
+        let minute = store
+            .query(0, now, HistoryResolution::Minute)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let minute_buckets: Vec<_> = minute.iter().map(|entry| entry.timestamp_ms).collect();
+        let bucket = |timestamp_ms: i64| timestamp_ms.div_euclid(MINUTE_MS) * MINUTE_MS;
+        assert_eq!(
+            minute_buckets,
+            vec![bucket(minute_kept), bucket(raw_dropped), bucket(raw_kept)],
+            "minute history outlives raw history but not its own window"
+        );
+    }
+
+    #[test]
+    fn prune_does_not_compact_a_store_that_is_within_the_size_cap() {
+        // Compaction is deliberately not unconditional: `VACUUM` rewrites the
+        // whole file, so a routine prune of a small store must leave the
+        // freelist pages in place for reuse rather than pay that cost.
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        let samples: Vec<_> = (0..500)
+            .map(|index| {
+                let mut metric = sample(index * 1_000, 20.0);
+                metric.errors.push(CollectorError {
+                    source: String::from("test"),
+                    kind: CapabilityState::Unsupported,
+                    message: "x".repeat(1_024),
+                });
+                metric
+            })
+            .collect();
+        store
+            .insert_batch(&samples)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let before = store
+            .database_allocated_size_bytes()
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        // Far enough ahead that every sample falls outside both windows.
+        store
+            .prune(MINUTE_RETENTION_MS * 2)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(
+            store
+                .query(0, i64::MAX, HistoryResolution::Raw)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .is_empty(),
+            "everything outside retention is deleted"
+        );
+        assert_eq!(
+            store
+                .database_allocated_size_bytes()
+                .unwrap_or_else(|error| panic!("{error}")),
+            before,
+            "a store already under the cap is not rewritten"
+        );
+    }
+
+    #[test]
+    fn allocated_size_reports_real_page_usage() {
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        let empty = store
+            .database_allocated_size_bytes()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(empty > 0, "a schema-bearing database occupies pages");
+
+        let samples: Vec<_> = (0..500)
+            .map(|index| {
+                let mut metric = sample(index * 1_000, 20.0);
+                metric.errors.push(CollectorError {
+                    source: String::from("test"),
+                    kind: CapabilityState::Unsupported,
+                    message: "x".repeat(1_024),
+                });
+                metric
+            })
+            .collect();
+        store
+            .insert_batch(&samples)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let filled = store
+            .database_allocated_size_bytes()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            filled > empty,
+            "written rows must grow the reported size: {empty} -> {filled}"
+        );
+    }
+
+    #[test]
+    fn a_size_cap_that_cannot_be_met_stops_instead_of_looping() {
+        // With every row deleted the database is still larger than an
+        // unreachable cap. The loop has to recognise that neither delete made
+        // progress and give up rather than spin.
+        //
+        // More than one delete batch of minute rows, so a loop that stops after
+        // its first successful minute delete leaves history behind.
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        let samples: Vec<_> = (0..1_500)
+            .map(|index| sample(index * MINUTE_MS, 20.0))
+            .collect();
+        store
+            .insert_batch(&samples)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        store
+            .enforce_size_cap_bytes(1)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(
+            store
+                .query(0, i64::MAX, HistoryResolution::Raw)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .is_empty()
+        );
+        assert!(
+            store
+                .query(0, i64::MAX, HistoryResolution::Minute)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .is_empty(),
+            "minute history is deleted once raw history runs out"
+        );
+    }
+
+    #[test]
+    fn a_cap_the_store_already_meets_deletes_nothing() {
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        store
+            .insert_batch(&[sample(1_000, 10.0), sample(2_000, 20.0)])
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        store
+            .enforce_size_cap_bytes(i64::MAX)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(
+            store
+                .query(0, i64::MAX, HistoryResolution::Raw)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn latest_returns_the_newest_stored_sample() {
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            store
+                .latest()
+                .unwrap_or_else(|error| panic!("{error}"))
+                .is_none(),
+            "an empty store has no latest sample"
+        );
+
+        store
+            .insert_batch(&[sample(2_000, 20.0), sample(1_000, 10.0)])
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let latest = store
+            .latest()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .unwrap_or_else(|| panic!("a stored sample must be returned"));
+        assert_eq!(latest.timestamp_ms, 2_000);
+        assert_eq!(latest.cpu_percent, Some(20.0));
+    }
+
+    #[test]
     fn size_cap_reclaims_sqlite_pages_after_deleting_oldest_history() {
         let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
         let samples: Vec<_> = (0..500)
