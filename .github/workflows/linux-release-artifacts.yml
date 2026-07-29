@@ -1,0 +1,146 @@
+name: Linux release artifacts
+
+# Single authoritative build of the headless Linux agent archives. Both the
+# manually dispatched evidence workflow and the tag-driven publication workflow
+# call it, so a published asset is produced by exactly the build, scan, checksum,
+# layout, provenance and clean-install steps that the evidence run verifies.
+on:
+  workflow_call:
+    inputs:
+      expected-version:
+        description: >-
+          Fail unless the workspace package version equals this value. The
+          publication caller passes the version taken from its tag so a
+          mislabelled asset can never be built.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and attest (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select pinned Rust toolchain
+        run: |
+          rustup show
+          rustup target add "${{ matrix.target }}"
+      - name: Resolve package version
+        id: package
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected-version }}
+        run: |
+          version="$(
+            cargo metadata --locked --no-deps --format-version 1 |
+              jq --raw-output '.packages[] | select(.name == "rackio-agent") | .version'
+          )"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "rackio-agent has no release-safe package version" >&2
+            exit 1
+          fi
+          if [[ -n "$EXPECTED_VERSION" && "$version" != "$EXPECTED_VERSION" ]]; then
+            echo "rackio-agent is version $version but the caller requires $EXPECTED_VERSION" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build headless agent
+        run: cargo build --locked --release -p rackio-agent --target "${{ matrix.target }}"
+      - name: Reject vendor networking defaults
+        env:
+          RACKIO_RELEASE_REPORT: test-results/release-binary-${{ matrix.target }}.json
+        run: scripts/check-release-binary-cloud-independence.sh "target/${{ matrix.target }}/release/rackio"
+      - name: Package and verify release archive
+        id: artifact
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          archive="$(
+            packaging/linux/package-release.sh \
+              "target/$TARGET/release/rackio" \
+              "$VERSION" \
+              "$TARGET"
+          )"
+          (
+            cd dist
+            sha256sum --check "$(basename "$archive").sha256"
+          )
+          tar -tzf "$archive" | LC_ALL=C sort > test-results/archive-members.txt
+          LC_ALL=C sort > test-results/expected-archive-members.txt <<'EOF'
+          LICENSE-APACHE
+          LICENSE-MIT
+          THIRDPARTY.html
+          rackio
+          rackio.service
+          uninstall.sh
+          EOF
+          diff -u test-results/expected-archive-members.txt test-results/archive-members.txt
+          jq --null-input \
+            --arg target "$TARGET" \
+            --arg version "$VERSION" \
+            --arg archive "$(basename "$archive")" \
+            '{ok: true, target: $target, version: $version, archive: $archive, checksum: true, layout: true}' \
+            > "test-results/linux-release-$TARGET.json"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "checksum=$archive.sha256" >> "$GITHUB_OUTPUT"
+      - name: Attest build provenance
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: dist/*.tar.gz
+      - name: Exercise clean systemd installation
+        env:
+          RACKIO_SYSTEM_INSTALL_TEST: "1"
+          # Bound through the environment rather than expanded into the shell:
+          # a step output is data, and template expansion would make it code.
+          ARCHIVE: ${{ steps.artifact.outputs.archive }}
+          CHECKSUM: ${{ steps.artifact.outputs.checksum }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          packaging/linux/systemd-install.test.sh \
+            "$ARCHIVE" \
+            "$CHECKSUM" \
+            "test-results/linux-systemd-$TARGET.json"
+      - name: Capture systemd failure diagnostics
+        if: failure()
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          sudo systemctl status rackio.service --no-pager 2>&1 |
+            tee "test-results/linux-systemd-$TARGET.status.txt" >/dev/null || true
+          sudo journalctl -u rackio.service --no-pager --lines=200 2>&1 |
+            tee "test-results/linux-systemd-$TARGET.journal.txt" >/dev/null || true
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-systemd-failure-${{ matrix.target }}
+          path: test-results/
+          retention-days: 1
+      - name: Upload short-lived evidence bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-release-${{ matrix.target }}
+          path: |
+            dist/
+            test-results/
+          retention-days: 1
+          compression-level: 0

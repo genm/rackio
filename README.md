@@ -5,6 +5,7 @@
 [![CI](https://github.com/genm/rackio/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/genm/rackio/actions/workflows/ci.yml?query=branch%3Amain)
 [![Security](https://github.com/genm/rackio/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/genm/rackio/actions/workflows/security.yml?query=branch%3Amain)
 [![License: Apache-2.0 OR MIT](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](#license)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/genm/rackio/badge)](https://scorecard.dev/viewer/?uri=github.com/genm/rackio)
 
 > [!WARNING]
 > Rackio is under active development and has no supported production release
@@ -30,7 +31,8 @@ there is not release-complete until [`docs/release-checklist.md`](docs/release-c
 has the required evidence. Remaining work is organized into issue-sized,
 dependency-ordered items in [`docs/backlog.md`](docs/backlog.md).
 Contribution workflow, issue ownership, and release evidence conventions are in
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+[`CONTRIBUTING.md`](CONTRIBUTING.md). Participation is governed by the
+[code of conduct](CODE_OF_CONDUCT.md).
 
 ## What works
 
@@ -102,6 +104,19 @@ Restart the daemon after changing relay configuration. `example.test` is only a
 reserved example; replace it with the TLS hostname of your own relay.
 
 ## Installation and operations
+
+Published evaluation pre-releases of the headless Linux agent install without a
+local build:
+
+```sh
+sh install.sh --version <VERSION> \
+  --releases-url https://github.com/genm/rackio/releases/download
+```
+
+They are immutable GitHub pre-releases with per-architecture checksums and
+build-provenance attestations, and they are explicitly unsupported: no version
+pointer advertises them, and the publication workflow refuses to create a
+supported release.
 
 The end-to-end operator workflow—source evaluation, intended Linux server
 installation, pairing, SSH-assisted air-gapped bootstrap, relay configuration,

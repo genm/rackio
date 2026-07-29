@@ -1,6 +1,7 @@
 import { bytes, percent } from "../format";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
 import type { MachineDetailState } from "../types";
+import { useModalDialog } from "../useModalDialog";
 import { Sparkline } from "./Sparkline";
 
 export function MachineDetail({
@@ -11,18 +12,33 @@ export function MachineDetail({
   onClose: () => void;
 }) {
   if (detail.state === "closed") return null;
+  return <MachineDetailDialog detail={detail} onClose={onClose} />;
+}
+
+// A separate component so the modal hook mounts and unmounts with the dialog:
+// that unmount is what restores focus to the card that opened it.
+function MachineDetailDialog({
+  detail,
+  onClose,
+}: {
+  detail: Exclude<MachineDetailState, { state: "closed" }>;
+  onClose: () => void;
+}) {
+  const dialogRef = useModalDialog<HTMLElement>(onClose);
   const { node } = detail;
   const cpuHistory =
     detail.state === "ready"
-      ? detail.points.flatMap((point) => (point.cpuPercent === undefined ? [] : [point.cpuPercent]))
+      ? detail.points.flatMap((point) => (point.cpuPercent == null ? [] : [point.cpuPercent]))
       : [];
   return (
     <div className="dialog-backdrop">
       <section
+        ref={dialogRef}
         className="machine-detail"
         role="dialog"
         aria-modal="true"
         aria-labelledby="machine-detail-title"
+        tabIndex={-1}
       >
         <header>
           <div>
@@ -40,7 +56,7 @@ export function MachineDetail({
           <span className={`badge path-${node.path}`}>
             {connectionPathRegistry[node.path].label}
           </span>
-          <span className="badge">{node.rttMs === undefined ? "RTT —" : `${node.rttMs} ms`}</span>
+          <span className="badge">{node.rttMs == null ? "RTT —" : `${node.rttMs} ms`}</span>
         </div>
         {detail.state === "loading" ? (
           <p className="progress-message" role="status">
@@ -72,7 +88,7 @@ export function MachineDetail({
             <dl className="detail-metrics">
               <div>
                 <dt>Latest CPU</dt>
-                <dd>{node.cpuPercent === undefined ? "—" : `${Math.round(node.cpuPercent)}%`}</dd>
+                <dd>{node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`}</dd>
               </div>
               <div>
                 <dt>Memory</dt>

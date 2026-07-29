@@ -81,6 +81,44 @@ host systemd configuration.
 restart and reconnect. It writes daemon logs under `test-results/two-daemon/`
 only when the smoke fails.
 
+## Scheduled deep verification
+
+Three checks cost far more than a pull request should wait for, so they run in
+the scheduled `Deep verification` workflow rather than in `check`. Each has a
+local equivalent for reproducing a reported failure:
+
+```sh
+mise run mutants
+mise run fuzz
+mise run links:check
+```
+
+`mutants` re-runs the suite once per injected behaviour change across
+`rackio-core`, `rackio-protocol` and `rackio-iroh`. A **missed** mutant is a
+function whose behaviour can be changed without any test noticing — the gap that
+line coverage cannot show. Reports land in `test-results/mutants/`.
+
+`fuzz` drives the two decoders reachable before any peer is authorised:
+`pairing_bundle` (`PairingBundle::decode`, which parses scanned or pasted text)
+and `metric_frame` (`read_frame`, whose length prefix guards allocation). It is
+the only task that leaves the pinned stable toolchain, because libFuzzer needs
+nightly instrumentation:
+
+```sh
+rustup toolchain install nightly --profile minimal --component rust-src
+cargo +nightly install cargo-fuzz --version 0.13.2 --locked
+```
+
+The fuzz crate under `fuzz/` is deliberately outside the workspace so its
+sanitizer flags and the `unsafe` code `libfuzzer-sys` generates never reach a
+shipped binary. `cargo check --manifest-path fuzz/Cargo.toml` runs on every
+Rust-affecting pull request so a refactor cannot silently break a target. Commit
+any crashing input from `fuzz/artifacts/` into `fuzz/corpus/<target>/` together
+with the regression test that covers it.
+
+`links:check` resolves every link in the tracked Markdown. Reserved names from
+RFC 6761 are excluded in `.lycheeignore` because they are unresolvable by design.
+
 ## Two-daemon pairing smoke
 
 Pairing, reconnect and remote-snapshot changes need two isolated sets of

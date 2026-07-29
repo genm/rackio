@@ -87,8 +87,11 @@ release-gate state, and repository-local preparation distinct.
   remain capability-driven.
 - Endpoint IDs are transport identities; application authorization belongs to
   the persisted peer allowlist.
-- Pairing secrets are short-lived, single-use, redacted from logs, and invalid
-  after five failed attempts.
+- Pairing secrets are short-lived, single-use, and redacted from logs. Five
+  failed attempts lock out the *requesting peer*, identified by its
+  authenticated endpoint ID, for the rest of the window. The window itself
+  survives, so a reachable bystander cannot destroy the operator's pairing
+  window; the failure table is bounded so minting endpoint IDs cannot grow it.
 - Never log private keys, pairing secrets, metric payloads, or authorization
   material.
 - Keep path state truthful: report `lan_direct`, `wan_direct`, or `relayed`

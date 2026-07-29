@@ -10,13 +10,13 @@ Group=rackio-viewers
 ExecStart=/usr/local/bin/rackio daemon
 Restart=on-failure
 RestartSec=5s
-UMask=0007
+UMask=0077
 ConfigurationDirectory=rackio
-ConfigurationDirectoryMode=0750
+ConfigurationDirectoryMode=0700
 StateDirectory=rackio
-StateDirectoryMode=0750
+StateDirectoryMode=0700
 LogsDirectory=rackio
-LogsDirectoryMode=0750
+LogsDirectoryMode=0700
 RuntimeDirectory=rackio
 RuntimeDirectoryMode=0770
 Environment=RACKIO_CONFIG_DIR=/etc/rackio

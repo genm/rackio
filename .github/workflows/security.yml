@@ -12,8 +12,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: security-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: security-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  # A push to main must not cancel the in-flight scheduled full-history scan,
+  # which is the only run that is not limited to an affected range.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   plan:
@@ -29,6 +31,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Check out trusted pull request planner
         if: github.event_name == 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,6 +75,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Install pinned Gitleaks
         env:
           GITLEAKS_VERSION: 8.30.1
@@ -141,7 +145,7 @@ jobs:
         run: pnpm audit --audit-level=high
       - name: Scan source and lockfiles
         if: env.RUN_SECURITY_POLICY == 'true'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.72.0
           scan-type: fs
@@ -151,7 +155,7 @@ jobs:
           exit-code: "1"
       - name: Generate CycloneDX SBOM
         if: github.event_name != 'pull_request' && env.RUN_SECURITY_POLICY == 'true'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           version: v0.72.0
           scan-type: fs

@@ -2,6 +2,12 @@
 /target/
 *.profraw
 
+# Fuzzing build output and reproducers. The seed corpus is tracked so a
+# scheduled run starts from known-interesting inputs instead of from zero.
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/coverage/
+
 # Node.js and pnpm
 node_modules/
 /.pnpm-store/

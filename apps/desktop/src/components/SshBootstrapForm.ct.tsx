@@ -54,6 +54,24 @@ test("passes validated form fields into SSH host inspection", async ({ mount }) 
   await expect.poll(() => inspected?.port).toBe(2222);
 });
 
+test("announces the host-key panel and takes focus instead of dropping it to the body", async ({
+  mount,
+}) => {
+  const component = await mount(
+    <div className="pair-dialog">
+      <SshBootstrapForm
+        status={sshBootstrapStateRegistry.confirmingHostKey}
+        onInspect={async () => undefined}
+        onInstall={async () => undefined}
+        onCancel={() => undefined}
+      />
+    </div>,
+  );
+  const panel = component.getByLabel("SSH host key confirmation");
+  await expect(panel).toHaveAttribute("aria-live", "polite");
+  await expect(panel).toBeFocused();
+});
+
 test("keeps SSH authentication failure visible", async ({ mount }) => {
   const component = await mount(
     <SshBootstrapForm

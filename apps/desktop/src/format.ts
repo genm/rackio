@@ -1,10 +1,10 @@
-export function percent(used?: number, total?: number): string {
-  if (used === undefined || total === undefined || total === 0) return "—";
+export function percent(used?: number | null, total?: number | null): string {
+  if (used == null || total == null || total === 0) return "—";
   return `${Math.round((used / total) * 100)}%`;
 }
 
-export function bytes(value?: number): string {
-  if (value === undefined) return "—";
+export function bytes(value?: number | null): string {
+  if (value == null) return "—";
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
   let current = value;
   let index = 0;

@@ -1,0 +1,199 @@
+name: Release
+
+# Publishes the canonical immutable GitHub Release for a version tag, as defined
+# in docs/release-governance.md. Automation may assemble and upload artifacts; it
+# must not decide that incomplete release evidence is acceptable. It therefore
+# publishes evaluation pre-releases only and refuses a supported version, whose
+# publication requires the recorded approval in the release-evidence issue.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Verify the publication gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a tag on the protected default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [[ "$REF_TYPE" != "tag" ]]; then
+            echo "the release workflow publishes version tags only" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "refs/remotes/origin/$DEFAULT_BRANCH"; then
+            echo "$GITHUB_SHA is not contained in the protected $DEFAULT_BRANCH branch" >&2
+            exit 1
+          fi
+      - name: Require the tag to name the built version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(
+            cargo metadata --locked --no-deps --format-version 1 |
+              jq --raw-output '.packages[] | select(.name == "rackio-agent") | .version'
+          )"
+          if [[ "$TAG" != "v$version" ]]; then
+            echo "tag $TAG does not name the built rackio-agent version $version" >&2
+            exit 1
+          fi
+          # A version without a pre-release suffix is a supported release. Its
+          # signing, notarization, reboot and NAT evidence cannot be checked by
+          # this workflow, so it fails closed instead of publishing.
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+- ]]; then
+            echo "$version has no pre-release suffix; a supported release must be published through the recorded approval in docs/release-governance.md" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Require successful CI and Security runs for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for workflow in ci.yml security.yml; do
+            conclusions="$(
+              gh api \
+                "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$GITHUB_SHA&event=push" \
+                --jq '.workflow_runs[] | select(.conclusion == "success") | .id'
+            )"
+            if [[ -z "$conclusions" ]]; then
+              echo "$workflow has no successful push run for $GITHUB_SHA" >&2
+              exit 1
+            fi
+          done
+
+  artifacts:
+    name: Linux release artifacts
+    needs: gate
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/linux-release-artifacts.yml
+    with:
+      expected-version: ${{ needs.gate.outputs.version }}
+
+  publish:
+    name: Publish the immutable GitHub Release
+    needs: [gate, artifacts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Collect the built archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p assets
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            gh run download "$GITHUB_RUN_ID" \
+              --name "linux-release-$target" \
+              --dir "staging/$target"
+            cp "staging/$target/dist/"*.tar.gz "staging/$target/dist/"*.tar.gz.sha256 assets/
+          done
+      - name: Re-verify every asset checksum before publication
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          cd assets
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            archive="rackio-v$VERSION-$target.tar.gz"
+            test -f "$archive" || {
+              echo "$archive is missing from the collected assets" >&2
+              exit 1
+            }
+            sha256sum --check "$archive.sha256"
+          done
+      - name: Publish the reviewed installer alongside the archives
+        run: |
+          cp install.sh assets/install.sh
+          (
+            cd assets
+            sha256sum install.sh > install.sh.sha256
+          )
+      - name: Compose release notes
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          {
+            echo "Evaluation pre-release of the headless Linux agent. This is **not** a"
+            echo "supported production release: the signed macOS and Windows packages, reboot"
+            echo "recovery and NAT matrix evidence in \`docs/release-checklist.md\` are still open,"
+            echo "and no version pointer advertises this build."
+            echo
+            echo "Assets cover \`x86_64\` and \`aarch64\` Linux with systemd. The desktop"
+            echo "application is not published here."
+            echo
+            echo "## Verify before installing"
+            echo
+            echo '```sh'
+            echo "sha256sum --check rackio-v$VERSION-x86_64-unknown-linux-gnu.tar.gz.sha256"
+            echo "gh attestation verify rackio-v$VERSION-x86_64-unknown-linux-gnu.tar.gz --repo $GITHUB_REPOSITORY"
+            echo '```'
+            echo
+            echo "The checksum detects transfer corruption and asset mismatch. The GitHub"
+            echo "build-provenance attestation is the independent evidence that this archive"
+            echo "was built by this workflow from this commit."
+            echo
+            echo "## Install"
+            echo
+            echo '```sh'
+            echo "curl --proto '=https' --tlsv1.2 -O https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/install.sh"
+            echo "less install.sh"
+            echo "sh install.sh --version $VERSION \\"
+            echo "  --releases-url https://github.com/$GITHUB_REPOSITORY/releases/download"
+            echo '```'
+            echo
+            echo "\`--version\` is required: a pre-release is deliberately reachable by no"
+            echo "version pointer, so a plain \`latest\` install can never select this build."
+            echo
+            echo "Pair it from the desktop or CLI as described in \`docs/operations.md\`."
+          } > release-notes.md
+      - name: Create the immutable pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          # `gh release create` fails when the release already exists, which is
+          # the immutability rule: a correction needs a new version and tag.
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Rackio $VERSION (evaluation pre-release)" \
+            --notes-file release-notes.md \
+            --prerelease \
+            --verify-tag \
+            assets/*
+      - name: Report the published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'

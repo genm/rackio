@@ -49,6 +49,45 @@ _RACKIO_TEST_ARCH=x86_64 \
   --version 0.1.0 \
   --releases-url "file://$test_root/releases" >/dev/null
 
+# "latest" resolves through a pointer file. A static release root publishes it at
+# `<root>/latest.txt`; a GitHub Release publishes it outside the versioned root,
+# so `--latest-url` must be honoured independently of `--releases-url`.
+printf '0.1.0\n' >"$test_root/releases/latest.txt"
+pointer_install_root="$test_root/pointer-root"
+RACKIO_INSTALL_ROOT="$pointer_install_root" \
+RACKIO_SKIP_SERVICE=1 \
+_RACKIO_TEST_OS=Linux \
+_RACKIO_TEST_ARCH=x86_64 \
+  sh "$repo_root/install.sh" \
+  --releases-url "file://$test_root/releases" >/dev/null
+test -x "$pointer_install_root/usr/local/bin/rackio"
+
+printf '0.1.0\r\n' >"$test_root/moved-pointer.txt"
+moved_pointer_install_root="$test_root/moved-pointer-root"
+RACKIO_INSTALL_ROOT="$moved_pointer_install_root" \
+RACKIO_SKIP_SERVICE=1 \
+_RACKIO_TEST_OS=Linux \
+_RACKIO_TEST_ARCH=x86_64 \
+  sh "$repo_root/install.sh" \
+  --releases-url "file://$test_root/releases" \
+  --latest-url "file://$test_root/moved-pointer.txt" >/dev/null
+test -x "$moved_pointer_install_root/usr/local/bin/rackio"
+
+# A release root without a pointer must fail closed and name the way out, which
+# is the state every unadvertised pre-release is in.
+if RACKIO_INSTALL_ROOT="$test_root/pointerless-root" \
+  RACKIO_SKIP_SERVICE=1 \
+  _RACKIO_TEST_OS=Linux \
+  _RACKIO_TEST_ARCH=x86_64 \
+  sh "$repo_root/install.sh" \
+  --releases-url "file://$test_root/pointerless" \
+  2>"$test_root/pointerless.stderr"; then
+  echo "installer resolved a version without a pointer" >&2
+  exit 1
+fi
+grep -Fq "install an exact version with --version VERSION" "$test_root/pointerless.stderr"
+test ! -e "$test_root/pointerless-root/usr/local/bin/rackio"
+
 asset="$test_root/releases/v0.1.0/rackio-v0.1.0-x86_64-unknown-linux-gnu.tar.gz"
 local_install_root="$test_root/local-root"
 RACKIO_INSTALL_ROOT="$local_install_root" \
@@ -159,4 +198,4 @@ grep -Fq "did not become healthy within 3 seconds" \
   "$test_root/unhealthy-service.stderr"
 test "$(cat "$health_count")" -eq 3
 
-printf '{"ok":true,"normal_install":true,"idempotent_reinstall":true,"local_archive_install":true,"missing_notice_rejection":true,"checksum_rejection":true,"system_install_guard":true,"delayed_service_health":true,"unhealthy_service_rejection":true}\n'
+printf '{"ok":true,"normal_install":true,"idempotent_reinstall":true,"default_pointer_install":true,"relocated_pointer_install":true,"missing_pointer_rejection":true,"local_archive_install":true,"missing_notice_rejection":true,"checksum_rejection":true,"system_install_guard":true,"delayed_service_health":true,"unhealthy_service_rejection":true}\n'

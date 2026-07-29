@@ -9,18 +9,28 @@ just = "1.57.0"
 "cargo:cargo-about" = { version = "0.9.1", features = "cli" }
 "cargo:cargo-llvm-cov" = "0.8.7"
 "cargo:cargo-machete" = "0.9.2"
+"cargo:cargo-mutants" = "27.1.0"
 "cargo:cargo-nextest" = "0.9.140"
+"aqua:zizmorcore/zizmor" = "1.28.0"
+"aqua:crate-ci/typos" = "1.48.0"
+# The aqua registry has no macOS-arm64 asset mapping for lychee, so this one
+# tool resolves through the GitHub release directly.
+"github:lycheeverse/lychee" = "lychee-v0.24.2"
 actionlint = "1.7.12"
 trivy = "0.72.0"
 
 [tasks.check]
 description = "Run repository quality gates"
-env = { CARGO_INCREMENTAL = "0" }
+env = { CARGO_INCREMENTAL = "0", RUSTDOCFLAGS = "-D warnings" }
 run = [
   "actionlint",
+  "zizmor --no-progress .github/workflows/",
+  "typos",
   "cargo fmt --all -- --check",
   "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+  "cargo doc --workspace --all-features --no-deps",
   "cargo nextest run --workspace",
+  "cargo check --manifest-path fuzz/Cargo.toml --all-targets",
   "scripts/test-two-daemon-pairing.sh",
   "packaging/linux/install.test.sh",
   "pnpm format:check",
@@ -69,6 +79,17 @@ run = "packaging/linux/install.test.sh"
 description = "Verify two-daemon pairing, live metrics, reuse rejection, and reconnect"
 run = "scripts/test-two-daemon-pairing.sh"
 
+[tasks."check:windows-cross"]
+description = "Cross-compile-check the Windows-only code paths on a non-Windows host"
+# Needs a mingw-w64 linker (`brew install mingw-w64`, `apt install mingw-w64`).
+# `rackio-desktop` is excluded: Tauri needs a Windows webview SDK that cannot be
+# cross-linked from Linux or macOS.
+run = [
+  "rustup target add x86_64-pc-windows-gnu",
+  "cargo check --target x86_64-pc-windows-gnu --all-features -p rackio-windows-ipc -p rackio-core -p rackio-protocol -p rackio-iroh -p rackio-agent",
+  "cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features -p rackio-windows-ipc -p rackio-core -p rackio-protocol -p rackio-iroh -p rackio-agent -- -D warnings",
+]
+
 [tasks."benchmark:agent"]
 description = "Enforce the release agent CPU and RSS budgets"
 run = [
@@ -84,6 +105,30 @@ run = [
   "node scripts/generate-javascript-licenses.mjs /tmp/rackio-THIRDPARTY-JAVASCRIPT.html",
   "cmp THIRDPARTY-JAVASCRIPT.html /tmp/rackio-THIRDPARTY-JAVASCRIPT.html",
 ]
+
+[tasks."mutants"]
+description = "Re-test every library crate against injected behaviour changes"
+env = { CARGO_INCREMENTAL = "0" }
+# Mirrors the scheduled deep-verification job. A surviving mutant is a test that
+# passes with the behaviour changed, which coverage percentage cannot reveal.
+run = "cargo mutants --package rackio-core --package rackio-protocol --package rackio-iroh --test-tool=nextest --timeout-multiplier 5 --output test-results/mutants"
+
+[tasks."fuzz"]
+description = "Fuzz every attacker-reachable decoder for a short local budget"
+# libFuzzer needs nightly instrumentation, so this is the only task that steps
+# outside the pinned stable toolchain. Install it with:
+#   rustup toolchain install nightly --profile minimal --component rust-src
+#   cargo +nightly install cargo-fuzz --version 0.13.2 --locked
+# Run a single target for longer with the underlying command, for example:
+#   cargo +nightly fuzz run pairing_bundle -- -max_total_time=900
+run = [
+  "cargo +nightly fuzz run pairing_bundle -- -max_total_time=60",
+  "cargo +nightly fuzz run metric_frame -- -max_total_time=60",
+]
+
+[tasks."links:check"]
+description = "Verify every documented link still resolves"
+run = 'lychee --no-progress --max-concurrency 4 --accept 200,204,206,429 "*.md" "docs/**/*.md" "packaging/**/*.md"'
 
 [tasks."secrets:history"]
 description = "Scan the complete Git history for committed secrets"

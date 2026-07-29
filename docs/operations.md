@@ -40,6 +40,7 @@ internet.
 | Situation | Path | What it requires |
 | --- | --- | --- |
 | Developer evaluation on any supported desktop | Run from the source checkout | `mise`, the host prerequisites in [`development.md`](development.md) and a local build |
+| Headless Linux evaluation now | Install a published pre-release from its GitHub Release | systemd, `x86_64` or `aarch64`, root or `sudo`, and acceptance that it is unsupported |
 | Headless Linux after a supported release exists | Download installer or use the documented HTTPS command | systemd, `x86_64` or `aarch64`, root or `sudo` |
 | A Linux host cannot reach a release server | Desktop **Pair machine → SSH** | Existing SSH key/agent access, verified host key, local archive plus checksum, and non-interactive root access |
 | macOS or Windows agent | Signed platform package | Not yet supported for public installation; see the release checklist |
@@ -83,6 +84,44 @@ The first remote metric normally appears within a few seconds for a reachable
 peer. `lan_direct`, `wan_direct` and `relayed` are connection-path results,
 not user-selected labels. A failed or expired import must remain an error; it
 must not create a healthy-looking machine entry.
+
+## Headless Linux evaluation pre-release
+
+An evaluation pre-release is a real, installable build of the headless Linux
+agent published as an immutable GitHub pre-release. It removes the need to build
+an archive yourself before using either the `curl`-based install or the
+desktop's SSH bootstrap. It is not a supported release: the signed macOS and
+Windows packages, reboot recovery, and the NAT matrix in
+[`release-checklist.md`](release-checklist.md) are still open. Do not run it on
+a machine whose monitoring you depend on.
+
+Download the installer and the archive from the release, inspect the installer,
+then install the exact version:
+
+```sh
+tag=v0.1.0-rc.1
+curl --proto '=https' --tlsv1.2 -O "https://github.com/genm/rackio/releases/download/$tag/install.sh"
+less install.sh
+sh install.sh --version "${tag#v}" \
+  --releases-url https://github.com/genm/rackio/releases/download
+```
+
+`--version` is mandatory here. A pre-release publishes no version pointer, so a
+plain `latest` install cannot select it and fails with that explanation instead
+of silently picking another build.
+
+Verify provenance independently before trusting the archive. The checksum
+detects transfer corruption and asset mismatch; the GitHub attestation is what
+ties the archive to the workflow and commit that produced it:
+
+```sh
+gh attestation verify rackio-v0.1.0-rc.1-x86_64-unknown-linux-gnu.tar.gz \
+  --repo genm/rackio
+```
+
+The desktop SSH bootstrap accepts the same downloaded `.tar.gz` and `.sha256`
+pair, which is the fastest way to install and pair a server that has no
+internet access.
 
 ## Headless Linux release installation
 
@@ -183,6 +222,36 @@ actual P2P path separately.
 | `auth_error` | The remote agent rejected this viewer | Confirm endpoint pairing and allowlist; do not retry with a reused bundle |
 | `incompatible` | Protocol major versions differ | Upgrade or roll back a machine to a compatible release |
 | `degraded` | A collector, storage, notification or local dependency failed | Read the displayed error and structured agent logs; values are not silently zeroed |
+
+### Configuring local health thresholds
+
+`warning` and `critical` are only reachable when an operator defines a
+threshold. Rackio ships none: it has no basis for deciding what CPU or disk
+level matters on a machine it knows nothing about. Add rules to the `alerts`
+array in the daemon's `config.json`:
+
+```json
+{
+  "alerts": [
+    {
+      "id": "disk-critical",
+      "metric": "disk_percent",
+      "comparison": "greater_than_or_equal",
+      "threshold": 90.0,
+      "consecutive_samples": 3,
+      "severity": "critical"
+    }
+  ]
+}
+```
+
+`metric` accepts `cpu_percent`, `memory_percent` and `disk_percent`
+(`disk_percent` uses the fullest mounted filesystem). `consecutive_samples`
+requires that many two-second samples in a row before the state changes, which
+suppresses flapping. A rule whose metric becomes unreadable clears rather than
+staying latched, and a degraded collector or storage subsystem still reports
+`degraded` in preference to a threshold state, because the underlying values
+are no longer trustworthy. Restart the daemon after editing the file.
 
 When storage is degraded, live sampling continues in memory but history may not
 persist. When a relay is unavailable, a direct peer may stay connected while a

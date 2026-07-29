@@ -134,23 +134,39 @@ export const notificationStateRegistry: Record<string, NotificationState> = {
   },
 };
 
+// The agent opens a five-minute pairing window, so fixtures are anchored to the
+// moment they are loaded rather than to a baked-in timestamp that would render
+// every "ready" fixture as already expired.
+const PAIRING_WINDOW_MS = 5 * 60 * 1_000;
+const pairingWindowOpenedAtMs = Date.now();
+
 export const pairingShareStateRegistry: Record<string, PairingShareState> = {
   idle: { state: "idle" },
   loading: { state: "loading" },
   ready: {
     state: "ready",
     bundle: "rackio-pair:test-bundle",
+    expiresAtMs: pairingWindowOpenedAtMs + PAIRING_WINDOW_MS,
     qrDataUrl:
       "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyOSAyOSIgc2hhcGUtcmVuZGVyaW5nPSJjcmlzcEVkZ2VzIj48cmVjdCB3aWR0aD0iMjkiIGhlaWdodD0iMjkiIGZpbGw9IiNmM2Y2ZjEiLz48ZyBmaWxsPSIjMGIwZjBkIj48cGF0aCBkPSJNMiAyaDd2N0gyek0yMCAyaDd2N2gtN3pNMiAyMGg3djdIMnoiLz48cGF0aCBmaWxsPSIjZjNmNmYxIiBkPSJNNCA0aDN2M0g0ek0yMiA0aDN2M2gtM3pNNCAyMmgzdjNINHoiLz48cGF0aCBkPSJNMTEgMmgydjJoLTJ6TTE1IDJoM3YyaC0zek0xMSA2aDR2MmgtNHpNMTcgNWgydjVoLTJ6TTEwIDEwaDN2M2gtM3pNMTQgOWgydjJoLTJ6TTE4IDExaDN2MmgtM3pNMjIgMTBoNXYyaC01ek0yIDExaDJ2NUgyek01IDExaDR2Mkg1ek01IDE1aDJ2M0g1ek05IDE0aDN2Mkg5ek0xMyAxM2gydjVoLTJ6TTE2IDE1aDR2MmgtNHpNMjEgMTRoMnY1aC0yek0yNCAxM2gzdjNoLTN6TTEwIDE5aDJ2NGgtMnpNMTMgMjBoNHYyaC00ek0xOCAxOGgydjNoLTJ6TTIyIDIwaDV2MmgtNXpNMTIgMjRoM3YzaC0zek0xNiAyM2gydjRoLTJ6TTE5IDIyaDN2M2gtM3pNMjMgMjRoNHYzaC00eiIvPjwvZz48L3N2Zz4=",
   },
   qrUnavailable: {
     state: "ready",
     bundle: "rackio-pair:test-bundle-too-large-for-qr",
+    expiresAtMs: pairingWindowOpenedAtMs + PAIRING_WINDOW_MS,
     qrError: "Pairing bundle is too large for a QR code.",
+  },
+  expired: {
+    state: "ready",
+    bundle: "rackio-pair:test-bundle",
+    expiresAtMs: pairingWindowOpenedAtMs - 1_000,
+    qrDataUrl:
+      "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyOSAyOSI+PC9zdmc+",
   },
   lanUnavailable: {
     state: "ready",
     bundle: "rackio-pair:test-bundle",
+    expiresAtMs: pairingWindowOpenedAtMs + PAIRING_WINDOW_MS,
     qrDataUrl:
       "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyOSAyOSIgc2hhcGUtcmVuZGVyaW5nPSJjcmlzcEVkZ2VzIj48cmVjdCB3aWR0aD0iMjkiIGhlaWdodD0iMjkiIGZpbGw9IiNmM2Y2ZjEiLz48ZyBmaWxsPSIjMGIwZjBkIj48cGF0aCBkPSJNMiAyaDd2N0gyek0yMCAyaDd2N2gtN3pNMiAyMGg3djdIMnoiLz48cGF0aCBmaWxsPSIjZjNmNmYxIiBkPSJNNCA0aDN2M0g0ek0yMiA0aDN2M2gtM3pNNCAyMmgzdjNINHoiLz48cGF0aCBkPSJNMTEgMmgydjJoLTJ6TTE1IDJoM3YyaC0zek0xMSA2aDR2MmgtNHpNMTcgNWgydjVoLTJ6TTEwIDEwaDN2M2gtM3pNMTQgOWgydjJoLTJ6TTE4IDExaDN2MmgtM3pNMjIgMTBoNXYyaC01ek0yIDExaDJ2NUgyek01IDExaDR2Mkg1ek01IDE1aDJ2M0g1ek05IDE0aDN2Mkg5ek0xMyAxM2gydjVoLTJ6TTE2IDE1aDR2MmgtNHpNMjEgMTRoMnY1aC0yek0yNCAxM2gzdjNoLTN6TTEwIDE5aDJ2NGgtMnpNMTMgMjBoNHYyaC00ek0xOCAxOGgydjNoLTJ6TTIyIDIwaDV2MmgtNXpNMTIgMjRoM3YzaC0zek0xNiAyM2gydjRoLTJ6TTE5IDIyaDN2M2gtM3pNMjMgMjRoNHYzaC00eiIvPjwvZz48L3N2Zz4=",
     lanWarning: "mDNS advertisement could not start: multicast is unavailable.",

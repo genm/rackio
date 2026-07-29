@@ -13,7 +13,6 @@ import {
   pairingShareStateRegistry,
   sshBootstrapStateRegistry,
   surfaceStateRegistry,
-  traySurfaceStateRegistry,
   worstState,
 } from "./state-registry";
 import type {
@@ -31,7 +30,6 @@ import type {
   SshHostIdentity,
   SshProgress,
   SshTarget,
-  TraySurfaceState,
 } from "./types";
 
 const NOTIFICATION_THRESHOLD_KEY = "rackio.notification-threshold";
@@ -59,9 +57,6 @@ export default function App() {
   );
   const [machineDetail, setMachineDetail] = useState<MachineDetailState>(
     machineDetailStateRegistry.closed,
-  );
-  const [traySurface, setTraySurface] = useState<TraySurfaceState>(
-    traySurfaceStateRegistry.available,
   );
   const [notificationState, setNotificationState] =
     useState<NotificationState>(initialNotificationState);
@@ -108,6 +103,7 @@ export default function App() {
         state: "ready",
         ...(await invoke<{
           bundle: string;
+          expiresAtMs: number;
           qrDataUrl?: string;
           qrError?: string;
           lanWarning?: string;
@@ -246,22 +242,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (snapshot.daemon !== "connected") return;
-    const state =
-      snapshot.nodes.length === 0
-        ? "healthy"
-        : worstState(snapshot.nodes.map((node) => node.state));
-    void invoke("set_tray_state", { state })
-      .then(() => setTraySurface(traySurfaceStateRegistry.available))
-      .catch((error: unknown) =>
-        setTraySurface({
-          state: "unavailable",
-          message: error instanceof Error ? error.message : String(error),
-        }),
-      );
-  }, [snapshot]);
-
-  useEffect(() => {
     if (snapshot.daemon !== "connected" || snapshot.nodes.length === 0) return;
     const state = worstState(snapshot.nodes.map((node) => node.state));
     const previous = previousFleetState.current;
@@ -295,7 +275,6 @@ export default function App() {
       pairingShare={pairingShare}
       sshBootstrap={sshBootstrap}
       machineDetail={machineDetail}
-      traySurface={traySurface}
       notificationState={notificationState}
       onPair={pairMachine}
       onCreatePairingShare={createPairingShare}

@@ -27,9 +27,15 @@ tauri-plugin-dialog.workspace = true
 tauri-plugin-notification.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# `test-util` gives the IPC timeout test a paused clock, so a wedged daemon is
+# proven to fail closed without the test actually waiting out the timeout.
+tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(windows)'.dependencies]
-rackio-windows-ipc = { version = "0.1.0", path = "../../../crates/rackio-windows-ipc" }
+rackio-windows-ipc = { version = "0.1.0-rc.1", path = "../../../crates/rackio-windows-ipc" }
 
 [lints]
 workspace = true

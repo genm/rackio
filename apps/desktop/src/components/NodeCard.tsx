@@ -30,7 +30,7 @@ export function NodeCard({
       <dl className="metrics">
         <div>
           <dt>CPU</dt>
-          <dd>{node.cpuPercent === undefined ? "—" : `${Math.round(node.cpuPercent)}%`}</dd>
+          <dd>{node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`}</dd>
         </div>
         <div>
           <dt>Memory</dt>
@@ -42,14 +42,22 @@ export function NodeCard({
         </div>
         <div>
           <dt>RTT</dt>
-          <dd>{node.rttMs === undefined ? "—" : `${node.rttMs} ms`}</dd>
+          <dd>{node.rttMs == null ? "—" : `${node.rttMs} ms`}</dd>
         </div>
       </dl>
       <footer>
         <span>
           Memory {bytes(node.memoryUsedBytes)} / {bytes(node.memoryTotalBytes)}
         </span>
-        <span>{node.detail ?? "Collectors operational"}</span>
+        {/* The daemon derives stale/offline from age without attaching a
+            detail string, so an unconditional "operational" fallback would
+            claim a healthy collector for an unreachable machine. */}
+        <span>
+          {node.detail ??
+            (node.state === "healthy"
+              ? "Collectors operational"
+              : `No detail reported · ${state.label}`)}
+        </span>
       </footer>
       <button
         type="button"

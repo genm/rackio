@@ -59,6 +59,14 @@ test("Rust updates select the cross-platform and security gates", () => {
   assert.equal(plan.security_source, true);
 });
 
+test("Windows-only IPC crate changes select the Windows cross-compile check", () => {
+  const plan = classifyChangedFiles(["crates/rackio-windows-ipc/src/lib.rs"]);
+  assert.equal(plan.rust, true);
+  assert.equal(plan.rust_windows, true);
+  assert.equal(plan.rust_linux, true);
+  assert.equal(plan.rust_macos, true);
+});
+
 test("platform packaging selects only its owning Rust runner", () => {
   for (const [file, selected] of [
     ["install.sh", "rust_linux"],
@@ -72,6 +80,23 @@ test("platform packaging selects only its owning Rust runner", () => {
     assert.equal(plan.rust_macos, selected === "rust_macos", file);
     assert.equal(plan.rust_windows, selected === "rust_windows", file);
   }
+});
+
+test("fuzz target changes select only the Linux Rust runner", () => {
+  const plan = classifyChangedFiles(["fuzz/fuzz_targets/pairing_bundle.rs"]);
+  assert.equal(plan.rust, true);
+  assert.equal(plan.rust_linux, true);
+  assert.equal(plan.rust_macos, false);
+  assert.equal(plan.rust_windows, false);
+});
+
+test("fuzz corpus additions select no build gate", () => {
+  // A corpus file is fuzzer input, never compiled, so a new reproducer must not
+  // charge a full Rust matrix to the pull request that records it.
+  const plan = classifyChangedFiles(["fuzz/corpus/pairing_bundle/crash-0000"]);
+  assert.equal(plan.rust, false);
+  assert.equal(plan.frontend, false);
+  assert.equal(plan.security_policy, false);
 });
 
 test("relay packaging selects only dependency policy", () => {

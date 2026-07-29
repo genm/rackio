@@ -15,6 +15,31 @@ test("renders the same ready state for QR and file transfer", async ({ mount }) 
   await component.screenshot({ path: "../../output/playwright/pairing-share.png" });
 });
 
+test("counts the pairing window down instead of only promising five minutes", async ({ mount }) => {
+  const component = await mount(
+    <PairingShare status={pairingShareStateRegistry.ready} onCreate={async () => undefined} />,
+  );
+  await expect(component.getByText(/Expires in \d:\d\d/)).toBeVisible();
+});
+
+test("replaces an expired pairing window instead of offering a dead bundle", async ({ mount }) => {
+  let created = 0;
+  const component = await mount(
+    <PairingShare
+      status={pairingShareStateRegistry.expired}
+      onCreate={async () => {
+        created += 1;
+      }}
+    />,
+  );
+  await expect(component.getByRole("alert")).toContainText("expired");
+  await expect(component.getByAltText("One-time Rackio pairing QR code")).toHaveCount(0);
+  await expect(component.getByText("rackio-pair:test-bundle")).toHaveCount(0);
+  await expect(component.getByRole("button", { name: "Copy bundle" })).toHaveCount(0);
+  await component.getByRole("button", { name: "Create a new pairing window" }).click();
+  await expect.poll(() => created).toBe(1);
+});
+
 test("keeps pairing-window creation failure visible and retryable", async ({ mount }) => {
   const component = await mount(
     <PairingShare status={pairingShareStateRegistry.error} onCreate={async () => undefined} />,
