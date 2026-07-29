@@ -4,6 +4,11 @@ Rackio is preparing for its first public release. Contributions are welcome,
 but an implementation is not release-ready until the required cross-platform,
 network, security, and operational evidence has been reviewed.
 
+Review here is strict about evidence and never about the contributor. That
+expectation runs both ways and is written down in
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), which applies to every issue, pull
+request and review in this repository.
+
 ## Before opening an issue
 
 Do not disclose vulnerabilities, endpoint private keys, pairing bundles, live
