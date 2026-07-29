@@ -69,18 +69,78 @@ where
 
 #[cfg(test)]
 mod tests {
-    use tokio::io::{AsyncWriteExt, duplex};
+    use std::{
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    use prost::Message as _;
+    use tokio::io::{AsyncWriteExt, ReadBuf};
 
     use crate::{
         MAX_FRAME_BYTES,
         v1::{DiskMetric, MetricSample},
     };
 
-    use super::{FrameError, read_frame, write_frame};
+    use super::{AsyncRead, FrameError, read_frame, write_frame};
+
+    /// Build a sample whose protobuf encoding is exactly `target` bytes, by
+    /// padding a mount path. A large step can widen the two nested length
+    /// prefixes and add more than the characters written, so the loop leaves a
+    /// margin and closes the last few bytes one character at a time, where the
+    /// prefix widths can no longer change.
+    fn sample_encoding_to(target: usize) -> MetricSample {
+        const PREFIX_MARGIN: usize = 16;
+
+        let mut sample = MetricSample {
+            timestamp_ms: 1,
+            sequence: 2,
+            disks: vec![DiskMetric {
+                mount: String::new(),
+                total_bytes: 100,
+                used_bytes: 50,
+            }],
+            ..Default::default()
+        };
+        loop {
+            let encoded_len = sample.encoded_len();
+            assert!(
+                encoded_len <= target,
+                "padding overshot the target: {encoded_len} > {target}"
+            );
+            if encoded_len == target {
+                return sample;
+            }
+            let deficit = target - encoded_len;
+            let step = deficit.saturating_sub(PREFIX_MARGIN).max(1);
+            match sample.disks.first_mut() {
+                Some(disk) => disk.mount.push_str(&"x".repeat(step)),
+                None => panic!("the sample always carries one disk"),
+            }
+        }
+    }
+
+    /// A reader whose failure is not an end of stream. `read_frame` must
+    /// distinguish the two: a closed connection is a normal end, whereas a
+    /// reset one is an I/O error the caller has to see.
+    struct FailingReader(io::ErrorKind);
+
+    impl AsyncRead for FailingReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::new(self.0, "synthetic transport failure")))
+        }
+    }
 
     #[tokio::test]
     async fn round_trips_a_large_but_valid_sample() {
-        let (mut client, mut server) = duplex(MAX_FRAME_BYTES * 2);
+        // Written into a buffer rather than a live duplex so that a write which
+        // silently does nothing fails this test instead of hanging the reader.
+        let mut wire = Vec::new();
         let sample = MetricSample {
             timestamp_ms: 1,
             sequence: 2,
@@ -94,26 +154,96 @@ mod tests {
             ..Default::default()
         };
 
-        write_frame(&mut client, &sample)
+        write_frame(&mut wire, &sample)
             .await
             .unwrap_or_else(|error| panic!("{error}"));
-        let decoded: MetricSample = read_frame(&mut server)
+        assert!(!wire.is_empty(), "write_frame produced no bytes");
+
+        let decoded: MetricSample = read_frame(&mut wire.as_slice())
             .await
             .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(decoded.disks.len(), 5_000);
     }
 
     #[tokio::test]
-    async fn rejects_an_allocation_beyond_the_frame_boundary() {
-        let (mut client, mut server) = duplex(16);
-        client
-            .write_u32(u32::try_from(MAX_FRAME_BYTES + 1).unwrap_or_else(|error| panic!("{error}")))
+    async fn round_trips_a_frame_of_exactly_the_boundary_size() {
+        // The boundary itself is valid on both sides. Without this, a check
+        // widened from `>` to `>=` would reject a legitimate maximum frame and
+        // no test would notice.
+        let sample = sample_encoding_to(MAX_FRAME_BYTES);
+        assert_eq!(sample.encoded_len(), MAX_FRAME_BYTES);
+
+        let mut wire = Vec::new();
+        write_frame(&mut wire, &sample)
             .await
             .unwrap_or_else(|error| panic!("{error}"));
 
+        let decoded: MetricSample = read_frame(&mut wire.as_slice())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(decoded.encoded_len(), MAX_FRAME_BYTES);
+    }
+
+    #[tokio::test]
+    async fn refuses_to_write_one_byte_past_the_boundary() {
+        let sample = sample_encoding_to(MAX_FRAME_BYTES + 1);
+        let mut wire = Vec::new();
+
+        match write_frame(&mut wire, &sample).await {
+            Err(FrameError::TooLarge { actual, maximum }) => {
+                assert_eq!(actual, MAX_FRAME_BYTES + 1);
+                assert_eq!(maximum, MAX_FRAME_BYTES);
+            }
+            other => panic!("expected a TooLarge rejection, got {other:?}"),
+        }
+        assert!(
+            wire.is_empty(),
+            "an over-sized frame must not reach the transport at all"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_an_allocation_beyond_the_frame_boundary() {
+        let mut wire = Vec::new();
+        wire.write_u32(
+            u32::try_from(MAX_FRAME_BYTES + 1).unwrap_or_else(|error| panic!("{error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+
         assert!(matches!(
-            read_frame::<_, MetricSample>(&mut server).await,
+            read_frame::<_, MetricSample>(&mut wire.as_slice()).await,
             Err(FrameError::TooLarge { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn reports_a_closed_stream_as_an_end_of_stream() {
+        let empty: &[u8] = &[];
+        assert!(matches!(
+            read_frame::<_, MetricSample>(&mut { empty }).await,
+            Err(FrameError::EndOfStream)
+        ));
+    }
+
+    #[tokio::test]
+    async fn reports_a_truncated_length_prefix_as_an_end_of_stream() {
+        // Fewer bytes than the four-byte prefix needs, then a close.
+        let truncated: &[u8] = &[0x00, 0x00];
+        assert!(matches!(
+            read_frame::<_, MetricSample>(&mut { truncated }).await,
+            Err(FrameError::EndOfStream)
+        ));
+    }
+
+    #[tokio::test]
+    async fn reports_a_transport_failure_as_an_i_o_error() {
+        // A reset connection must not be reported as an orderly end of stream:
+        // the caller reconnects on one and stops on the other.
+        let mut reader = FailingReader(io::ErrorKind::ConnectionReset);
+        assert!(matches!(
+            read_frame::<_, MetricSample>(&mut reader).await,
+            Err(FrameError::Io(error)) if error.kind() == io::ErrorKind::ConnectionReset
         ));
     }
 }

@@ -53,6 +53,42 @@ impl ProtocolVersion {
     }
 }
 
+#[cfg(test)]
+mod protocol_version_tests {
+    use super::ProtocolVersion;
+
+    #[test]
+    fn accepts_an_equal_major() {
+        assert!(ProtocolVersion::V1.is_compatible_with(&ProtocolVersion::V1));
+    }
+
+    #[test]
+    fn rejects_a_differing_major_in_both_directions() {
+        // Fail closed: an unknown major is refused whether the peer is ahead or
+        // behind, so an incompatible node reaches `NodeState::Incompatible`
+        // instead of being admitted and misreporting metrics.
+        let ahead = ProtocolVersion { major: 2, minor: 0 };
+        let behind = ProtocolVersion { major: 0, minor: 9 };
+
+        assert!(!ProtocolVersion::V1.is_compatible_with(&ahead));
+        assert!(!ahead.is_compatible_with(&ProtocolVersion::V1));
+        assert!(!ProtocolVersion::V1.is_compatible_with(&behind));
+        assert!(!behind.is_compatible_with(&ProtocolVersion::V1));
+    }
+
+    #[test]
+    fn ignores_a_differing_minor() {
+        // Minor is additive, so a rolling upgrade must not partition the fleet.
+        let newer_minor = ProtocolVersion {
+            major: ProtocolVersion::V1.major,
+            minor: ProtocolVersion::V1.minor + 7,
+        };
+
+        assert!(ProtocolVersion::V1.is_compatible_with(&newer_minor));
+        assert!(newer_minor.is_compatible_with(&ProtocolVersion::V1));
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub node_id: Uuid,

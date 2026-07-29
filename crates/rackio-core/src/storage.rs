@@ -368,6 +368,26 @@ mod tests {
         NetworkMetric,
     };
 
+    use super::{
+        MAX_QUERY_ROWS, MINUTE_MS, MINUTE_RETENTION_MS, RAW_RETENTION_MS, SAMPLE_INTERVAL_MS,
+        SIZE_CAP_BYTES,
+    };
+
+    #[test]
+    fn retention_constants_match_the_published_contract() {
+        // README and docs promise 24-hour raw history, 7-day minute history and
+        // a 64 MiB cap. These are the only place those numbers are expressed as
+        // code, so a mistyped factor would silently change a user-facing
+        // guarantee that nothing else checks.
+        assert_eq!(RAW_RETENTION_MS, 86_400_000, "24 hours in milliseconds");
+        assert_eq!(MINUTE_RETENTION_MS, 604_800_000, "7 days in milliseconds");
+        assert_eq!(MINUTE_MS, 60_000, "one minute in milliseconds");
+        assert_eq!(SIZE_CAP_BYTES, 67_108_864, "64 MiB in bytes");
+        assert_eq!(SAMPLE_INTERVAL_MS, 2_000, "two-second live sampling");
+        assert_eq!(MAX_QUERY_ROWS, 43_200, "24 hours of two-second samples");
+        assert_eq!(MINUTE_RETENTION_MS, RAW_RETENTION_MS * 7);
+    }
+
     fn sample(timestamp_ms: i64, cpu: f32) -> MetricSample {
         MetricSample {
             timestamp_ms,
