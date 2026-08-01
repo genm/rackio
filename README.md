@@ -32,7 +32,8 @@ has the required evidence. Remaining work is organized into issue-sized,
 dependency-ordered items in [`docs/backlog.md`](docs/backlog.md).
 Contribution workflow, issue ownership, and release evidence conventions are in
 [`CONTRIBUTING.md`](CONTRIBUTING.md). Participation is governed by the
-[code of conduct](CODE_OF_CONDUCT.md).
+[code of conduct](CODE_OF_CONDUCT.md). Support channels and project authority
+are defined in [`SUPPORT.md`](SUPPORT.md) and [`GOVERNANCE.md`](GOVERNANCE.md).
 
 ## What works
 
