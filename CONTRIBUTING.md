@@ -29,6 +29,8 @@ Each kind of state has one owner:
 | First-release gate status | [`docs/release-checklist.md`](docs/release-checklist.md) |
 | Release work scope and required evidence | [`docs/backlog.md`](docs/backlog.md) |
 | Release approval, authority, and artifact locations | [`docs/release-governance.md`](docs/release-governance.md) |
+| Project decisions, maintainers, and succession | [`GOVERNANCE.md`](GOVERNANCE.md) |
+| Bug, question, feature, and security routing | [`SUPPORT.md`](SUPPORT.md) |
 | Priorities and current workflow state | GitHub Project |
 | Time-bounded release target | GitHub Milestone |
 | Label names and meanings | [`.github/labels.json`](.github/labels.json) |
@@ -53,6 +55,22 @@ set of task checkboxes.
 Use `status:blocked` only when the issue names the missing authority, hardware,
 upstream change, or dependency. Use `status:needs-evidence` when implementation
 exists but the release evidence is incomplete.
+
+## Contribution terms and provenance
+
+Unless a file states otherwise, contributions are accepted under Rackio's
+outbound `MIT OR Apache-2.0` license. By submitting a contribution, you represent
+that you have the right to provide it on those terms. Identify copied, adapted,
+generated, or third-party material and preserve its provenance and required
+notices; do not submit employer, client, or other confidential material.
+
+AI-assisted contributions are allowed, but the human contributor remains
+responsible for every submitted line and for the same authorship, licensing,
+security, and test representations as any other contribution. Disclose material
+AI assistance in the pull request, review the output for copied or
+license-incompatible material, and never provide repository secrets or private
+security reports to an unapproved tool. Unreviewed bulk-generated changes are
+not accepted.
 
 ## Development
 
@@ -82,6 +100,11 @@ in [`docs/development.md`](docs/development.md).
 - Include screenshots for visible desktop changes.
 - Update owning documentation when a contract, command, or runbook changes.
 - Use English Conventional Commit messages without generated-by trailers.
+
+Repository decision and escalation authority is defined in
+[`GOVERNANCE.md`](GOVERNANCE.md). Current support capacity and reporting routes
+are defined in [`SUPPORT.md`](SUPPORT.md); neither an accepted contribution nor
+an evaluation pre-release creates a support commitment.
 
 The default branch accepts changes only after required CI, Security and CodeQL
 checks pass. A green local run is useful evidence but does not replace platform
