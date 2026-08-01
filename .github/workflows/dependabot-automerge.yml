@@ -1,0 +1,56 @@
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+  security-events: read
+
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dependabot:
+    name: Evaluate Dependabot auto-merge policy
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.repository == 'genm/rackio' &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out trusted policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/dependabot-automerge-policy.mjs
+          sparse-checkout-cone-mode: false
+      - name: Fetch verified Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          alert-lookup: true
+          github-token: ${{ github.token }}
+      - name: Evaluate bounded update policy
+        id: policy
+        env:
+          DEPENDABOT_UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          DEPENDABOT_ALERT_STATE: ${{ steps.metadata.outputs.alert-state }}
+          DEPENDABOT_MAINTAINER_CHANGES: ${{ steps.metadata.outputs.maintainer-changes }}
+        run: node scripts/dependabot-automerge-policy.mjs
+      - name: Enable native auto-merge
+        if: steps.policy.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        # Native auto-merge still waits for strict branch protection, every
+        # required check, and unresolved conversations. This job cannot merge
+        # an out-of-date or failing pull request by itself.
+        run: gh pr merge --auto --merge "$PR_URL"

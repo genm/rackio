@@ -11,7 +11,7 @@
     "lint": "oxlint apps/desktop/src apps/desktop/playwright/index.ts apps/desktop/vite.config.ts apps/desktop/playwright-ct.config.ts commitlint.config.mjs scripts/*.mjs",
     "licenses:javascript": "node scripts/generate-javascript-licenses.mjs",
     "test:env": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/environment-doctor.junit.xml scripts/environment-doctor.test.mjs",
-    "test:ci-plan": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/ci-plan.junit.xml scripts/ci-plan.test.mjs && node --test --test-reporter=junit --test-reporter-destination=test-results/reject-matches.junit.xml scripts/reject-matches.test.mjs",
+    "test:ci-plan": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/ci-plan.junit.xml scripts/ci-plan.test.mjs && node --test --test-reporter=junit --test-reporter-destination=test-results/reject-matches.junit.xml scripts/reject-matches.test.mjs && node --test --test-reporter=junit --test-reporter-destination=test-results/dependabot-automerge-policy.junit.xml scripts/dependabot-automerge-policy.test.mjs",
     "test:governance": "pnpm check:governance && node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/governance.junit.xml scripts/governance-check.test.mjs",
     "test": "pnpm --filter @rackio/desktop test",
     "test:ct": "pnpm --filter @rackio/desktop test:ct"
