@@ -1,4 +1,7 @@
-enableGlobalVirtualStore: true
+# pnpm's global virtual store cannot currently resolve the jest-dom -> Vitest
+# peer from its hashed links layout. Keep the content-addressed store shared,
+# but use a project-local virtual store so local tests and hooks match CI.
+enableGlobalVirtualStore: false
 
 packages:
   - apps/desktop
