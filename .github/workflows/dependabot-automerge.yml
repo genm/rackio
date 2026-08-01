@@ -4,10 +4,7 @@ on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
 
-permissions:
-  contents: write
-  pull-requests: write
-  security-events: read
+permissions: {}
 
 concurrency:
   group: dependabot-automerge-${{ github.event.pull_request.number }}
@@ -24,6 +21,10 @@ jobs:
       github.event.pull_request.draft == false
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: write # Create GitHub's native merge commit after protection passes.
+      pull-requests: write # Enable native auto-merge on the verified Dependabot PR.
+      security-events: read # Verify security alerts through fetch-metadata.
     steps:
       - name: Check out trusted policy
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -44,6 +45,8 @@ jobs:
           DEPENDABOT_UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
           DEPENDABOT_ALERT_STATE: ${{ steps.metadata.outputs.alert-state }}
           DEPENDABOT_MAINTAINER_CHANGES: ${{ steps.metadata.outputs.maintainer-changes }}
+          DEPENDABOT_PACKAGE_ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+          DEPENDABOT_DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
         run: node scripts/dependabot-automerge-policy.mjs
       - name: Enable native auto-merge
         if: steps.policy.outputs.eligible == 'true'

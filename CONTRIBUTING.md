@@ -110,13 +110,17 @@ The default branch accepts changes only after required CI, Security and CodeQL
 checks pass. A green local run is useful evidence but does not replace platform
 or network checks that require another environment.
 
-Dependabot security patch/minor updates and routine patch updates may enable
-GitHub's native auto-merge after their metadata and unmodified bot ownership are
-verified. Auto-merge does not bypass the protected branch: the branch must be
-current, every required check must pass, and review conversations must be
-resolved. Major updates, routine minor updates, maintainer-modified branches,
-and unrecognized metadata remain open for manual review. The executable policy
-is [`scripts/dependabot-automerge-policy.mjs`](scripts/dependabot-automerge-policy.mjs).
+The monitored manifests, version-update schedules and pull-request grouping are
+owned by [`.github/dependabot.yml`](.github/dependabot.yml). Eligible Cargo and
+npm security patch/minor updates and routine patch updates may enable GitHub's
+native auto-merge after their metadata and unmodified bot ownership are
+verified. GitHub Actions, Docker, and dependencies that own Rackio's P2P,
+identity, desktop shell or Windows authorization boundaries always stay open
+for manual review. Auto-merge does not bypass the protected branch: the branch
+must be current, every required check must pass, and review conversations must
+be resolved. Major updates, routine minor updates, maintainer-modified branches,
+and unrecognized metadata also remain manual. The executable policy is
+[`scripts/dependabot-automerge-policy.mjs`](scripts/dependabot-automerge-policy.mjs).
 
 Mutation testing, fuzzing and link checking run on a schedule instead, in the
 `Deep verification` workflow. They do not gate a merge, but a failure there is a
