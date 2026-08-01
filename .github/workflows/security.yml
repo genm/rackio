@@ -135,6 +135,9 @@ jobs:
       - name: Install dependencies
         if: env.RUN_SECURITY_POLICY == 'true'
         run: pnpm install --frozen-lockfile
+      - name: Validate Dependabot configuration
+        if: env.RUN_SECURITY_POLICY == 'true'
+        run: pnpm test:dependabot-config
       - name: Verify bundled JavaScript license notices
         if: env.RUN_SECURITY_POLICY == 'true'
         run: |

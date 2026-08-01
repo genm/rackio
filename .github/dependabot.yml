@@ -4,31 +4,101 @@ updates:
     directory: /
     schedule:
       interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+      semver-minor-days: 7
+      semver-major-days: 14
+    labels:
+      - dependencies
+      - rust
+    commit-message:
+      prefix: chore
+      include: scope
     groups:
       cargo-patches:
         patterns:
           - "*"
         update-types:
           - patch
+
+  # cargo-fuzz is deliberately detached from the root Cargo workspace and has
+  # its own lockfile, so it needs an independent update entry.
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 3
+    cooldown:
+      default-days: 3
+      semver-minor-days: 7
+      semver-major-days: 14
+    labels:
+      - dependencies
+      - rust
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      cargo-fuzz-patches:
+        patterns:
+          - "*"
+        update-types:
+          - patch
+
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+      day: wednesday
+      time: "09:00"
+      timezone: Asia/Tokyo
     open-pull-requests-limit: 5
+    # Cooldown applies only to routine version updates. Dependabot security
+    # updates remain event-driven and are not delayed by this schedule.
+    cooldown:
+      default-days: 3
+      semver-minor-days: 7
+      semver-major-days: 14
+    labels:
+      - dependencies
+      - javascript
+    commit-message:
+      prefix: chore
+      include: scope
     groups:
-      npm-development:
-        dependency-type: development
+      npm-patches:
         patterns:
           - "*"
-        # Keep breaking toolchain upgrades isolated so one failure has one owner.
+        # Keep minor and major upgrades isolated so one failure has one owner.
         update-types:
           - patch
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+      day: thursday
+      time: "09:00"
+      timezone: Asia/Tokyo
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 3
+      semver-minor-days: 7
+      semver-major-days: 14
+    labels:
+      - dependencies
+      - github_actions
+      - area:ci
+    commit-message:
+      prefix: chore
+      include: scope
     groups:
       github-actions:
         patterns:
@@ -37,3 +107,24 @@ updates:
         update-types:
           - minor
           - patch
+
+  # The relay package pins both image tags and digests. Keep these updates
+  # visible, but the auto-merge policy requires manual review for Docker.
+  - package-ecosystem: docker
+    directory: /relay-package
+    schedule:
+      interval: weekly
+      day: friday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 2
+    cooldown:
+      default-days: 3
+      semver-minor-days: 7
+      semver-major-days: 14
+    labels:
+      - dependencies
+      - area:packaging
+    commit-message:
+      prefix: chore
+      include: scope
