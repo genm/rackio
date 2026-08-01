@@ -8,7 +8,10 @@ viewer_pid=""
 server_pid=""
 
 cleanup() {
-  status=$?
+  status="${1:-$?}"
+  # A signal trap followed by EXIT must not run cleanup twice or turn an
+  # interrupted integration test into a synthetic success.
+  trap - EXIT HUP INT TERM
   if [[ -n "$viewer_pid" ]]; then
     kill "$viewer_pid" 2>/dev/null || true
     wait "$viewer_pid" 2>/dev/null || true
@@ -22,10 +25,16 @@ cleanup() {
     mkdir -p "$evidence"
     cp "$integration_root"/*.log "$evidence/" 2>/dev/null || true
   fi
-  rm -rf "$integration_root"
+  if ! rm -rf "$integration_root"; then
+    echo "failed to remove two-daemon integration root: $integration_root" >&2
+    status=1
+  fi
   exit "$status"
 }
-trap cleanup EXIT HUP INT TERM
+trap 'cleanup $?' EXIT
+trap 'cleanup 129' HUP
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
 
 command -v jq >/dev/null 2>&1 || {
   echo "two-daemon pairing test requires jq" >&2
@@ -71,12 +80,26 @@ server() {
 }
 
 start_viewer() {
-  viewer daemon >>"$integration_root/viewer.log" 2>&1 &
+  # Launch env directly so $! owns the daemon process rather than a background
+  # shell-function subshell that can exit before its child closes the socket.
+  env \
+    RACKIO_CONFIG_DIR="$integration_root/viewer/config" \
+    RACKIO_DATA_DIR="$integration_root/viewer/data" \
+    RACKIO_STATE_DIR="$integration_root/viewer/state" \
+    RACKIO_LOG_DIR="$integration_root/viewer/log" \
+    RACKIO_SOCKET="$viewer_socket" \
+    "$binary" daemon >>"$integration_root/viewer.log" 2>&1 &
   viewer_pid=$!
 }
 
 start_server() {
-  server daemon >>"$integration_root/server.log" 2>&1 &
+  env \
+    RACKIO_CONFIG_DIR="$integration_root/server/config" \
+    RACKIO_DATA_DIR="$integration_root/server/data" \
+    RACKIO_STATE_DIR="$integration_root/server/state" \
+    RACKIO_LOG_DIR="$integration_root/server/log" \
+    RACKIO_SOCKET="$server_socket" \
+    "$binary" daemon >>"$integration_root/server.log" 2>&1 &
   server_pid=$!
 }
 
