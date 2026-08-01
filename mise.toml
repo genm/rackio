@@ -39,6 +39,7 @@ run = [
   "pnpm lint",
   "pnpm test:env",
   "pnpm test:ci-plan",
+  "pnpm test:governance",
   "pnpm test",
   "pnpm test:ct",
   "pnpm build",
