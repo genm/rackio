@@ -15,14 +15,6 @@ concurrency:
   # would leave that commit without completed gate evidence.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  # enableGlobalVirtualStore (pnpm-workspace.yaml) speeds up local multi-worktree
-  # installs, but its symlinked node_modules/.pnpm layout breaks scripts that read
-  # package.json directly from the classic physical store path (e.g. the license
-  # generator) and pnpm's own recreate-on-config-change behavior between steps.
-  # Runners are ephemeral, so the shared store has no benefit here anyway.
-  PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE: "false"
-
 jobs:
   plan:
     name: Plan affected checks
