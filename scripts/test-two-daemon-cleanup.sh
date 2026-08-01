@@ -22,6 +22,11 @@ trap 'cleanup 129' HUP
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
+# The timeout below owns daemon readiness, not compilation latency. Build before
+# starting the child so a cold worktree cannot consume the entire readiness
+# window while the integration script is still compiling rackio-agent.
+cargo build --manifest-path "$repo_root/Cargo.toml" -p rackio-agent >/dev/null
+
 TMPDIR="$test_root" "$repo_root/scripts/test-two-daemon-pairing.sh" \
   >"$test_root/stdout.log" 2>"$test_root/stderr.log" &
 test_pid=$!
