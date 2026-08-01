@@ -142,6 +142,8 @@ jobs:
           else
             pnpm commitlint --from "$BEFORE_SHA" --to "$HEAD_SHA" --verbose
           fi
+      - name: Validate contributor governance metadata
+        run: pnpm test:governance
 
   rust:
     name: Rust (${{ matrix.os }})
