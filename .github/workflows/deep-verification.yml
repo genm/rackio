@@ -44,7 +44,7 @@ jobs:
       - name: Select pinned Rust toolchain
         run: rustup show
       - name: Install mutation and test tools
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        uses: taiki-e/install-action@cb33e69fad06166ca28a42b2575e4dadabf62ee8 # v2.85.8
         with:
           tool: cargo-mutants@27.1.0,cargo-nextest@0.9.140
           fallback: none
