@@ -116,7 +116,11 @@ fn set_owner_only_dir(path: &Path) -> Result<(), io::Error> {
 mod tests {
     use std::fs;
 
-    use super::{IdentityError, load_or_create_secret_key};
+    // Every test that inspects a specific failure needs Unix mode bits or
+    // symlinks to provoke it, so the error type is only named there.
+    #[cfg(unix)]
+    use super::IdentityError;
+    use super::load_or_create_secret_key;
 
     #[test]
     fn persists_the_same_identity() {
