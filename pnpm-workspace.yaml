@@ -18,6 +18,20 @@ minimumReleaseAgeExclude:
   - "playwright@1.62.0"
   - "postcss@8.5.23"
   - "yargs@18.1.0"
+# Transitive advisories that their direct parents have not released a fix for.
+# Each entry is the patched range from the advisory itself, so removing the
+# parent's stale pin is enough to drop the override.
+overrides:
+  # GHSA-7p8r-x3mc-p8w7: host confusion via a backslash authority introducer,
+  # reached through @commitlint/config-validator > ajv.
+  fast-uri@>=3.0.0 <3.1.5: "^3.1.5"
+  # GHSA-2v37-7h3g-55p8: custom generators loop indefinitely on size zero,
+  # reached through vite > postcss.
+  nanoid@<3.3.17: "^3.3.18"
+  # GHSA-5p4m-2wfm-xmqj: quadratic CPU consumption resolving !!omap. The direct
+  # devDependency is pinned to the patched release; this covers the copy
+  # cosmiconfig resolves for @commitlint/load.
+  js-yaml@>=4.0.0 <4.3.1: "4.3.1"
 allowBuilds:
   "@tauri-apps/cli": true
   esbuild: true
