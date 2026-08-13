@@ -20,8 +20,8 @@
   "devDependencies": {
     "@commitlint/cli": "21.2.1",
     "@commitlint/config-conventional": "21.2.0",
-    "js-yaml": "4.3.1",
-    "oxfmt": "0.61.0",
+    "js-yaml": "5.2.3",
+    "oxfmt": "0.62.0",
     "oxlint": "1.77.0"
   },
   "packageManager": "pnpm@11.17.0"
