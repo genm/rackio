@@ -39,6 +39,10 @@ pub enum StoreError {
 
 pub struct MetricStore {
     connection: Connection,
+    /// The physical bound [`MetricStore::prune`] enforces. Production always
+    /// uses [`SIZE_CAP_BYTES`]; only tests lower it, because building a store
+    /// past the shipped 64 MiB cap costs far more than the behaviour it proves.
+    size_cap_bytes: i64,
 }
 
 impl MetricStore {
@@ -75,7 +79,16 @@ impl MetricStore {
             );
             ",
         )?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            size_cap_bytes: SIZE_CAP_BYTES,
+        })
+    }
+
+    #[cfg(test)]
+    fn with_size_cap_bytes(mut self, size_cap_bytes: i64) -> Self {
+        self.size_cap_bytes = size_cap_bytes;
+        self
     }
 
     pub fn insert_batch(&mut self, samples: &[MetricSample]) -> Result<(), StoreError> {
@@ -264,17 +277,18 @@ impl MetricStore {
             [now_ms - MINUTE_RETENTION_MS],
         )?;
         transaction.commit()?;
-        self.enforce_size_cap()
-    }
-
-    fn enforce_size_cap(&mut self) -> Result<(), StoreError> {
-        self.enforce_size_cap_bytes(SIZE_CAP_BYTES)
+        self.enforce_size_cap_bytes(self.size_cap_bytes)
     }
 
     fn enforce_size_cap_bytes(&mut self, size_cap_bytes: i64) -> Result<(), StoreError> {
         let mut deleted_any = false;
         while self.database_live_size_bytes()? > size_cap_bytes {
-            let deleted = self.connection.execute(
+            // Raw history is the denser resolution, so it is reclaimed first
+            // and the longer-lived minute history only once raw rows run out.
+            // Termination depends on this batch making progress: a round that
+            // deletes nothing from either table cannot delete anything on the
+            // next one either, so it must stop rather than spin.
+            let mut deleted = self.connection.execute(
                 "
                 DELETE FROM metric_samples WHERE timestamp_ms IN (
                     SELECT timestamp_ms FROM metric_samples ORDER BY timestamp_ms LIMIT 1000
@@ -283,7 +297,7 @@ impl MetricStore {
                 [],
             )?;
             if deleted == 0 {
-                let deleted = self.connection.execute(
+                deleted = self.connection.execute(
                     "
                     DELETE FROM minute_metrics WHERE minute_ms IN (
                         SELECT minute_ms FROM minute_metrics ORDER BY minute_ms LIMIT 1000
@@ -291,9 +305,9 @@ impl MetricStore {
                     ",
                     [],
                 )?;
-                if deleted == 0 {
-                    break;
-                }
+            }
+            if deleted == 0 {
+                break;
             }
             deleted_any = true;
         }
@@ -405,6 +419,22 @@ mod tests {
             uptime_seconds: 1,
             errors: Vec::new(),
         }
+    }
+
+    /// Samples padded with a collector error so a few hundred rows occupy
+    /// enough pages for the size-cap paths to be observable at unit scale.
+    fn bulky_samples(indices: std::ops::Range<i64>, step_ms: i64) -> Vec<MetricSample> {
+        indices
+            .map(|index| {
+                let mut metric = sample(index * step_ms, 20.0);
+                metric.errors.push(CollectorError {
+                    source: String::from("test"),
+                    kind: CapabilityState::Unsupported,
+                    message: "x".repeat(1_024),
+                });
+                metric
+            })
+            .collect()
     }
 
     #[test]
@@ -671,19 +701,8 @@ mod tests {
         // whole file, so a routine prune of a small store must leave the
         // freelist pages in place for reuse rather than pay that cost.
         let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
-        let samples: Vec<_> = (0..500)
-            .map(|index| {
-                let mut metric = sample(index * 1_000, 20.0);
-                metric.errors.push(CollectorError {
-                    source: String::from("test"),
-                    kind: CapabilityState::Unsupported,
-                    message: "x".repeat(1_024),
-                });
-                metric
-            })
-            .collect();
         store
-            .insert_batch(&samples)
+            .insert_batch(&bulky_samples(0..500, 1_000))
             .unwrap_or_else(|error| panic!("{error}"));
         let before = store
             .database_allocated_size_bytes()
@@ -718,19 +737,8 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error}"));
         assert!(empty > 0, "a schema-bearing database occupies pages");
 
-        let samples: Vec<_> = (0..500)
-            .map(|index| {
-                let mut metric = sample(index * 1_000, 20.0);
-                metric.errors.push(CollectorError {
-                    source: String::from("test"),
-                    kind: CapabilityState::Unsupported,
-                    message: "x".repeat(1_024),
-                });
-                metric
-            })
-            .collect();
         store
-            .insert_batch(&samples)
+            .insert_batch(&bulky_samples(0..500, 1_000))
             .unwrap_or_else(|error| panic!("{error}"));
 
         let filled = store
@@ -795,6 +803,203 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn prune_enforces_the_size_cap_it_was_built_with() {
+        // Retention deletion and the physical cap are separate obligations:
+        // every sample here is inside both retention windows, so only the cap
+        // can reclaim anything. Without this, `prune` could stop enforcing the
+        // 64 MiB bound entirely and every other test would still pass.
+        let mut store = MetricStore::in_memory()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .with_size_cap_bytes(32 * 1_024);
+        store
+            .insert_batch(&bulky_samples(0..500, 1_000))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            store
+                .database_allocated_size_bytes()
+                .unwrap_or_else(|error| panic!("{error}"))
+                > 32 * 1_024,
+            "the store must exceed the injected cap before pruning"
+        );
+
+        store
+            .prune(500_000)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let allocated = store
+            .database_allocated_size_bytes()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            allocated <= 32 * 1_024,
+            "prune must bring the store back under its cap: {allocated} bytes"
+        );
+    }
+
+    #[test]
+    fn a_store_exactly_at_the_cap_is_left_alone() {
+        // The cap is a maximum, not a threshold. Only a store whose live size
+        // equals the cap exactly distinguishes `>` from `>=`, and deleting here
+        // would discard history the contract promises to keep.
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        store
+            .insert_batch(&bulky_samples(0..100, 1_000))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let live = store
+            .database_live_size_bytes()
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        store
+            .enforce_size_cap_bytes(live)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(
+            store
+                .query(0, i64::MAX, HistoryResolution::Raw)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .len(),
+            100,
+            "a store exactly at its cap keeps every sample"
+        );
+    }
+
+    #[test]
+    fn reclaiming_raw_history_alone_keeps_minute_history() {
+        // Minute history is the cheaper, longer-lived resolution, so it is only
+        // sacrificed once deleting raw rows can no longer make progress. All
+        // 900 raw rows fit in one delete batch and their removal is enough, so
+        // the minute rows must survive.
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        let samples = bulky_samples(0..900, 1_000);
+        store
+            .insert_batch(&samples)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let live = store
+            .database_live_size_bytes()
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        store
+            .enforce_size_cap_bytes(live / 2)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(
+            store
+                .query(0, i64::MAX, HistoryResolution::Raw)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .is_empty(),
+            "the oldest raw batch is reclaimed first"
+        );
+        assert!(
+            !store
+                .query(0, i64::MAX, HistoryResolution::Minute)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .is_empty(),
+            "minute history survives while raw deletion still meets the cap"
+        );
+    }
+
+    /// An emptied store whose freed pages are still allocated: its live size is
+    /// far below its file size, which is the only state that separates the
+    /// deletion loop from the compaction step.
+    fn store_with_free_pages() -> MetricStore {
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        store
+            .insert_batch(&bulky_samples(0..500, 1_000))
+            .unwrap_or_else(|error| panic!("{error}"));
+        // Far enough ahead that retention empties both tables, and under the
+        // default cap so this prune leaves the freelist pages in place.
+        store
+            .prune(MINUTE_RETENTION_MS * 2)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let live = store
+            .database_live_size_bytes()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let allocated = store
+            .database_allocated_size_bytes()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            live < allocated,
+            "the emptied store must still hold freelist pages: {live} of {allocated}"
+        );
+        store
+    }
+
+    #[test]
+    fn a_file_exactly_at_the_cap_is_not_rewritten() {
+        // VACUUM rewrites the whole file, so it is owed only to a store that
+        // actually exceeds its cap. A file exactly at the cap already satisfies
+        // the contract and must not pay that cost.
+        let mut store = store_with_free_pages();
+        let allocated = store
+            .database_allocated_size_bytes()
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        store
+            .enforce_size_cap_bytes(allocated)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(
+            store
+                .database_allocated_size_bytes()
+                .unwrap_or_else(|error| panic!("{error}")),
+            allocated,
+            "a file already within its cap keeps its free pages for reuse"
+        );
+    }
+
+    #[test]
+    fn an_oversized_file_is_compacted_even_when_nothing_is_deleted() {
+        // Freed pages stay allocated until a VACUUM. A store whose live rows
+        // already fit but whose file does not must still be compacted, or the
+        // published cap would bound only logical rows and not the file on disk.
+        let mut store = store_with_free_pages();
+        let allocated = store
+            .database_allocated_size_bytes()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let live = store
+            .database_live_size_bytes()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let cap = live + (allocated - live) / 2;
+
+        store
+            .enforce_size_cap_bytes(cap)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let compacted = store
+            .database_allocated_size_bytes()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            compacted <= cap,
+            "compaction must return the freed pages: {compacted} bytes against a {cap} byte cap"
+        );
+    }
+
+    #[test]
+    fn a_minute_whose_samples_all_lack_a_metric_reports_no_value() {
+        // Aggregating two unreadable samples leaves a summed value of zero
+        // beside a count of zero. Dividing by that count would report an
+        // unreadable metric as 0, or crash the query, instead of omitting it.
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        let unreadable = |timestamp_ms: i64| {
+            let mut metric = sample(timestamp_ms, 0.0);
+            metric.cpu_percent = None;
+            metric.memory_used_bytes = None;
+            metric.network = None;
+            metric
+        };
+        store
+            .insert_batch(&[unreadable(1_000), unreadable(2_000)])
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let minute = store
+            .query(0, 60_000, HistoryResolution::Minute)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(minute.len(), 1, "the samples still form one bucket");
+        assert_eq!(minute[0].cpu_percent, None);
+        assert_eq!(minute[0].memory_used_bytes, None);
+        assert!(minute[0].network.is_none());
     }
 
     #[test]
