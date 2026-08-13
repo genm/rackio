@@ -39,45 +39,16 @@ impl SystemCollector {
     /// publishing zeros.
     #[must_use]
     pub fn capabilities(&self) -> Vec<MetricCapability> {
-        let mut capabilities = vec![
-            capability("cpu", self.cpu_percent().is_some(), "no CPU is readable"),
-            capability(
-                "memory",
-                self.memory_total().is_some(),
-                "total memory is not readable",
-            ),
-            // A machine with swap disabled genuinely reports zero total swap,
-            // so absence of swap is not absence of the capability.
-            capability("swap", true, ""),
-        ];
-        capabilities.push(capability(
-            "disk",
-            !self.disks.list().is_empty(),
-            "no filesystem is enumerable",
-        ));
-        capabilities.push(capability(
-            "network",
-            !self.networks.list().is_empty(),
-            "no network interface is enumerable",
-        ));
-        capabilities
-    }
-
-    /// `None` when no CPU is readable, or when the reading is not a finite
-    /// percentage. An idle machine legitimately reports `Some(0.0)`, so zero
-    /// is never treated as absence.
-    fn cpu_percent(&self) -> Option<f32> {
-        if self.system.cpus().is_empty() {
-            return None;
-        }
-        readable_cpu_percent(self.system.global_cpu_usage())
-    }
-
-    /// `None` when the total is zero: every machine has memory, so a zero
-    /// total means the source could not be read rather than that the machine
-    /// has none.
-    fn memory_total(&self) -> Option<u64> {
-        readable_memory_total(self.system.total_memory())
+        // Read here, decide in `capabilities_from`. Every rule below this line
+        // would otherwise only be reachable on a host that genuinely lacks the
+        // source it describes.
+        capabilities_from(
+            readable_cpu_percent(self.system.cpus().len(), self.system.global_cpu_usage())
+                .is_some(),
+            readable_memory_total(self.system.total_memory()).is_some(),
+            self.disks.list().len(),
+            self.networks.list().len(),
+        )
     }
 
     #[must_use]
@@ -94,12 +65,13 @@ impl SystemCollector {
 
         let mut errors = Vec::new();
 
-        let cpu_percent = self.cpu_percent();
+        let cpu_percent =
+            readable_cpu_percent(self.system.cpus().len(), self.system.global_cpu_usage());
         if cpu_percent.is_none() {
             errors.push(unavailable("cpu", "no CPU usage is readable on this host"));
         }
 
-        let memory_total_bytes = self.memory_total();
+        let memory_total_bytes = readable_memory_total(self.system.total_memory());
         let memory_used_bytes = memory_total_bytes.map(|_| self.system.used_memory());
         if memory_total_bytes.is_none() {
             errors.push(unavailable("memory", "total memory is not readable"));
@@ -121,24 +93,23 @@ impl SystemCollector {
             errors.push(unavailable("disk", "no filesystem could be enumerated"));
         }
 
-        let interfaces = self.networks.list();
-        if interfaces.is_empty() {
+        let (interface_count, received, sent) = self.networks.list().values().fold(
+            (0_usize, 0_u64, 0_u64),
+            |(count, received, sent), network| {
+                (
+                    count.saturating_add(1),
+                    received.saturating_add(network.received()),
+                    sent.saturating_add(network.transmitted()),
+                )
+            },
+        );
+        if interface_count == 0 {
             errors.push(unavailable(
                 "network",
                 "no network interface could be enumerated",
             ));
         }
-        let totals = (!interfaces.is_empty()).then(|| {
-            interfaces
-                .values()
-                .fold((0_u64, 0_u64), |(received, sent), network| {
-                    (
-                        received.saturating_add(network.received()),
-                        sent.saturating_add(network.transmitted()),
-                    )
-                })
-        });
-        let network = network_metric(totals, elapsed);
+        let network = network_metric(readable_totals(interface_count, received, sent), elapsed);
 
         MetricSample {
             timestamp_ms: Utc::now().timestamp_millis(),
@@ -156,10 +127,46 @@ impl SystemCollector {
     }
 }
 
+/// Report what a host with these readings can collect.
+///
+/// Kept separate from the readings themselves so every branch is reachable: a
+/// machine that can enumerate its disks cannot exercise the rule for one that
+/// cannot.
+fn capabilities_from(
+    cpu: bool,
+    memory: bool,
+    disks: usize,
+    interfaces: usize,
+) -> Vec<MetricCapability> {
+    vec![
+        capability("cpu", cpu, "no CPU is readable"),
+        capability("memory", memory, "total memory is not readable"),
+        // A machine with swap disabled genuinely reports zero total swap, so
+        // absence of swap is not absence of the capability.
+        capability("swap", true, ""),
+        capability("disk", disks > 0, "no filesystem is enumerable"),
+        capability(
+            "network",
+            interfaces > 0,
+            "no network interface is enumerable",
+        ),
+    ]
+}
+
 /// An idle machine legitimately reports `Some(0.0)`, so zero is never treated
-/// as absence. A non-finite reading is not a percentage and is reported absent.
-fn readable_cpu_percent(usage: f32) -> Option<f32> {
+/// as absence. A host with no enumerable CPU has nothing to average, and a
+/// non-finite reading is not a percentage; both are reported absent.
+fn readable_cpu_percent(cpu_count: usize, usage: f32) -> Option<f32> {
+    if cpu_count == 0 {
+        return None;
+    }
     usage.is_finite().then_some(usage)
+}
+
+/// `None` when no interface could be enumerated. A fold over nothing produces
+/// zero, and publishing that would present an unreadable source as an idle one.
+fn readable_totals(interfaces: usize, received: u64, sent: u64) -> Option<(u64, u64)> {
+    (interfaces > 0).then_some((received, sent))
 }
 
 /// Every machine has memory, so a zero total means the source could not be read
@@ -232,17 +239,80 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        SystemCollector, capability, disk_metric, network_metric, rate_per_second,
-        readable_cpu_percent, readable_memory_total,
+        SystemCollector, capabilities_from, capability, disk_metric, network_metric,
+        rate_per_second, readable_cpu_percent, readable_memory_total, readable_totals,
     };
     use crate::CapabilityState;
 
     #[test]
     fn an_unreadable_cpu_is_absent_but_an_idle_one_is_zero() {
-        assert_eq!(readable_cpu_percent(0.0), Some(0.0), "idle is not absent");
-        assert_eq!(readable_cpu_percent(42.5), Some(42.5));
-        assert_eq!(readable_cpu_percent(f32::NAN), None);
-        assert_eq!(readable_cpu_percent(f32::INFINITY), None);
+        assert_eq!(
+            readable_cpu_percent(1, 0.0),
+            Some(0.0),
+            "idle is not absent"
+        );
+        assert_eq!(readable_cpu_percent(8, 42.5), Some(42.5));
+        assert_eq!(readable_cpu_percent(1, f32::NAN), None);
+        assert_eq!(readable_cpu_percent(1, f32::INFINITY), None);
+        assert_eq!(
+            readable_cpu_percent(0, 0.0),
+            None,
+            "a host with no enumerable CPU has nothing to average"
+        );
+    }
+
+    #[test]
+    fn a_host_with_no_interface_reports_no_traffic_at_all() {
+        assert_eq!(readable_totals(0, 0, 0), None);
+        assert_eq!(
+            readable_totals(0, 10, 20),
+            None,
+            "a stale total without an interface is not a reading"
+        );
+        assert_eq!(readable_totals(1, 10, 20), Some((10, 20)));
+        assert_eq!(
+            readable_totals(1, 0, 0),
+            Some((0, 0)),
+            "an enumerated interface with no traffic is genuinely idle"
+        );
+    }
+
+    #[test]
+    fn a_source_that_cannot_be_read_is_declared_unsupported_with_a_reason() {
+        // Each rule is exercised in both directions here, which no single host
+        // can do: this machine either has a disk or it does not.
+        let all = capabilities_from(true, true, 1, 1);
+        for name in ["cpu", "memory", "swap", "disk", "network"] {
+            let capability = all
+                .iter()
+                .find(|capability| capability.name == name)
+                .unwrap_or_else(|| panic!("{name} capability is missing"));
+            assert_eq!(
+                capability.state,
+                CapabilityState::Supported,
+                "{name} is readable on this reading"
+            );
+        }
+
+        let none = capabilities_from(false, false, 0, 0);
+        for name in ["cpu", "memory", "disk", "network"] {
+            let capability = none
+                .iter()
+                .find(|capability| capability.name == name)
+                .unwrap_or_else(|| panic!("{name} capability is missing"));
+            assert_eq!(capability.state, CapabilityState::Unsupported, "{name}");
+            assert!(capability.detail.is_some(), "{name} must carry a reason");
+        }
+
+        let swap = none
+            .iter()
+            .find(|capability| capability.name == "swap")
+            .unwrap_or_else(|| panic!("swap capability is missing"));
+        assert_eq!(
+            swap.state,
+            CapabilityState::Supported,
+            "swap stays supported: a machine with it disabled truly has zero"
+        );
     }
 
     #[test]
@@ -334,11 +404,48 @@ mod tests {
         assert_eq!(sample.cpu_percent.is_none(), errored("cpu"));
         assert_eq!(sample.memory_total_bytes.is_none(), errored("memory"));
         assert_eq!(sample.disks.is_empty(), errored("disk"));
-        if errored("network") {
-            assert!(sample.network.is_none());
-        }
+        assert_eq!(sample.network.is_none(), errored("network"));
         if sample.memory_total_bytes.is_none() {
             assert!(sample.memory_used_bytes.is_none());
+        }
+        if let Some(cpu) = sample.cpu_percent {
+            assert!(
+                (0.0..=100.0).contains(&cpu),
+                "a CPU reading is a percentage, got {cpu}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_declared_capability_agrees_with_what_the_sample_carries() {
+        // Host-independent in both directions: this asserts that the two views
+        // cannot disagree, not that this machine has any particular source.
+        let mut collector = SystemCollector::new();
+        let sample = collector.sample();
+        let capabilities = collector.capabilities();
+        let state = |name: &str| {
+            capabilities
+                .iter()
+                .find(|capability| capability.name == name)
+                .unwrap_or_else(|| panic!("{name} capability is missing"))
+                .state
+        };
+
+        if sample.cpu_percent.is_some() {
+            assert_eq!(state("cpu"), CapabilityState::Supported);
+        }
+        if sample.memory_total_bytes.is_some() {
+            assert_eq!(state("memory"), CapabilityState::Supported);
+        }
+        if !sample.disks.is_empty() {
+            assert_eq!(
+                state("disk"),
+                CapabilityState::Supported,
+                "a sample carrying a filesystem cannot come with an unsupported disk capability"
+            );
+        }
+        if sample.network.is_some() {
+            assert_eq!(state("network"), CapabilityState::Supported);
         }
     }
 
