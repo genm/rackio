@@ -44,6 +44,17 @@ jobs:
         run: |
           rustup show
           rustup target add "${{ matrix.target }}"
+      - name: Cache cargo registry and release target directory
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/index
+            ~/.cargo/git/db
+            target/
+          key: cargo-release-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-release-${{ matrix.target }}-
       - name: Resolve package version
         id: package
         env:
