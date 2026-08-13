@@ -105,3 +105,164 @@ const fn node_state(state: core::NodeState) -> i32 {
         core::NodeState::Degraded => wire::NodeState::Degraded as i32,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use rackio_core as core;
+    use rackio_protocol::v1 as wire;
+
+    use super::{capability_state, connection_details, health, metric_sample, node_state};
+
+    // The numbers are asserted as literals against `proto/rackio.proto`, not
+    // against the generated enum: a viewer on one release reads these bytes
+    // from an agent on another, so renumbering is a wire break rather than a
+    // rename. Zero is deliberately absent — it is the protobuf "unspecified"
+    // value, and no domain state may translate into it.
+    #[test]
+    fn capability_states_translate_to_their_wire_numbers() {
+        for (state, expected) in [
+            (core::CapabilityState::Supported, 1),
+            (core::CapabilityState::Unsupported, 2),
+            (core::CapabilityState::PermissionDenied, 3),
+        ] {
+            assert_eq!(capability_state(state), expected, "{state:?}");
+        }
+    }
+
+    #[test]
+    fn node_states_translate_to_their_wire_numbers() {
+        for (state, expected) in [
+            (core::NodeState::Healthy, 1),
+            (core::NodeState::Warning, 2),
+            (core::NodeState::Critical, 3),
+            (core::NodeState::Stale, 4),
+            (core::NodeState::Offline, 5),
+            (core::NodeState::AuthError, 6),
+            (core::NodeState::Incompatible, 7),
+            (core::NodeState::Degraded, 8),
+        ] {
+            assert_eq!(node_state(state), expected, "{state:?}");
+        }
+    }
+
+    #[test]
+    fn connection_paths_translate_to_their_wire_numbers() {
+        for (path, expected) in [
+            (core::ConnectionPath::LanDirect, 1),
+            (core::ConnectionPath::WanDirect, 2),
+            (core::ConnectionPath::Relayed, 3),
+            (core::ConnectionPath::Unknown, 4),
+        ] {
+            let details = connection_details(path, 12);
+            assert_eq!(details.path, expected, "{path:?}");
+            assert_eq!(details.rtt_ms, 12);
+        }
+    }
+
+    #[test]
+    fn a_metric_sample_keeps_every_reading_it_carried() {
+        let sample = core::MetricSample {
+            timestamp_ms: 1_700_000_000_000,
+            sequence: 42,
+            cpu_percent: Some(37.5),
+            memory_used_bytes: Some(1_024),
+            memory_total_bytes: Some(4_096),
+            swap_used_bytes: Some(8),
+            swap_total_bytes: Some(16),
+            disks: vec![core::DiskMetric {
+                mount: String::from("/"),
+                total_bytes: 500,
+                used_bytes: 200,
+            }],
+            network: Some(core::NetworkMetric {
+                received_bytes_per_second: 10,
+                sent_bytes_per_second: 20,
+            }),
+            uptime_seconds: 99,
+            errors: vec![core::CollectorError {
+                source: String::from("disk"),
+                kind: core::CapabilityState::PermissionDenied,
+                message: String::from("denied"),
+            }],
+        };
+
+        let wire = metric_sample(&sample);
+
+        assert_eq!(wire.timestamp_ms, 1_700_000_000_000);
+        assert_eq!(wire.sequence, 42);
+        assert_eq!(wire.cpu_percent, Some(37.5));
+        assert_eq!(wire.memory_used_bytes, Some(1_024));
+        assert_eq!(wire.memory_total_bytes, Some(4_096));
+        assert_eq!(wire.swap_used_bytes, Some(8));
+        assert_eq!(wire.swap_total_bytes, Some(16));
+        assert_eq!(wire.uptime_seconds, 99);
+        assert_eq!(
+            wire.disks,
+            vec![wire::DiskMetric {
+                mount: String::from("/"),
+                total_bytes: 500,
+                used_bytes: 200,
+            }]
+        );
+        assert_eq!(
+            wire.network,
+            Some(wire::NetworkMetric {
+                received_bytes_per_second: 10,
+                sent_bytes_per_second: 20,
+            })
+        );
+        assert_eq!(
+            wire.errors,
+            vec![wire::CollectorError {
+                source: String::from("disk"),
+                kind: 3,
+                message: String::from("denied"),
+            }],
+            "a collector error must keep its capability state"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_metric_stays_absent_on_the_wire() {
+        // Sending 0 for a reading the collector could not take would present an
+        // unreadable source as an idle one on the viewer.
+        let sample = core::MetricSample {
+            timestamp_ms: 1,
+            sequence: 1,
+            cpu_percent: None,
+            memory_used_bytes: None,
+            memory_total_bytes: None,
+            swap_used_bytes: None,
+            swap_total_bytes: None,
+            disks: Vec::new(),
+            network: None,
+            uptime_seconds: 0,
+            errors: Vec::new(),
+        };
+
+        let wire = metric_sample(&sample);
+
+        assert_eq!(wire.cpu_percent, None);
+        assert_eq!(wire.memory_used_bytes, None);
+        assert_eq!(wire.network, None);
+    }
+
+    #[test]
+    fn a_health_snapshot_keeps_every_degraded_flag() {
+        let snapshot = core::HealthSnapshot {
+            state: core::NodeState::Degraded,
+            collector_degraded: true,
+            storage_degraded: false,
+            remote_listener_degraded: true,
+            details: vec![String::from("storage is read-only")],
+        };
+
+        let wire = health(&snapshot);
+
+        assert_eq!(wire.state, 8);
+        assert!(wire.collector_degraded);
+        assert!(!wire.storage_degraded);
+        assert!(wire.remote_listener_degraded);
+        assert_eq!(wire.details, vec![String::from("storage is read-only")]);
+    }
+}
