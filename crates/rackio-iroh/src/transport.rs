@@ -82,21 +82,30 @@ pub fn classify_connection(connection: &Connection) -> ConnectionDetails {
         };
     };
     let path = if selected.is_relay() {
+        // Relay is decided by the transport, never inferred from the address:
+        // reporting a relayed path as direct would misstate who can observe
+        // the connection's metadata.
         ConnectionPath::Relayed
-    } else if selected.is_ip() {
-        match selected.remote_addr() {
-            TransportAddr::Ip(address) if is_private_or_local(address.ip()) => {
-                ConnectionPath::LanDirect
-            }
-            TransportAddr::Ip(_) => ConnectionPath::WanDirect,
-            _ => ConnectionPath::Unknown,
-        }
     } else {
-        ConnectionPath::Unknown
+        direct_path(selected.remote_addr())
     };
     ConnectionDetails {
         path,
         rtt_ms: duration_millis(selected.rtt()),
+    }
+}
+
+/// Classify a non-relayed path from the peer address it reaches.
+///
+/// Only an IP transport is direct. Anything else is reported as unknown rather
+/// than optimistically as direct.
+fn direct_path(address: &TransportAddr) -> ConnectionPath {
+    match address {
+        TransportAddr::Ip(address) if is_private_or_local(address.ip()) => {
+            ConnectionPath::LanDirect
+        }
+        TransportAddr::Ip(_) => ConnectionPath::WanDirect,
+        _ => ConnectionPath::Unknown,
     }
 }
 
@@ -191,23 +200,132 @@ impl ResponseStream {
 
 #[cfg(test)]
 mod tests {
-    use super::{EndpointConfig, bind_endpoint, is_private_or_local};
+    use std::time::Duration;
+
+    use super::{
+        ClientConnection, ConnectionPath, EndpointConfig, TransportAddr, bind_endpoint,
+        direct_path, duration_millis, is_private_or_local,
+    };
     use iroh::SecretKey;
+
+    fn address(value: &str) -> std::net::IpAddr {
+        value
+            .parse()
+            .unwrap_or_else(|error| panic!("{value} is not an address: {error}"))
+    }
 
     #[test]
     fn ipv4_mapped_lan_addresses_are_not_classified_as_wan() {
-        fn address(value: &str) -> std::net::IpAddr {
-            value
-                .parse()
-                .unwrap_or_else(|error| panic!("{value} is not an address: {error}"))
-        }
-
         assert!(is_private_or_local(address("::ffff:192.168.1.5")));
         assert!(is_private_or_local(address("::ffff:127.0.0.1")));
         assert!(!is_private_or_local(address("::ffff:93.184.216.34")));
         assert!(is_private_or_local(address("192.168.1.5")));
         assert!(is_private_or_local(address("fe80::1")));
         assert!(!is_private_or_local(address("2001:db8::1")));
+    }
+
+    #[test]
+    fn every_local_ipv6_form_is_recognised_on_its_own() {
+        // Each of these is local for a different reason, so they have to be
+        // accepted independently rather than only in combination.
+        assert!(is_private_or_local(address("::1")), "loopback");
+        assert!(is_private_or_local(address("fd00::1")), "unique local");
+        assert!(is_private_or_local(address("fe80::1")), "link local");
+    }
+
+    #[test]
+    fn a_direct_path_is_classified_by_the_address_it_reaches() {
+        fn socket(value: &str) -> TransportAddr {
+            TransportAddr::Ip(
+                value
+                    .parse()
+                    .unwrap_or_else(|error| panic!("{value} is not a socket address: {error}")),
+            )
+        }
+
+        assert_eq!(
+            direct_path(&socket("192.168.1.5:7777")),
+            ConnectionPath::LanDirect
+        );
+        assert_eq!(
+            direct_path(&socket("[::ffff:10.0.0.2]:7777")),
+            ConnectionPath::LanDirect
+        );
+        assert_eq!(
+            direct_path(&socket("93.184.216.34:7777")),
+            ConnectionPath::WanDirect,
+            "a public peer must not be reported as a LAN peer"
+        );
+        assert_eq!(
+            direct_path(&socket("[2001:db8::1]:7777")),
+            ConnectionPath::WanDirect
+        );
+    }
+
+    #[test]
+    fn a_round_trip_time_is_reported_in_whole_milliseconds() {
+        assert_eq!(duration_millis(Duration::from_micros(1_500)), 1);
+        assert_eq!(duration_millis(Duration::from_millis(1_500)), 1_500);
+        assert_eq!(
+            duration_millis(Duration::MAX),
+            u64::MAX,
+            "an unrepresentable duration saturates rather than wrapping to a plausible RTT"
+        );
+    }
+
+    #[tokio::test]
+    async fn closing_a_client_connection_is_observed_by_the_peer() {
+        // A viewer that stops monitoring must release the agent's side too. A
+        // close that never reaches the peer leaves the agent serving a session
+        // nobody is reading until its own idle timeout expires.
+        let server = bind_endpoint(SecretKey::generate(), &EndpointConfig::default())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let client_endpoint = bind_endpoint(SecretKey::generate(), &EndpointConfig::default())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let server_address = server.addr();
+        let accept = tokio::spawn({
+            let server = server.clone();
+            async move {
+                server
+                    .accept()
+                    .await
+                    .unwrap_or_else(|| panic!("endpoint closed"))
+                    .await
+                    .unwrap_or_else(|error| panic!("{error}"))
+            }
+        });
+        let client = ClientConnection::connect(client_endpoint.clone(), server_address)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let incoming = accept.await.unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(client.remote_id(), server.id());
+        assert_eq!(client.local_id(), client_endpoint.id());
+
+        client.close();
+
+        let closed = tokio::time::timeout(Duration::from_secs(10), incoming.closed())
+            .await
+            .unwrap_or_else(|_| {
+                panic!("the peer must be told, not left waiting for its own timeout")
+            });
+        match closed {
+            iroh::endpoint::ConnectionError::ApplicationClosed(close) => {
+                // Dropping the connection would also close it, but silently.
+                // The reason is what tells the agent's log that the viewer
+                // left deliberately rather than lost its network.
+                assert_eq!(
+                    close.reason.as_ref(),
+                    b"client shutdown",
+                    "the peer must learn why the session ended"
+                );
+            }
+            other => panic!("a deliberate close must be an application close, got {other}"),
+        }
+
+        client_endpoint.close().await;
+        server.close().await;
     }
 
     #[tokio::test]
