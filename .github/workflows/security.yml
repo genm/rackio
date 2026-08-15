@@ -107,7 +107,7 @@ jobs:
         run: rustup show
       - name: Install Rust policy tools
         if: env.RUN_SECURITY_POLICY == 'true'
-        uses: taiki-e/install-action@cb33e69fad06166ca28a42b2575e4dadabf62ee8 # v2.85.8
+        uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
         with:
           tool: cargo-deny@0.20.2,cargo-machete@0.9.2,cargo-about@0.9.1
           fallback: none
