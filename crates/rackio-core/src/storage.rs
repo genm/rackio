@@ -416,6 +416,7 @@ mod tests {
                 received_bytes_per_second: 10,
                 sent_bytes_per_second: 20,
             }),
+            temperature: None,
             uptime_seconds: 1,
             errors: Vec::new(),
         }

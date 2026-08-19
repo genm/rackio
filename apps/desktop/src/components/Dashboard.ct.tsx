@@ -18,6 +18,12 @@ const snapshot: FleetSnapshot = {
       memoryTotalBytes: 32_000_000_000,
       diskUsedBytes: 320_000_000_000,
       diskTotalBytes: 1_000_000_000_000,
+      temperature: {
+        label: "PMU tdie8",
+        celsius: 60.7,
+        criticalCelsius: null,
+        sensorCount: 41,
+      },
       rttMs: 4,
       history: [18, 23, 21, 34, 29, 28],
     },
@@ -33,6 +39,8 @@ const snapshot: FleetSnapshot = {
       memoryTotalBytes: 64_000_000_000,
       diskUsedBytes: 3_200_000_000_000,
       diskTotalBytes: 4_000_000_000_000,
+      // A machine with no readable sensor — a container or cloud VM.
+      temperature: null,
       rttMs: 43,
       history: [42, 54, 66, 71, 64, 61],
       detail: "Storage degraded",
@@ -50,6 +58,25 @@ test("shows relay and degraded state without disguising them as direct health", 
   await expect(server.getByText("Degraded", { exact: true })).toBeVisible();
   await expect(component.getByRole("button", { name: /pair machine/i })).toBeEnabled();
   await component.screenshot({ path: "../../output/playwright/dashboard.png" });
+});
+
+test("shows a machine temperature without inventing one for a sensorless host", async ({
+  mount,
+}) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const studio = component.locator("article").filter({ hasText: "Studio Mac" });
+  await expect(studio.getByText("61 °C")).toBeVisible();
+  // The named sensor and the count it was the hottest of keep the reading
+  // attributable rather than presenting an anonymous number.
+  await expect(studio.locator("dd", { hasText: "61 °C" })).toHaveAttribute(
+    "title",
+    "PMU tdie8 · hottest of 41 sensors",
+  );
+
+  // A machine with no readable sensor shows an em dash, never 0 °C.
+  const server = component.locator("article").filter({ hasText: "Home Server" });
+  await expect(server.getByText("0 °C")).toHaveCount(0);
+  await expect(server.locator("dd").filter({ hasText: /^—$/ }).first()).toBeVisible();
 });
 
 test("imports a one-time pairing bundle from the desktop", async ({ mount }) => {

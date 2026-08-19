@@ -245,8 +245,12 @@ array in the daemon's `config.json`:
 }
 ```
 
-`metric` accepts `cpu_percent`, `memory_percent` and `disk_percent`
-(`disk_percent` uses the fullest mounted filesystem). `consecutive_samples`
+`metric` accepts `cpu_percent`, `memory_percent`, `disk_percent` and
+`temperature_celsius` (`disk_percent` uses the fullest mounted filesystem, and
+`temperature_celsius` the hottest readable sensor). A machine whose
+`temperature` capability is `unsupported` never resolves a
+`temperature_celsius` rule, so the rule stays inactive there rather than
+reading as a cold machine. `consecutive_samples`
 requires that many two-second samples in a row before the state changes, which
 suppresses flapping. A rule whose metric becomes unreadable clears rather than
 staying latched, and a degraded collector or storage subsystem still reports

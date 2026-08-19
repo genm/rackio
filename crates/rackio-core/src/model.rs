@@ -45,7 +45,7 @@ pub struct ProtocolVersion {
 }
 
 impl ProtocolVersion {
-    pub const V1: Self = Self { major: 1, minor: 0 };
+    pub const V1: Self = Self { major: 1, minor: 1 };
 
     #[must_use]
     pub const fn is_compatible_with(&self, other: &Self) -> bool {
@@ -107,6 +107,24 @@ pub struct DiskMetric {
     pub used_bytes: u64,
 }
 
+/// The hottest sensor on the machine, named so the reading is attributable.
+///
+/// A summary rather than the full sensor list: a laptop exposes forty-odd
+/// sensors, and carrying every one of them in a two-second sample would exhaust
+/// the 64 MiB history cap long before the retention window did.
+///
+/// `critical_celsius` is the threshold the hardware itself declares, carried
+/// only when the OS exposes one: Rackio does not invent a "hot" threshold for a
+/// machine whose sensor layout it knows nothing about.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TemperatureMetric {
+    pub label: String,
+    pub celsius: f32,
+    pub critical_celsius: Option<f32>,
+    /// How many sensors this is the maximum of, so "hottest" stays checkable.
+    pub sensor_count: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkMetric {
     pub received_bytes_per_second: u64,
@@ -131,6 +149,12 @@ pub struct MetricSample {
     pub swap_total_bytes: Option<u64>,
     pub disks: Vec<DiskMetric>,
     pub network: Option<NetworkMetric>,
+    /// `None` on a machine with no readable sensor — see the `temperature`
+    /// capability for whether that means "none exists" rather than "none was
+    /// readable this time". Defaulted so history written before protocol 1.1
+    /// still deserialises.
+    #[serde(default)]
+    pub temperature: Option<TemperatureMetric>,
     pub uptime_seconds: u64,
     pub errors: Vec<CollectorError>,
 }

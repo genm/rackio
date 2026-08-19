@@ -293,8 +293,15 @@ struct TrayNodeSnapshot {
     disk_used_bytes: Option<u64>,
     #[serde(rename = "diskTotalBytes")]
     disk_total_bytes: Option<u64>,
+    temperature: Option<TrayTemperature>,
     #[serde(rename = "rttMs")]
     rtt_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrayTemperature {
+    label: String,
+    celsius: f64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -366,6 +373,7 @@ fn status_details(message: &str) -> Vec<String> {
         String::from("CPU · —"),
         String::from("Memory · —"),
         String::from("Disk · —"),
+        String::from("Temperature · —"),
         String::from("Path · — · RTT · —"),
     ]
 }
@@ -606,6 +614,7 @@ fn tray_machine_menu(node: &TrayNodeSnapshot) -> TrayMachineMenu {
             format!("CPU · {}", percentage_label(node.cpu_percent)),
             format!("Memory · {}", memory_percentage_label(node)),
             format!("Disk · {}", disk_percentage_label(node)),
+            format!("Temperature · {}", temperature_label(node)),
             format!("Path · {}", tray_path_label(&node.path)),
             format!("RTT · {}", rtt_label(node.rtt_ms)),
         ],
@@ -625,6 +634,16 @@ fn disk_percentage_label(node: &TrayNodeSnapshot) -> String {
         }
         _ => String::from("—"),
     }
+}
+
+/// The hottest sensor, named: an unattributed number would leave the operator
+/// unable to tell a battery reading from a CPU package one. A machine with no
+/// readable sensor shows an em dash rather than a plausible zero.
+fn temperature_label(node: &TrayNodeSnapshot) -> String {
+    node.temperature.as_ref().map_or_else(
+        || String::from("—"),
+        |temperature| format!("{:.0} °C · {}", temperature.celsius, temperature.label),
+    )
 }
 
 fn tray_path_label(path: &str) -> &str {
@@ -794,6 +813,20 @@ fn machine_json(
     let cpu = latest
         .get("cpu_percent")
         .and_then(serde_json::Value::as_f64);
+    // Absent on a host with no readable sensor. Carried through as an absent
+    // field rather than as a zero so the viewer renders "—" instead of a
+    // frozen machine.
+    let temperature = latest
+        .get("temperature")
+        .filter(|value| !value.is_null())
+        .map(|temperature| {
+            serde_json::json!({
+                "label": temperature.get("label"),
+                "celsius": temperature.get("celsius"),
+                "criticalCelsius": temperature.get("critical_celsius"),
+                "sensorCount": temperature.get("sensor_count"),
+            })
+        });
     Ok(serde_json::json!({
         "id": node_id,
         "endpointId": source.get("endpoint_id"),
@@ -810,6 +843,7 @@ fn machine_json(
         "memoryTotalBytes": latest.get("memory_total_bytes"),
         "diskUsedBytes": disk_used,
         "diskTotalBytes": disk_total,
+        "temperature": temperature,
         "rttMs": rtt_ms,
         "lastSeenMs": last_seen_ms,
         "history": if history.is_empty() {
@@ -997,10 +1031,10 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        DAEMON_REQUEST_TIMEOUT, TrayMachineMenu, TrayNodeSnapshot, bounded_daemon_exchange,
-        fleet_tray_status, machine_tray_id, pairing_bundle_expiry, pairing_qr_data_url,
-        retired_tray_ids, save_pairing_bundle, tray_machine_menu, tray_node_status,
-        tray_state_color,
+        DAEMON_REQUEST_TIMEOUT, TrayMachineMenu, TrayNodeSnapshot, TrayTemperature,
+        bounded_daemon_exchange, fleet_tray_status, machine_json, machine_tray_id,
+        pairing_bundle_expiry, pairing_qr_data_url, retired_tray_ids, save_pairing_bundle,
+        temperature_label, tray_machine_menu, tray_node_status, tray_state_color,
     };
 
     fn ids(values: &[&str]) -> HashSet<String> {
@@ -1112,6 +1146,67 @@ mod tests {
         assert!(!path.exists());
     }
 
+    /// The daemon speaks `snake_case` and the viewer `camelCase`, so this boundary
+    /// is where a temperature would silently disappear — or, worse, arrive as a
+    /// zero on a machine that never reported one.
+    #[test]
+    fn a_machine_carries_its_hottest_sensor_to_the_viewer_or_nothing_at_all() {
+        let source = serde_json::json!({
+            "node": {
+                "node_id": "id",
+                "display_name": "Server",
+                "os": "linux",
+                "architecture": "x86_64",
+            },
+            "latest": {
+                "cpu_percent": 12.0,
+                "temperature": {
+                    "label": "Package id 0",
+                    "celsius": 61.5,
+                    "critical_celsius": 100.0,
+                    "sensor_count": 7,
+                },
+            },
+        });
+
+        let machine = machine_json(
+            &source,
+            "healthy",
+            "lan_direct",
+            None,
+            None,
+            Vec::new(),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            machine.get("temperature"),
+            Some(&serde_json::json!({
+                "label": "Package id 0",
+                "celsius": 61.5,
+                "criticalCelsius": 100.0,
+                "sensorCount": 7,
+            }))
+        );
+
+        // A host with no readable sensor must not acquire one here.
+        let sensorless = serde_json::json!({
+            "node": { "node_id": "id", "display_name": "Server" },
+            "latest": { "cpu_percent": 12.0 },
+        });
+        let machine = machine_json(
+            &sensorless,
+            "healthy",
+            "lan_direct",
+            None,
+            None,
+            Vec::new(),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(machine.get("temperature"), Some(&serde_json::Value::Null));
+    }
+
     #[test]
     fn each_machine_gets_a_distinct_tray_tab_and_detail_menu() {
         let node = TrayNodeSnapshot {
@@ -1124,6 +1219,10 @@ mod tests {
             memory_total_bytes: Some(100),
             disk_used_bytes: Some(45),
             disk_total_bytes: Some(100),
+            temperature: Some(TrayTemperature {
+                label: String::from("CPU die"),
+                celsius: 72.4,
+            }),
             rtt_ms: None,
         };
 
@@ -1138,6 +1237,7 @@ mod tests {
                     String::from("CPU · 60%"),
                     String::from("Memory · 30%"),
                     String::from("Disk · 45%"),
+                    String::from("Temperature · 72 °C · CPU die"),
                     String::from("Path · Relayed"),
                     String::from("RTT · —"),
                 ],
@@ -1154,8 +1254,12 @@ mod tests {
             memory_total_bytes: None,
             disk_used_bytes: None,
             disk_total_bytes: None,
+            // A machine with no readable sensor: the menu must show an em dash
+            // rather than a plausible zero.
+            temperature: None,
             rtt_ms: Some(8),
         };
+        assert_eq!(temperature_label(&steamdeck), "—");
         assert_eq!(
             fleet_tray_status(&[node, steamdeck]),
             "Server ▲ · steamdeck ●"
