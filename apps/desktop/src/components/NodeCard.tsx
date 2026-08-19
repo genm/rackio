@@ -1,7 +1,23 @@
-import { bytes, percent } from "../format";
+import { bytes, celsius, percent } from "../format";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
-import type { FleetNode } from "../types";
+import type { FleetNode, TemperatureReading } from "../types";
 import { Sparkline } from "./Sparkline";
+
+/**
+ * Name the sensor the reading came from, and say how many sensors it was the
+ * hottest of, so "the machine's temperature" stays checkable. The hardware's
+ * own critical threshold is shown only when the OS reported one.
+ */
+export function temperatureDetail(temperature?: TemperatureReading | null): string {
+  if (temperature == null) return "No temperature sensor is readable on this machine";
+  const sensors =
+    temperature.sensorCount > 1 ? ` · hottest of ${temperature.sensorCount} sensors` : "";
+  const critical =
+    temperature.criticalCelsius == null
+      ? ""
+      : ` · hardware critical ${Math.round(temperature.criticalCelsius)} °C`;
+  return `${temperature.label}${sensors}${critical}`;
+}
 
 export function NodeCard({
   node,
@@ -39,6 +55,13 @@ export function NodeCard({
         <div>
           <dt>Disk</dt>
           <dd>{percent(node.diskUsedBytes, node.diskTotalBytes)}</dd>
+        </div>
+        <div>
+          <dt>Temp</dt>
+          {/* Titled with the sensor and how many it was the hottest of: the
+              number alone cannot be told apart from a battery reading, and a
+              machine without sensors must show "—" rather than 0 °C. */}
+          <dd title={temperatureDetail(node.temperature)}>{celsius(node.temperature?.celsius)}</dd>
         </div>
         <div>
           <dt>RTT</dt>

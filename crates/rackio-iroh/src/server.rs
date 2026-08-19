@@ -706,6 +706,7 @@ mod tests {
             swap_total_bytes: Some(0),
             disks: Vec::new(),
             network: None,
+            temperature: None,
             uptime_seconds: 1,
             errors: Vec::new(),
         }

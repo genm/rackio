@@ -36,7 +36,7 @@ NAT and mixed-OS release matrices.
 
 | Surface | Implemented now | Missing or incomplete |
 | --- | --- | --- |
-| Collector | CPU, memory, swap, disk, network rate, uptime, OS and architecture | GPU, temperature, processes, containers and logs are not implemented |
+| Collector | CPU, memory, swap, disk, network rate, hottest-sensor temperature, uptime, OS and architecture | GPU, per-sensor temperature history, processes, containers and logs are not implemented |
 | Local history | 2-second samples, SQLite WAL batches, raw/minute retention and 64 MiB pruning | Cross-machine long-term aggregation is intentionally absent |
 | Remote server | Endpoint authentication, allowlist authorization, immediate revoke teardown, node info, live metrics, health, path and bounded history protocol | NAT and relay migration evidence remains incomplete |
 | Pairing | Five-minute, attempt-limited, single-use secret, window-scoped mDNS endpoint advertisement, copy/paste import, local QR generation and private file import/export | Cross-LAN pairing depends on transferred direct addresses or a configured self-hosted relay |

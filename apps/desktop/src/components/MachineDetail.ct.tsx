@@ -35,6 +35,14 @@ test("closes the history dialog with Escape", async ({ mount }) => {
   await expect.poll(() => closed).toBe(1);
 });
 
+test("names the sensor behind the temperature it reports", async ({ mount }) => {
+  const component = await mount(
+    <MachineDetail detail={machineDetailStateRegistry.ready} onClose={() => undefined} />,
+  );
+  await expect(component.getByText("62 °C")).toBeVisible();
+  await expect(component.getByText("Package id 0")).toBeVisible();
+});
+
 test("distinguishes empty history from a zero metric", async ({ mount }) => {
   const component = await mount(
     <MachineDetail detail={machineDetailStateRegistry.empty} onClose={() => undefined} />,
