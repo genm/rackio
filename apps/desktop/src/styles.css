@@ -775,7 +775,7 @@ h2 {
 
 .metrics {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 8px;
   margin: 0 0 14px;
 }
@@ -930,6 +930,10 @@ h2 {
 
   .node-grid {
     grid-template-columns: 1fr;
+  }
+
+  .metrics {
+    grid-template-columns: repeat(3, 1fr);
   }
 
   .field-grid {

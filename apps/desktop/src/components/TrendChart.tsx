@@ -1,6 +1,10 @@
+import type { TrendScale } from "../trend-series";
+
 interface TrendChartProps {
-  /** Percentage samples on a fixed 0–100 scale, oldest first. */
+  /** Samples in the scale's unit, oldest first. */
   values: number[];
+  /** How the y axis is bounded and labelled; see `trendScale`. */
+  scale: TrendScale;
   label: string;
   /** Left end of the time axis, e.g. "4 min ago" or "09:30". */
   startLabel?: string;
@@ -12,12 +16,14 @@ interface TrendChartProps {
 }
 
 /**
- * A percentage trend on a fixed 0–100 scale. The scale never auto-fits: a
- * flat line at 5% must look calm and a line at 95% must look loaded, which
- * auto-scaling would erase.
+ * A metric trend on an explicit, labelled scale. Bounded units keep a fixed
+ * ceiling — a flat line at 5% must look calm and a line at 95% must look
+ * loaded, which auto-fitting would erase — while the scale object lets
+ * unbounded units opt into a data-derived ceiling.
  */
 export function TrendChart({
   values,
+  scale,
   label,
   startLabel,
   endLabel,
@@ -31,10 +37,10 @@ export function TrendChart({
       </div>
     );
   }
-  const clamped = values.map((value) => Math.min(100, Math.max(0, value)));
+  const clamped = values.map((value) => Math.min(scale.max, Math.max(0, value)));
   const coordinates = clamped.map((value, index) => ({
     x: (index / (clamped.length - 1)) * 100,
-    y: 100 - value,
+    y: 100 - (value / scale.max) * 100,
   }));
   const line = coordinates.map(({ x, y }) => `${x},${y}`).join(" ");
   const area = `M0,100 L${line.split(" ").join(" L")} L100,100 Z`;
@@ -47,8 +53,8 @@ export function TrendChart({
           <path className="trend-area" d={area} />
           <polyline className="trend-line" points={line} vectorEffect="non-scaling-stroke" />
         </svg>
-        <span className="trend-scale trend-scale-top">100%</span>
-        <span className="trend-scale trend-scale-mid">50</span>
+        <span className="trend-scale trend-scale-top">{scale.topLabel}</span>
+        <span className="trend-scale trend-scale-mid">{scale.midLabel}</span>
         <span className="trend-scale trend-scale-bottom">0</span>
         <span
           className="trend-dot"

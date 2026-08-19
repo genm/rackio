@@ -608,7 +608,11 @@ async fn monitor_session(
                 let snapshot = entries
                     .entry(record.endpoint_id.clone())
                     .or_insert_with(|| RemoteMachineSnapshot::offline(record));
-                snapshot.trend.push(TrendSample::from(&sample));
+                // RTT is the viewer's own measurement of this connection, so
+                // it is stamped here rather than carried by the peer's sample.
+                let mut point = TrendSample::from(&sample);
+                point.rtt_ms = snapshot.rtt_ms;
+                snapshot.trend.push(point);
                 snapshot.latest = Some(sample);
                 // Do not restamp `state` here. `refresh_remote_state` owns it
                 // and refreshes it every five seconds; re-applying the

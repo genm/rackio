@@ -2,7 +2,15 @@ import { useState } from "react";
 
 import { bytes, celsius, percent, timeOfDay } from "../format";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
-import { type TrendMetric, trendMetricRegistry, trendSeries } from "../trend-series";
+import { type TrendMetric, trendMetricRegistry, trendScale, trendSeries } from "../trend-series";
+
+/**
+ * The 24-hour query reads the peer's one-minute buckets, and that storage
+ * schema aggregates only these metrics today. Extending the schema (temp,
+ * disk, network) widens this list — the card's live trend already covers the
+ * full metric registry.
+ */
+const historyMetrics: TrendMetric[] = ["cpu", "memory"];
 import type { MachineDetailState } from "../types";
 import { useModalDialog } from "../useModalDialog";
 import { temperatureDetail } from "./NodeCard";
@@ -32,7 +40,7 @@ function MachineDetailDialog({
   const { node } = detail;
   const [metric, setMetric] = useState<TrendMetric>("cpu");
   const series = detail.state === "ready" ? trendSeries(detail.points, metric) : { values: [] };
-  const metricLabel = trendMetricRegistry[metric].label;
+  const spec = trendMetricRegistry[metric];
   return (
     <div className="dialog-backdrop">
       <section
@@ -82,10 +90,10 @@ function MachineDetailDialog({
               <div className="history-heading">
                 <div>
                   <p className="eyebrow">LAST 24 HOURS</p>
-                  <strong>{metricLabel} load</strong>
+                  <strong>{spec.chartTitle}</strong>
                 </div>
                 <div className="chart-toggle" aria-label="History metric">
-                  {(Object.keys(trendMetricRegistry) as TrendMetric[]).map((option) => (
+                  {historyMetrics.map((option) => (
                     <button
                       key={option}
                       type="button"
@@ -103,10 +111,11 @@ function MachineDetailDialog({
                   "24h ago". */}
               <TrendChart
                 values={series.values}
-                label={`${node.name} 24-hour ${metricLabel} history`}
+                scale={trendScale(spec.scale, series.values)}
+                label={`${node.name} 24-hour ${spec.label} history`}
                 startLabel={series.firstMs === undefined ? undefined : timeOfDay(series.firstMs)}
                 endLabel={series.lastMs === undefined ? undefined : timeOfDay(series.lastMs)}
-                emptyText={`No ${metricLabel} samples in this range`}
+                emptyText={`No ${spec.label} samples in this range`}
               />
               <p className="history-buckets">{detail.points.length} one-minute buckets</p>
             </section>

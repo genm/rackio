@@ -164,23 +164,61 @@ pub struct MetricSample {
 /// A projection of [`MetricSample`], not the sample itself: the trend window
 /// holds up to [`TrendWindow::CAPACITY`] of these per machine in memory and in
 /// the persisted registry, so it carries only the fields a trend can plot.
-/// The timestamp is the sample's own — a viewer must label its time axis from
-/// the data rather than assuming a sampling cadence.
+/// Every periodically displayed metric is carried here — a number the viewer
+/// shows on a cadence must also be plottable, without exception. The timestamp
+/// is the sample's own — a viewer must label its time axis from the data
+/// rather than assuming a sampling cadence.
+///
+/// `rtt_ms` is not part of [`MetricSample`]: the viewer's agent measures it
+/// against the connection, so the stream loop stamps it after projection.
+/// Later fields default so trend windows persisted before them deserialise.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrendSample {
     pub timestamp_ms: i64,
     pub cpu_percent: Option<f32>,
     pub memory_used_bytes: Option<u64>,
     pub memory_total_bytes: Option<u64>,
+    #[serde(default)]
+    pub disk_used_bytes: Option<u64>,
+    #[serde(default)]
+    pub disk_total_bytes: Option<u64>,
+    #[serde(default)]
+    pub temperature_celsius: Option<f32>,
+    #[serde(default)]
+    pub rtt_ms: Option<u64>,
+}
+
+impl MetricSample {
+    /// The fullest disk, the one that runs out first. Owned here so the trend
+    /// and any snapshot view agree on which disk "the machine's disk" is.
+    #[must_use]
+    pub fn worst_disk(&self) -> Option<&DiskMetric> {
+        self.disks
+            .iter()
+            .filter(|disk| disk.total_bytes > 0)
+            .max_by(|left, right| {
+                u128::from(left.used_bytes)
+                    .saturating_mul(u128::from(right.total_bytes))
+                    .cmp(&u128::from(right.used_bytes).saturating_mul(u128::from(left.total_bytes)))
+            })
+    }
 }
 
 impl From<&MetricSample> for TrendSample {
     fn from(sample: &MetricSample) -> Self {
+        let worst_disk = sample.worst_disk();
         Self {
             timestamp_ms: sample.timestamp_ms,
             cpu_percent: sample.cpu_percent,
             memory_used_bytes: sample.memory_used_bytes,
             memory_total_bytes: sample.memory_total_bytes,
+            disk_used_bytes: worst_disk.map(|disk| disk.used_bytes),
+            disk_total_bytes: worst_disk.map(|disk| disk.total_bytes),
+            temperature_celsius: sample
+                .temperature
+                .as_ref()
+                .map(|temperature| temperature.celsius),
+            rtt_ms: None,
         }
     }
 }
@@ -216,6 +254,75 @@ impl TrendWindow {
 }
 
 #[cfg(test)]
+mod trend_sample_tests {
+    use super::{DiskMetric, MetricSample, TemperatureMetric, TrendSample};
+
+    #[test]
+    fn projects_the_fullest_disk_and_the_hottest_sensor() {
+        let sample = MetricSample {
+            timestamp_ms: 1,
+            sequence: 0,
+            cpu_percent: Some(10.0),
+            memory_used_bytes: Some(1),
+            memory_total_bytes: Some(2),
+            swap_used_bytes: None,
+            swap_total_bytes: None,
+            disks: vec![
+                DiskMetric {
+                    mount: String::from("/"),
+                    total_bytes: 100,
+                    used_bytes: 10,
+                },
+                DiskMetric {
+                    mount: String::from("/data"),
+                    total_bytes: 100,
+                    used_bytes: 90,
+                },
+                // A zero-total pseudo filesystem must never win, or the card
+                // would divide by zero for a machine with a real disk.
+                DiskMetric {
+                    mount: String::from("/proc"),
+                    total_bytes: 0,
+                    used_bytes: 0,
+                },
+            ],
+            network: None,
+            temperature: Some(TemperatureMetric {
+                label: String::from("Package id 0"),
+                celsius: 61.5,
+                critical_celsius: None,
+                sensor_count: 7,
+            }),
+            uptime_seconds: 0,
+            errors: Vec::new(),
+        };
+
+        let point = TrendSample::from(&sample);
+        assert_eq!(point.disk_used_bytes, Some(90));
+        assert_eq!(point.disk_total_bytes, Some(100));
+        assert_eq!(point.temperature_celsius, Some(61.5));
+        assert_eq!(
+            point.rtt_ms, None,
+            "RTT is stamped by the stream loop, not the sample"
+        );
+    }
+
+    #[test]
+    fn deserialises_a_pre_disk_trend_sample() {
+        // Windows persisted before the later fields existed must still load.
+        let point: TrendSample = serde_json::from_value(serde_json::json!({
+            "timestamp_ms": 5,
+            "cpu_percent": 1.0,
+            "memory_used_bytes": 1,
+            "memory_total_bytes": 2,
+        }))
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(point.disk_used_bytes, None);
+        assert_eq!(point.rtt_ms, None);
+    }
+}
+
+#[cfg(test)]
 mod trend_window_tests {
     use super::{TrendSample, TrendWindow};
 
@@ -225,6 +332,10 @@ mod trend_window_tests {
             cpu_percent: Some(10.0),
             memory_used_bytes: Some(1_000),
             memory_total_bytes: Some(2_000),
+            disk_used_bytes: Some(90),
+            disk_total_bytes: Some(100),
+            temperature_celsius: Some(61.5),
+            rtt_ms: Some(8),
         }
     }
 

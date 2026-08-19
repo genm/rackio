@@ -16,6 +16,10 @@ function trendFixture(
     cpuPercent,
     memoryUsedBytes,
     memoryTotalBytes,
+    diskUsedBytes: 320_000_000_000,
+    diskTotalBytes: 1_000_000_000_000,
+    temperatureCelsius: 55 + cpuPercent / 10,
+    rttMs: 4 + (index % 3),
   }));
 }
 
@@ -86,6 +90,24 @@ test("switches the trend chart to memory from its metric tile", async ({ mount }
   ).toBeVisible();
   await expect(memoryTile).toHaveAttribute("aria-pressed", "true");
   await studio.screenshot({ path: "../../output/playwright/node-card-memory.png" });
+});
+
+test("every metric tile switches the trend chart", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const studio = component.locator("article").filter({ hasText: "Studio Mac" });
+  const expectations = [
+    { tile: /^Disk/, chart: "Studio Mac Disk usage over the last 10 s" },
+    { tile: /^Temp/, chart: "Studio Mac Temperature over the last 10 s" },
+    { tile: /^RTT/, chart: "Studio Mac RTT over the last 10 s" },
+  ];
+  for (const { tile, chart } of expectations) {
+    await studio.getByRole("button", { name: tile }).click();
+    await expect(studio.getByRole("img", { name: chart })).toBeVisible();
+  }
+  // The RTT axis derives its ceiling from the data instead of pretending the
+  // unit is a percentage.
+  await expect(studio.getByText("10 ms")).toBeVisible();
+  await studio.screenshot({ path: "../../output/playwright/node-card-rtt.png" });
 });
 
 test("dates an offline machine's numbers instead of presenting them as live", async ({ mount }) => {

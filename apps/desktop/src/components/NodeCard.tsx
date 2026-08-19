@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { ago, bytes, celsius, percent, shortDuration } from "../format";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
-import { type TrendMetric, trendMetricRegistry, trendSeries } from "../trend-series";
+import { type TrendMetric, trendMetricRegistry, trendScale, trendSeries } from "../trend-series";
 import type { FleetNode, TemperatureReading } from "../types";
 import { TrendChart } from "./TrendChart";
 
@@ -40,19 +40,29 @@ export function NodeCard({
   const path = connectionPathRegistry[node.path];
   const live = liveStates.has(node.state);
   const [metric, setMetric] = useState<TrendMetric>("cpu");
+  const spec = trendMetricRegistry[metric];
   const series = trendSeries(node.trend, metric);
   const spanSeconds =
     series.firstMs !== undefined && series.lastMs !== undefined
       ? (series.lastMs - series.firstMs) / 1000
       : 0;
-  const metricLabel = trendMetricRegistry[metric].label;
   const tileValues: Record<TrendMetric, string> = {
     cpu: node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`,
     memory: percent(node.memoryUsedBytes, node.memoryTotalBytes),
+    disk: percent(node.diskUsedBytes, node.diskTotalBytes),
+    temp: celsius(node.temperature?.celsius),
+    rtt: node.rttMs == null ? "—" : `${node.rttMs} ms`,
   };
   const currentValue = tileValues[metric] === "—" ? "" : tileValues[metric];
+  // A machine that streams samples but never reports this metric (a sensorless
+  // host, the local machine's RTT) must say so instead of promising data.
+  const emptyText =
+    node.trend.length >= 2
+      ? `No ${spec.label} readings on this machine`
+      : `Collecting ${spec.label} samples…`;
   const metricTile = (tileMetric: TrendMetric) => (
     <button
+      key={tileMetric}
       type="button"
       className="metric metric-selectable"
       aria-pressed={metric === tileMetric}
@@ -60,7 +70,12 @@ export function NodeCard({
       onClick={() => setMetric(tileMetric)}
     >
       <span className="metric-label">{trendMetricRegistry[tileMetric].label}</span>
-      <span className="metric-value">{tileValues[tileMetric]}</span>
+      <span
+        className="metric-value"
+        title={tileMetric === "temp" ? temperatureDetail(node.temperature) : undefined}
+      >
+        {tileValues[tileMetric]}
+      </span>
     </button>
   );
   return (
@@ -78,37 +93,20 @@ export function NodeCard({
         </div>
       </header>
       <div className="trend-head">
-        <span className="trend-title">{metricLabel} load</span>
+        <span className="trend-title">{spec.chartTitle}</span>
         <span className="trend-now">{currentValue}</span>
       </div>
       <TrendChart
         values={series.values}
-        label={`${node.name} ${metricLabel} load over the last ${shortDuration(spanSeconds)}`}
+        scale={trendScale(spec.scale, series.values)}
+        label={`${node.name} ${spec.chartTitle} over the last ${shortDuration(spanSeconds)}`}
         startLabel={series.values.length >= 2 ? `${shortDuration(spanSeconds)} ago` : undefined}
         endLabel={live ? "now" : "last contact"}
-        emptyText={`Collecting ${metricLabel} samples…`}
+        emptyText={emptyText}
         muted={!live}
       />
       <div className="metrics">
-        {metricTile("cpu")}
-        {metricTile("memory")}
-        <div className="metric">
-          <span className="metric-label">Disk</span>
-          <span className="metric-value">{percent(node.diskUsedBytes, node.diskTotalBytes)}</span>
-        </div>
-        <div className="metric">
-          <span className="metric-label">Temp</span>
-          {/* Titled with the sensor and how many it was the hottest of: the
-              number alone cannot be told apart from a battery reading, and a
-              machine without sensors must show "—" rather than 0 °C. */}
-          <span className="metric-value" title={temperatureDetail(node.temperature)}>
-            {celsius(node.temperature?.celsius)}
-          </span>
-        </div>
-        <div className="metric">
-          <span className="metric-label">RTT</span>
-          <span className="metric-value">{node.rttMs == null ? "—" : `${node.rttMs} ms`}</span>
-        </div>
+        {(Object.keys(trendMetricRegistry) as TrendMetric[]).map(metricTile)}
       </div>
       <footer>
         <span>

@@ -779,6 +779,10 @@ fn trend_point_json(sample: &serde_json::Value) -> serde_json::Value {
         "cpuPercent": sample.get("cpu_percent"),
         "memoryUsedBytes": sample.get("memory_used_bytes"),
         "memoryTotalBytes": sample.get("memory_total_bytes"),
+        "diskUsedBytes": sample.get("disk_used_bytes"),
+        "diskTotalBytes": sample.get("disk_total_bytes"),
+        "temperatureCelsius": sample.get("temperature_celsius"),
+        "rttMs": sample.get("rtt_ms"),
     })
 }
 
@@ -1211,6 +1215,10 @@ mod tests {
             "cpu_percent": 12.5,
             "memory_used_bytes": 3_000,
             "memory_total_bytes": 4_000,
+            "disk_used_bytes": 90,
+            "disk_total_bytes": 100,
+            "temperature_celsius": 61.5,
+            "rtt_ms": 8,
         })];
 
         let machine = machine_json(&source, "healthy", "lan_direct", None, None, &trend, None)
@@ -1222,6 +1230,10 @@ mod tests {
                 "cpuPercent": 12.5,
                 "memoryUsedBytes": 3_000,
                 "memoryTotalBytes": 4_000,
+                "diskUsedBytes": 90,
+                "diskTotalBytes": 100,
+                "temperatureCelsius": 61.5,
+                "rttMs": 8,
             }]))
         );
     }

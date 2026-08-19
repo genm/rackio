@@ -34,6 +34,12 @@ export interface TrendPoint {
   cpuPercent?: number | null;
   memoryUsedBytes?: number | null;
   memoryTotalBytes?: number | null;
+  /** The fullest disk at sample time, chosen by the agent's domain rule. */
+  diskUsedBytes?: number | null;
+  diskTotalBytes?: number | null;
+  temperatureCelsius?: number | null;
+  /** The viewer's own connection measurement; absent for the local machine. */
+  rttMs?: number | null;
 }
 
 export interface FleetNode {
