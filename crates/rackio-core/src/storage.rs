@@ -3,7 +3,7 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, params};
 use thiserror::Error;
 
-use crate::{MetricSample, NetworkMetric};
+use crate::{DiskMetric, MetricSample, NetworkMetric, TemperatureMetric};
 
 const RAW_RETENTION_MS: i64 = 24 * 60 * 60 * 1_000;
 const MINUTE_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
@@ -75,10 +75,16 @@ impl MetricStore {
                 rx_sum INTEGER,
                 tx_count INTEGER NOT NULL,
                 tx_sum INTEGER,
+                disk_count INTEGER NOT NULL DEFAULT 0,
+                disk_used_sum INTEGER,
+                disk_total_sum INTEGER,
+                temp_count INTEGER NOT NULL DEFAULT 0,
+                temp_sum REAL,
                 last_sample_json TEXT NOT NULL
             );
             ",
         )?;
+        migrate_minute_metrics_columns(&connection)?;
         Ok(Self {
             connection,
             size_cap_bytes: SIZE_CAP_BYTES,
@@ -122,6 +128,22 @@ impl MetricStore {
                 .network
                 .as_ref()
                 .and_then(|value| i64::try_from(value.sent_bytes_per_second).ok());
+            // The fullest disk, matching the rule `TrendSample` already
+            // projects from a sample. `used`/`total` are read from the same
+            // disk together and gated on one column pair: reporting a used
+            // fraction against a different minute's total would misstate the
+            // ratio the chart draws.
+            let disk = sample.worst_disk().and_then(|disk| {
+                let used = i64::try_from(disk.used_bytes).ok()?;
+                let total = i64::try_from(disk.total_bytes).ok()?;
+                Some((used, total))
+            });
+            let disk_used = disk.map(|(used, _)| used);
+            let disk_total = disk.map(|(_, total)| total);
+            let temp = sample
+                .temperature
+                .as_ref()
+                .map(|temperature| f64::from(temperature.celsius));
             let json = serde_json::to_string(sample)?;
 
             transaction.execute(
@@ -129,12 +151,15 @@ impl MetricStore {
                 INSERT INTO minute_metrics(
                     minute_ms, sample_count, cpu_count, cpu_sum,
                     memory_used_count, memory_used_sum, rx_count, rx_sum,
-                    tx_count, tx_sum, last_sample_json
+                    tx_count, tx_sum, disk_count, disk_used_sum, disk_total_sum,
+                    temp_count, temp_sum, last_sample_json
                 ) VALUES (
                     ?1, 1, CASE WHEN ?2 IS NULL THEN 0 ELSE 1 END, ?2,
                     CASE WHEN ?3 IS NULL THEN 0 ELSE 1 END, ?3,
                     CASE WHEN ?4 IS NULL THEN 0 ELSE 1 END, ?4,
-                    CASE WHEN ?5 IS NULL THEN 0 ELSE 1 END, ?5, ?6
+                    CASE WHEN ?5 IS NULL THEN 0 ELSE 1 END, ?5,
+                    CASE WHEN ?6 IS NULL THEN 0 ELSE 1 END, ?6, ?7,
+                    CASE WHEN ?8 IS NULL THEN 0 ELSE 1 END, ?8, ?9
                 )
                 ON CONFLICT(minute_ms) DO UPDATE SET
                     sample_count = sample_count + 1,
@@ -146,9 +171,16 @@ impl MetricStore {
                     rx_sum = COALESCE(rx_sum, 0) + COALESCE(excluded.rx_sum, 0),
                     tx_count = tx_count + excluded.tx_count,
                     tx_sum = COALESCE(tx_sum, 0) + COALESCE(excluded.tx_sum, 0),
+                    disk_count = disk_count + excluded.disk_count,
+                    disk_used_sum = COALESCE(disk_used_sum, 0) + COALESCE(excluded.disk_used_sum, 0),
+                    disk_total_sum = COALESCE(disk_total_sum, 0) + COALESCE(excluded.disk_total_sum, 0),
+                    temp_count = temp_count + excluded.temp_count,
+                    temp_sum = COALESCE(temp_sum, 0) + COALESCE(excluded.temp_sum, 0),
                     last_sample_json = excluded.last_sample_json
                 ",
-                params![minute_ms, cpu, memory, rx, tx, json],
+                params![
+                    minute_ms, cpu, memory, rx, tx, disk_used, disk_total, temp, json
+                ],
             )?;
         }
         transaction.commit()?;
@@ -209,7 +241,9 @@ impl MetricStore {
         let mut statement = self.connection.prepare(
             "
             SELECT minute_ms, cpu_count, cpu_sum, memory_used_count, memory_used_sum,
-                   rx_count, rx_sum, tx_count, tx_sum, last_sample_json
+                   rx_count, rx_sum, tx_count, tx_sum,
+                   disk_count, disk_used_sum, disk_total_sum, temp_count, temp_sum,
+                   last_sample_json
             FROM minute_metrics
             WHERE minute_ms BETWEEN ?1 AND ?2 ORDER BY minute_ms LIMIT ?3
             ",
@@ -226,7 +260,12 @@ impl MetricStore {
                 row.get::<_, Option<i64>>(6)?,
                 row.get::<_, i64>(7)?,
                 row.get::<_, Option<i64>>(8)?,
-                row.get::<_, String>(9)?,
+                row.get::<_, i64>(9)?,
+                row.get::<_, Option<i64>>(10)?,
+                row.get::<_, Option<i64>>(11)?,
+                row.get::<_, i64>(12)?,
+                row.get::<_, Option<f64>>(13)?,
+                row.get::<_, String>(14)?,
             ))
         })?;
 
@@ -241,6 +280,11 @@ impl MetricStore {
                 rx,
                 tx_count,
                 tx,
+                disk_count,
+                disk_used,
+                disk_total,
+                temp_count,
+                temp,
                 json,
             ) = row?;
             let mut sample: MetricSample = serde_json::from_str(&json)?;
@@ -255,6 +299,24 @@ impl MetricStore {
             } else {
                 sample.network = None;
             }
+            // The averaged fullest-disk reading is not any single mount, so it
+            // is carried as one synthetic entry rather than a real mount name
+            // — history readers key off the value, not the label.
+            sample.disks = if disk_count > 0 {
+                vec![DiskMetric {
+                    mount: String::from("(minute average)"),
+                    used_bytes: average_i64(disk_used, disk_count).unwrap_or_default(),
+                    total_bytes: average_i64(disk_total, disk_count).unwrap_or_default(),
+                }]
+            } else {
+                Vec::new()
+            };
+            sample.temperature = average_f64(temp, temp_count).map(|celsius| TemperatureMetric {
+                label: String::from("(minute average)"),
+                celsius: f64_to_f32(celsius),
+                critical_celsius: None,
+                sensor_count: 0,
+            });
             Ok(sample)
         })
         .collect()
@@ -355,6 +417,40 @@ impl MetricStore {
     }
 }
 
+/// Add the disk/temperature aggregate columns to a `minute_metrics` table
+/// created before they existed.
+///
+/// `CREATE TABLE IF NOT EXISTS` only runs the full DDL for a brand-new file,
+/// so a store opened against an older on-disk schema would otherwise never
+/// gain these columns. `SQLite` has no `ADD COLUMN IF NOT EXISTS`, so
+/// presence is checked via `PRAGMA table_info` first; a table that already
+/// has a column (the common case, once every store has been migrated once)
+/// is left untouched.
+fn migrate_minute_metrics_columns(connection: &Connection) -> Result<(), StoreError> {
+    const REQUIRED_COLUMNS: [(&str, &str); 5] = [
+        ("disk_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("disk_used_sum", "INTEGER"),
+        ("disk_total_sum", "INTEGER"),
+        ("temp_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("temp_sum", "REAL"),
+    ];
+
+    let mut statement = connection.prepare("PRAGMA table_info(minute_metrics)")?;
+    let existing: Vec<String> = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<_, _>>()?;
+    drop(statement);
+
+    for (name, definition) in REQUIRED_COLUMNS {
+        if !existing.iter().any(|column| column == name) {
+            connection.execute_batch(&format!(
+                "ALTER TABLE minute_metrics ADD COLUMN {name} {definition}"
+            ))?;
+        }
+    }
+    Ok(())
+}
+
 // CPU samples are bounded percentages, so the f64 SQLite aggregate is always
 // representable at the precision used by the f32 wire/domain field.
 #[allow(clippy::cast_possible_truncation)]
@@ -377,9 +473,11 @@ fn average_i64(sum: Option<i64>, count: i64) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use rusqlite::Connection;
+
     use crate::{
-        CapabilityState, CollectorError, HistoryResolution, MetricSample, MetricStore,
-        NetworkMetric,
+        CapabilityState, CollectorError, DiskMetric, HistoryResolution, MetricSample, MetricStore,
+        NetworkMetric, TemperatureMetric,
     };
 
     use super::{
@@ -604,6 +702,165 @@ mod tests {
             .unwrap_or_else(|| panic!("both samples carried a network reading"));
         assert_eq!(network.received_bytes_per_second, 20, "(10 + 30) / 2");
         assert_eq!(network.sent_bytes_per_second, 40, "(20 + 60) / 2");
+    }
+
+    #[test]
+    fn minute_history_averages_the_fullest_disk_and_the_hottest_sensor() {
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        let mut low = sample(1_000, 10.0);
+        low.disks = vec![
+            DiskMetric {
+                mount: String::from("/"),
+                total_bytes: 100,
+                used_bytes: 20,
+            },
+            // The fullest disk wins per sample, matching `TrendSample`'s rule —
+            // averaging every mount instead would blend an idle disk into the
+            // one an operator actually needs to watch.
+            DiskMetric {
+                mount: String::from("/data"),
+                total_bytes: 200,
+                used_bytes: 100,
+            },
+        ];
+        low.temperature = Some(TemperatureMetric {
+            label: String::from("Package id 0"),
+            celsius: 40.0,
+            critical_celsius: None,
+            sensor_count: 1,
+        });
+        let mut high = sample(2_000, 30.0);
+        high.disks = vec![DiskMetric {
+            mount: String::from("/"),
+            total_bytes: 100,
+            used_bytes: 60,
+        }];
+        high.temperature = Some(TemperatureMetric {
+            label: String::from("Package id 0"),
+            celsius: 60.0,
+            critical_celsius: None,
+            sensor_count: 1,
+        });
+        store
+            .insert_batch(&[low, high])
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let minute = store
+            .query(0, 60_000, HistoryResolution::Minute)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let disk = minute[0]
+            .worst_disk()
+            .unwrap_or_else(|| panic!("both samples carried a disk reading"));
+        assert_eq!(
+            disk.used_bytes, 80,
+            "(100 + 60) / 2, the fullest disk each sample"
+        );
+        assert_eq!(disk.total_bytes, 150, "(200 + 100) / 2");
+        assert_eq!(
+            minute[0]
+                .temperature
+                .as_ref()
+                .map(|temperature| temperature.celsius),
+            Some(50.0),
+            "(40 + 60) / 2"
+        );
+    }
+
+    #[test]
+    fn a_minute_without_any_disk_or_temperature_reading_reports_neither() {
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        store
+            .insert_batch(&[sample(1_000, 10.0)])
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let minute = store
+            .query(0, 60_000, HistoryResolution::Minute)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            minute[0].disks.is_empty(),
+            "no sample carried a disk reading"
+        );
+        assert!(minute[0].temperature.is_none());
+    }
+
+    #[test]
+    fn a_store_opened_against_a_pre_disk_temp_schema_still_reads_and_writes() {
+        // A file left over from before disk/temperature aggregation exists
+        // only has the earlier columns. `MetricStore::open` must migrate it in
+        // place rather than fail or silently drop the older rows.
+        let directory = std::env::temp_dir().join(format!(
+            "rackio-storage-migration-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap_or_else(|error| panic!("{error}"));
+        let path = directory.join("metrics.sqlite3");
+        {
+            let connection = Connection::open(&path).unwrap_or_else(|error| panic!("{error}"));
+            connection
+                .execute_batch(
+                    "
+                    CREATE TABLE minute_metrics (
+                        minute_ms INTEGER PRIMARY KEY,
+                        sample_count INTEGER NOT NULL,
+                        cpu_count INTEGER NOT NULL,
+                        cpu_sum REAL,
+                        memory_used_count INTEGER NOT NULL,
+                        memory_used_sum INTEGER,
+                        rx_count INTEGER NOT NULL,
+                        rx_sum INTEGER,
+                        tx_count INTEGER NOT NULL,
+                        tx_sum INTEGER,
+                        last_sample_json TEXT NOT NULL
+                    );
+                    INSERT INTO minute_metrics(
+                        minute_ms, sample_count, cpu_count, cpu_sum,
+                        memory_used_count, memory_used_sum, rx_count, rx_sum,
+                        tx_count, tx_sum, last_sample_json
+                    ) VALUES (
+                        0, 1, 1, 10.0, 1, 100, 1, 10, 1, 20,
+                        '{\"timestamp_ms\":0,\"sequence\":0,\"cpu_percent\":10.0,
+                          \"memory_used_bytes\":100,\"memory_total_bytes\":200,
+                          \"swap_used_bytes\":0,\"swap_total_bytes\":0,\"disks\":[],
+                          \"network\":{\"received_bytes_per_second\":10,\"sent_bytes_per_second\":20},
+                          \"uptime_seconds\":1,\"errors\":[]}'
+                    );
+                    ",
+                )
+                .unwrap_or_else(|error| panic!("{error}"));
+        }
+
+        let mut store = MetricStore::open(&path).unwrap_or_else(|error| panic!("{error}"));
+        let pre_existing = store
+            .query(0, 0, HistoryResolution::Minute)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(pre_existing.len(), 1, "the pre-migration row survives");
+        assert_eq!(pre_existing[0].cpu_percent, Some(10.0));
+        assert!(
+            pre_existing[0].disks.is_empty(),
+            "a minute captured before this schema change has no disk average"
+        );
+        assert!(pre_existing[0].temperature.is_none());
+
+        let mut with_disk = sample(120_000, 50.0);
+        with_disk.disks = vec![DiskMetric {
+            mount: String::from("/"),
+            total_bytes: 100,
+            used_bytes: 25,
+        }];
+        store
+            .insert_batch(&[with_disk])
+            .unwrap_or_else(|error| panic!("{error}"));
+        let after_migration = store
+            .query(120_000, 120_000, HistoryResolution::Minute)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            after_migration[0].worst_disk().map(|disk| disk.used_bytes),
+            Some(25),
+            "the migrated store aggregates disk readings written after it opened"
+        );
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
