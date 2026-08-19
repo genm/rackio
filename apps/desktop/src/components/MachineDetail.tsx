@@ -39,7 +39,7 @@ function MachineDetailDialog({
   const dialogRef = useModalDialog<HTMLElement>(onClose);
   const { node } = detail;
   const [metric, setMetric] = useState<TrendMetric>("cpu");
-  const series = detail.state === "ready" ? trendSeries(detail.points, metric) : { values: [] };
+  const series = detail.state === "ready" ? trendSeries(detail.points, metric) : { samples: [] };
   const spec = trendMetricRegistry[metric];
   return (
     <div className="dialog-backdrop">
@@ -110,8 +110,11 @@ function MachineDetailDialog({
                   with the hours it actually covers rather than a hardcoded
                   "24h ago". */}
               <TrendChart
-                values={series.values}
-                scale={trendScale(spec.scale, series.values)}
+                samples={series.samples}
+                scale={trendScale(
+                  spec.scale,
+                  series.samples.map((sample) => sample.value),
+                )}
                 label={`${node.name} 24-hour ${spec.label} history`}
                 startLabel={series.firstMs === undefined ? undefined : timeOfDay(series.firstMs)}
                 endLabel={series.lastMs === undefined ? undefined : timeOfDay(series.lastMs)}

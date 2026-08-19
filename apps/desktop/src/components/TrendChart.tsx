@@ -1,8 +1,8 @@
-import type { TrendScale } from "../trend-series";
+import { trendCoordinates, type TrendSample, type TrendScale } from "../trend-series";
 
 interface TrendChartProps {
-  /** Samples in the scale's unit, oldest first. */
-  values: number[];
+  /** Samples in the scale's unit, timestamped and oldest first. */
+  samples: TrendSample[];
   /** How the y axis is bounded and labelled; see `trendScale`. */
   scale: TrendScale;
   label: string;
@@ -22,7 +22,7 @@ interface TrendChartProps {
  * unbounded units opt into a data-derived ceiling.
  */
 export function TrendChart({
-  values,
+  samples,
   scale,
   label,
   startLabel,
@@ -30,18 +30,14 @@ export function TrendChart({
   emptyText = "Collecting samples…",
   muted = false,
 }: TrendChartProps) {
-  if (values.length < 2) {
+  if (samples.length < 2) {
     return (
       <div className="trend trend-empty" role="img" aria-label={`${label}: no samples yet`}>
         <span>{emptyText}</span>
       </div>
     );
   }
-  const clamped = values.map((value) => Math.min(scale.max, Math.max(0, value)));
-  const coordinates = clamped.map((value, index) => ({
-    x: (index / (clamped.length - 1)) * 100,
-    y: 100 - (value / scale.max) * 100,
-  }));
+  const coordinates = trendCoordinates(samples, scale.max);
   const line = coordinates.map(({ x, y }) => `${x},${y}`).join(" ");
   const area = `M0,100 L${line.split(" ").join(" L")} L100,100 Z`;
   const last = coordinates[coordinates.length - 1];

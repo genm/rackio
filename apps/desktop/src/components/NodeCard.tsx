@@ -97,10 +97,13 @@ export function NodeCard({
         <span className="trend-now">{currentValue}</span>
       </div>
       <TrendChart
-        values={series.values}
-        scale={trendScale(spec.scale, series.values)}
+        samples={series.samples}
+        scale={trendScale(
+          spec.scale,
+          series.samples.map((sample) => sample.value),
+        )}
         label={`${node.name} ${spec.chartTitle} over the last ${shortDuration(spanSeconds)}`}
-        startLabel={series.values.length >= 2 ? `${shortDuration(spanSeconds)} ago` : undefined}
+        startLabel={series.samples.length >= 2 ? `${shortDuration(spanSeconds)} ago` : undefined}
         endLabel={live ? "now" : "last contact"}
         emptyText={emptyText}
         muted={!live}

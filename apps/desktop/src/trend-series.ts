@@ -55,9 +55,15 @@ export const trendMetricRegistry: Record<
   },
 };
 
+/** A readable point in the metric's own unit, paired with when it was taken. */
+export interface TrendSample {
+  value: number;
+  timestampMs: number;
+}
+
 export interface TrendSeries {
-  /** Values in the metric's own unit, oldest first. */
-  values: number[];
+  /** Readable samples, oldest first. */
+  samples: TrendSample[];
   /** Timestamp of the first/last readable point; absent when none exist. */
   firstMs?: number;
   lastMs?: number;
@@ -67,18 +73,44 @@ export interface TrendSeries {
  * Project one metric out of a machine's timestamped points. Points where the
  * metric was unreadable are skipped rather than plotted as zero, and the
  * returned range covers only readable points so the axis never claims time the
- * line does not show.
+ * line does not show. Each sample keeps its own timestamp so a gap between two
+ * readable points can be rendered as the wide span it actually was.
  */
 export function trendSeries(points: TrendPoint[], metric: TrendMetric): TrendSeries {
-  const series: TrendSeries = { values: [] };
+  const series: TrendSeries = { samples: [] };
   for (const point of points) {
     const value = trendMetricRegistry[metric].read(point);
     if (value == null) continue;
-    series.values.push(value);
+    series.samples.push({ value, timestampMs: point.timestampMs });
     series.firstMs ??= point.timestampMs;
     series.lastMs = point.timestampMs;
   }
   return series;
+}
+
+export interface TrendCoordinate {
+  x: number;
+  y: number;
+}
+
+/**
+ * Places each sample by elapsed time rather than array index, so a gap where
+ * one tick was unreadable renders as a visibly wider span instead of being
+ * compressed to the same width as an adjacent on-time tick. Samples that all
+ * share one timestamp (or a lone sample) fall back to even index spacing
+ * instead of dividing by a zero span.
+ */
+export function trendCoordinates(samples: TrendSample[], max: number): TrendCoordinate[] {
+  const firstMs = samples[0]?.timestampMs;
+  const lastMs = samples[samples.length - 1]?.timestampMs;
+  const spanMs = firstMs !== undefined && lastMs !== undefined ? lastMs - firstMs : 0;
+  return samples.map((sample, index) => ({
+    x:
+      spanMs > 0
+        ? ((sample.timestampMs - firstMs!) / spanMs) * 100
+        : (index / Math.max(samples.length - 1, 1)) * 100,
+    y: 100 - (Math.min(max, Math.max(0, sample.value)) / max) * 100,
+  }));
 }
 
 export interface TrendScale {
