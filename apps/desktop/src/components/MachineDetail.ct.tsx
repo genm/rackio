@@ -22,6 +22,23 @@ test("switches the 24-hour chart between CPU and memory", async ({ mount }) => {
   await expect(component.getByRole("img", { name: /24-hour Memory history/ })).toBeVisible();
 });
 
+test("also offers disk and temperature on the 24-hour chart", async ({ mount }) => {
+  const component = await mount(
+    <MachineDetail detail={machineDetailStateRegistry.ready} onClose={() => undefined} />,
+  );
+  const toggle = component.getByLabel("History metric");
+
+  await toggle.getByRole("button", { name: "Disk" }).click();
+  await expect(component.getByRole("img", { name: /24-hour Disk history/ })).toBeVisible();
+
+  await toggle.getByRole("button", { name: "Temp" }).click();
+  await expect(component.getByRole("img", { name: /24-hour Temp history/ })).toBeVisible();
+
+  // RTT never appears: the peer's storage never captures it, so widening the
+  // schema for CPU/memory/disk/temp still cannot offer it here.
+  await expect(toggle.getByRole("button", { name: "RTT" })).toHaveCount(0);
+});
+
 test("keeps remote history failure visible without hiding live state", async ({ mount }) => {
   const component = await mount(
     <MachineDetail detail={machineDetailStateRegistry.error} onClose={() => undefined} />,

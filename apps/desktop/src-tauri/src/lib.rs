@@ -227,24 +227,39 @@ async fn machine_history(endpoint_id: String, hours: u16) -> Result<serde_json::
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| String::from("daemon history response did not contain samples"))?;
     Ok(serde_json::Value::Array(
-        samples
-            .iter()
-            .map(|sample| {
-                serde_json::json!({
-                    "timestampMs": sample.get("timestamp_ms"),
-                    "cpuPercent": sample.get("cpu_percent"),
-                    "memoryUsedBytes": sample.get("memory_used_bytes"),
-                    "memoryTotalBytes": sample.get("memory_total_bytes"),
-                    "networkReceivedBytesPerSecond": sample
-                        .get("network")
-                        .and_then(|network| network.get("received_bytes_per_second")),
-                    "networkSentBytesPerSecond": sample
-                        .get("network")
-                        .and_then(|network| network.get("sent_bytes_per_second")),
-                })
-            })
-            .collect(),
+        samples.iter().map(history_point_from_sample).collect(),
     ))
+}
+
+/// Project one daemon-reported `MetricSample` (`snake_case`) into the
+/// camelCase `HistoryPoint` shape the frontend expects.
+///
+/// The peer's minute buckets report the fullest disk and the hottest sensor
+/// as a single averaged reading, carried as a one-element `disks` array so
+/// the minute resolution can reuse the raw resolution's wire shape — see
+/// `MetricStore::query_minute`.
+fn history_point_from_sample(sample: &serde_json::Value) -> serde_json::Value {
+    let worst_disk = sample
+        .get("disks")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|disks| disks.first());
+    serde_json::json!({
+        "timestampMs": sample.get("timestamp_ms"),
+        "cpuPercent": sample.get("cpu_percent"),
+        "memoryUsedBytes": sample.get("memory_used_bytes"),
+        "memoryTotalBytes": sample.get("memory_total_bytes"),
+        "diskUsedBytes": worst_disk.and_then(|disk| disk.get("used_bytes")),
+        "diskTotalBytes": worst_disk.and_then(|disk| disk.get("total_bytes")),
+        "temperatureCelsius": sample
+            .get("temperature")
+            .and_then(|temperature| temperature.get("celsius")),
+        "networkReceivedBytesPerSecond": sample
+            .get("network")
+            .and_then(|network| network.get("received_bytes_per_second")),
+        "networkSentBytesPerSecond": sample
+            .get("network")
+            .and_then(|network| network.get("sent_bytes_per_second")),
+    })
 }
 
 struct TrayRegistry<R: Runtime = tauri::Wry> {
@@ -1045,9 +1060,10 @@ mod tests {
 
     use super::{
         DAEMON_REQUEST_TIMEOUT, TrayMachineMenu, TrayNodeSnapshot, TrayTemperature,
-        bounded_daemon_exchange, fleet_tray_status, machine_json, machine_tray_id,
-        pairing_bundle_expiry, pairing_qr_data_url, retired_tray_ids, save_pairing_bundle,
-        temperature_label, tray_machine_menu, tray_node_status, tray_state_color,
+        bounded_daemon_exchange, fleet_tray_status, history_point_from_sample, machine_json,
+        machine_tray_id, pairing_bundle_expiry, pairing_qr_data_url, retired_tray_ids,
+        save_pairing_bundle, temperature_label, tray_machine_menu, tray_node_status,
+        tray_state_color,
     };
 
     fn ids(values: &[&str]) -> HashSet<String> {
@@ -1304,5 +1320,41 @@ mod tests {
             tray_state_color("offline").unwrap_or_default(),
             [255, 111, 103, 255]
         );
+    }
+
+    #[test]
+    fn history_point_carries_the_minute_averaged_disk_and_temperature() {
+        let sample = serde_json::json!({
+            "timestamp_ms": 60_000,
+            "cpu_percent": 20.0,
+            "memory_used_bytes": 100,
+            "memory_total_bytes": 200,
+            "disks": [{"mount": "(minute average)", "used_bytes": 25, "total_bytes": 100}],
+            "temperature": {"label": "(minute average)", "celsius": 50.0, "sensor_count": 0},
+            "network": {"received_bytes_per_second": 10, "sent_bytes_per_second": 20},
+        });
+
+        let point = history_point_from_sample(&sample);
+        assert_eq!(point["timestampMs"], 60_000);
+        assert_eq!(point["diskUsedBytes"], 25);
+        assert_eq!(point["diskTotalBytes"], 100);
+        assert_eq!(point["temperatureCelsius"], 50.0);
+        assert_eq!(point["networkReceivedBytesPerSecond"], 10);
+    }
+
+    #[test]
+    fn history_point_reports_no_disk_or_temperature_when_the_minute_had_neither() {
+        let sample = serde_json::json!({
+            "timestamp_ms": 60_000,
+            "cpu_percent": 20.0,
+            "memory_used_bytes": 100,
+            "memory_total_bytes": 200,
+            "disks": [],
+        });
+
+        let point = history_point_from_sample(&sample);
+        assert!(point["diskUsedBytes"].is_null());
+        assert!(point["diskTotalBytes"].is_null());
+        assert!(point["temperatureCelsius"].is_null());
     }
 }
