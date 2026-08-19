@@ -221,8 +221,21 @@ impl PairingManager {
         peer: EndpointId,
         supplied: &str,
     ) -> Result<(), PairingError> {
+        self.verify_and_consume_at(Utc::now().timestamp_millis(), peer, supplied)
+    }
+
+    /// The expiry boundary is inclusive: a request that arrives in the window's
+    /// final millisecond is still inside the five minutes the operator was
+    /// shown. Taking the timestamp once also keeps a single request from being
+    /// judged against two different readings of the clock.
+    fn verify_and_consume_at(
+        &mut self,
+        now_ms: i64,
+        peer: EndpointId,
+        supplied: &str,
+    ) -> Result<(), PairingError> {
         let window = self.active.as_mut().ok_or(PairingError::WindowClosed)?;
-        if Utc::now().timestamp_millis() > window.expires_at_ms {
+        if now_ms > window.expires_at_ms {
             self.active = None;
             return Err(PairingError::Expired);
         }
@@ -384,12 +397,14 @@ fn persist_records(
 mod tests {
     use std::fs;
 
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use chrono::Utc;
     use iroh::SecretKey;
     use uuid::Uuid;
 
     use super::{
-        MAX_TRACKED_FAILING_PEERS, PairingBundle, PairingError, PairingManager, PeerPermissions,
-        PeerRegistry,
+        MAX_FAILURES, MAX_TRACKED_FAILING_PEERS, PAIRING_SECRET_BYTES, PAIRING_WINDOW,
+        PairingBundle, PairingError, PairingManager, PeerPermissions, PeerRegistry,
     };
 
     #[test]
@@ -492,6 +507,102 @@ mod tests {
     }
 
     #[test]
+    fn one_failure_short_of_the_limit_still_admits_the_real_secret() {
+        // The lockout has to count to five. A rule that trips on the first
+        // failure would turn one mistyped secret into a closed door for the
+        // operator's own device, and every rejection would look the same.
+        let key = SecretKey::generate();
+        let viewer = SecretKey::generate().public();
+        let mut manager = PairingManager::default();
+        let bundle = manager.open(Uuid::new_v4(), key.public(), Vec::new(), Vec::new());
+
+        for _ in 1..MAX_FAILURES {
+            assert!(manager.verify_and_consume(viewer, "invalid").is_err());
+        }
+
+        assert!(
+            manager
+                .verify_and_consume(viewer, &bundle.one_time_secret)
+                .is_ok(),
+            "four failures must not lock the peer out"
+        );
+    }
+
+    #[test]
+    fn a_wrong_secret_of_the_expected_length_is_rejected() {
+        // Length is a precondition of the constant-time comparison, never a
+        // substitute for it: accepting any 32-byte value would hand pairing to
+        // anyone who can reach the daemon during the window.
+        let key = SecretKey::generate();
+        let attacker = SecretKey::generate().public();
+        let mut manager = PairingManager::default();
+        let bundle = manager.open(Uuid::new_v4(), key.public(), Vec::new(), Vec::new());
+        let wrong = URL_SAFE_NO_PAD.encode([0_u8; PAIRING_SECRET_BYTES]);
+        assert_ne!(wrong, bundle.one_time_secret);
+
+        assert!(matches!(
+            manager.verify_and_consume(attacker, &wrong),
+            Err(PairingError::Rejected)
+        ));
+        assert!(
+            manager.is_open(),
+            "a rejected attempt must leave the window open"
+        );
+    }
+
+    #[test]
+    fn the_window_closes_five_minutes_after_it_opens() {
+        let key = SecretKey::generate();
+        let mut manager = PairingManager::default();
+        assert!(
+            !manager.is_open(),
+            "a manager with no window must not report one"
+        );
+
+        let before = Utc::now().timestamp_millis();
+        let bundle = manager.open(Uuid::new_v4(), key.public(), Vec::new(), Vec::new());
+        let after = Utc::now().timestamp_millis();
+
+        let window_ms = i64::try_from(PAIRING_WINDOW.as_millis()).unwrap_or_default();
+        assert_eq!(window_ms, 300_000, "the documented window is five minutes");
+        assert!(
+            bundle.expires_at_ms >= before + window_ms && bundle.expires_at_ms <= after + window_ms,
+            "expiry must be exactly one window after the open: {} against {before}..={after}",
+            bundle.expires_at_ms
+        );
+        assert!(manager.is_open());
+    }
+
+    #[test]
+    fn the_final_millisecond_of_the_window_still_pairs() {
+        // The expiry boundary is inclusive, so the operator gets the full five
+        // minutes they were shown rather than four minutes and 59.999 seconds.
+        let key = SecretKey::generate();
+        let viewer = SecretKey::generate().public();
+        let mut manager = PairingManager::default();
+        let bundle = manager.open(Uuid::new_v4(), key.public(), Vec::new(), Vec::new());
+
+        assert!(
+            manager
+                .verify_and_consume_at(bundle.expires_at_ms, viewer, &bundle.one_time_secret)
+                .is_ok(),
+            "the last millisecond of the window is still inside it"
+        );
+        assert!(!manager.is_open(), "a consumed window must close");
+
+        let mut manager = PairingManager::default();
+        let bundle = manager.open(Uuid::new_v4(), key.public(), Vec::new(), Vec::new());
+        assert!(matches!(
+            manager.verify_and_consume_at(
+                bundle.expires_at_ms + 1,
+                viewer,
+                &bundle.one_time_secret
+            ),
+            Err(PairingError::Expired)
+        ));
+    }
+
+    #[test]
     fn a_failing_peer_cannot_burn_the_window_for_the_operators_device() {
         let key = SecretKey::generate();
         let attacker = SecretKey::generate().public();
@@ -564,6 +675,66 @@ mod tests {
         assert!(reloaded.contains(endpoint_id).unwrap_or(false));
         assert!(reloaded.revoke(&endpoint_id.to_string()).unwrap_or(false));
         assert!(!reloaded.contains(endpoint_id).unwrap_or(true));
+    }
+
+    #[test]
+    fn an_unreadable_registry_is_not_an_empty_allowlist() {
+        // Only a missing file means "nobody is paired yet". Reading an
+        // unreadable registry as empty would silently revoke every authorized
+        // viewer and then re-authorize them from a stale-looking blank slate.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = directory.path().join("peers.json");
+        fs::create_dir(&path).unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(
+            PeerRegistry::load(&path).is_err(),
+            "a registry that cannot be read must fail closed"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_registry_is_not_an_empty_allowlist() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = directory.path().join("peers.json");
+        fs::write(&path, b"{ not json").unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(matches!(
+            PeerRegistry::load(&path),
+            Err(PairingError::Json(_))
+        ));
+    }
+
+    #[test]
+    fn the_registry_lists_every_authorized_peer() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let registry = PeerRegistry::load(directory.path().join("peers.json"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            registry
+                .list()
+                .unwrap_or_else(|error| panic!("{error}"))
+                .is_empty(),
+            "a fresh registry authorizes nobody"
+        );
+        let first = SecretKey::generate().public();
+        let second = SecretKey::generate().public();
+
+        for peer in [first, second] {
+            registry
+                .authorize(peer, PeerPermissions::default())
+                .unwrap_or_else(|error| panic!("{error}"));
+        }
+
+        let mut listed: Vec<_> = registry
+            .list()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .into_iter()
+            .map(|record| record.endpoint_id)
+            .collect();
+        listed.sort();
+        let mut expected = vec![first.to_string(), second.to_string()];
+        expected.sort();
+        assert_eq!(listed, expected);
     }
 
     #[test]
