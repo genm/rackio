@@ -208,9 +208,29 @@ jobs:
           }
       - name: Install Linux desktop libraries
         if: env.RUN_RUST == 'true' && runner.os == 'Linux'
+        env:
+          # Without a TTY, a package's postinst debconf prompt blocks forever
+          # instead of failing, which no timeout/retry budget below can outlast.
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          # Same hardening as the mingw-w64 install in rust-windows-cross-check:
+          # azure.archive.ubuntu.com occasionally stalls a request instead of
+          # failing it, and unhardened apt has no timeout to notice. See that
+          # job's step for the full rationale.
+          apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10)
+          attempt=1
+          max_attempts=3
+          until sudo timeout 60s apt-get "${apt_opts[@]}" update \
+            && sudo timeout 120s apt-get "${apt_opts[@]}" install --yes libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf; do
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "::error::apt-get update/install of Linux desktop libraries failed after ${max_attempts} attempts"
+              exit 1
+            fi
+            backoff=$((attempt * 10))
+            echo "apt-get attempt ${attempt}/${max_attempts} failed or timed out; retrying in ${backoff}s..."
+            sleep "$backoff"
+            attempt=$((attempt + 1))
+          done
       - name: Select pinned Rust toolchain
         if: env.RUN_RUST == 'true'
         run: rustup show
@@ -303,10 +323,39 @@ jobs:
         run: rustup show
       - name: Install Windows GNU cross-compile target and linker
         if: env.RUN_RUST_WINDOWS_CROSS == 'true'
+        env:
+          # Without a TTY, a package's postinst debconf prompt blocks forever
+          # instead of failing, which no timeout/retry budget below can outlast.
+          DEBIAN_FRONTEND: noninteractive
         run: |
           rustup target add x86_64-pc-windows-gnu
-          sudo apt-get update
-          sudo apt-get install --yes mingw-w64
+          # azure.archive.ubuntu.com is the default package mirror on GitHub's
+          # Azure-hosted runners and occasionally accepts a connection and then
+          # never sends data. apt has no timeout for a stalled transfer by
+          # default, so a bad mirror backend hangs until the job's 15-minute
+          # timeout kills the whole runner with no diagnostic in the log.
+          # Acquire::http::Timeout/Acquire::https::Timeout/Acquire::Retries
+          # give apt a short per-request ceiling so a stalled file fails fast
+          # and retries onto a (likely different, healthy) backend behind the
+          # mirror's round-robin DNS. The outer `timeout` + attempt loop is a
+          # hard backstop for whatever those options can't cover (e.g. apt
+          # itself wedging), bounding this step to well under the job's
+          # timeout even in a genuine mirror outage, with a clear error in
+          # the log instead of a silent kill.
+          apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10)
+          attempt=1
+          max_attempts=3
+          until sudo timeout 60s apt-get "${apt_opts[@]}" update \
+            && sudo timeout 120s apt-get "${apt_opts[@]}" install --yes mingw-w64; do
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "::error::apt-get update/install of mingw-w64 failed after ${max_attempts} attempts"
+              exit 1
+            fi
+            backoff=$((attempt * 10))
+            echo "apt-get attempt ${attempt}/${max_attempts} failed or timed out; retrying in ${backoff}s..."
+            sleep "$backoff"
+            attempt=$((attempt + 1))
+          done
       # Every crate whose `cfg(windows)` branches would otherwise compile only
       # on the Windows runner. `rackio-desktop` is excluded because Tauri needs
       # a Windows webview SDK that cannot be cross-linked from Linux; the
