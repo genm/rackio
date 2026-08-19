@@ -102,6 +102,13 @@ fn metric_value(sample: &MetricSample, metric: &str) -> Option<f64> {
             .filter(|disk| disk.total_bytes > 0)
             .map(|disk| percentage(disk.used_bytes, disk.total_bytes))
             .max_by(f64::total_cmp),
+        // The hottest sensor, so one rule covers a machine whose sensor labels
+        // the operator cannot know in advance. A host with no readable sensor
+        // resolves to `None`, which clears the rule instead of latching it.
+        "temperature_celsius" => sample
+            .temperature
+            .as_ref()
+            .map(|temperature| f64::from(temperature.celsius)),
         _ => None,
     }
 }
@@ -117,7 +124,10 @@ fn percentage(used: u64, total: u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::{AlertEvaluator, AlertRule, Comparison, DiskMetric, MetricSample, NodeState};
+    use crate::{
+        AlertEvaluator, AlertRule, Comparison, DiskMetric, MetricSample, NodeState,
+        TemperatureMetric,
+    };
 
     fn sample(cpu: f32) -> MetricSample {
         MetricSample {
@@ -130,6 +140,7 @@ mod tests {
             swap_total_bytes: None,
             disks: Vec::new(),
             network: None,
+            temperature: None,
             uptime_seconds: 1,
             errors: Vec::new(),
         }
@@ -371,6 +382,35 @@ mod tests {
                 .is_empty(),
             "a zero-total filesystem must not produce a disk percentage"
         );
+    }
+
+    #[test]
+    fn a_temperature_rule_follows_the_hottest_sensor_and_clears_without_one() {
+        let hot = rule(
+            "temp",
+            "temperature_celsius",
+            Comparison::GreaterThanOrEqual,
+            85.0,
+        );
+        let mut with_sensors = sample(0.0);
+        with_sensors.temperature = Some(TemperatureMetric {
+            label: "CPU die".into(),
+            celsius: 92.0,
+            critical_celsius: Some(100.0),
+            sensor_count: 2,
+        });
+
+        let mut evaluator = AlertEvaluator::default();
+        let raised = evaluator.evaluate(&with_sensors, std::slice::from_ref(&hot));
+        assert!(raised[0].active, "the hottest sensor is 92 °C");
+
+        // The sensor stops reporting. A latched critical alert on a machine
+        // whose temperature is simply unknown would be a false alarm.
+        let mut unreadable = with_sensors.clone();
+        unreadable.temperature = None;
+        let cleared = evaluator.evaluate(&unreadable, std::slice::from_ref(&hot));
+        assert_eq!(cleared.len(), 1);
+        assert!(!cleared[0].active);
     }
 
     #[test]

@@ -1,7 +1,8 @@
-import { bytes, percent } from "../format";
+import { bytes, celsius, percent } from "../format";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
 import type { MachineDetailState } from "../types";
 import { useModalDialog } from "../useModalDialog";
+import { temperatureDetail } from "./NodeCard";
 import { Sparkline } from "./Sparkline";
 
 export function MachineDetail({
@@ -97,6 +98,18 @@ function MachineDetailDialog({
               <div>
                 <dt>Memory used</dt>
                 <dd>{bytes(node.memoryUsedBytes)}</dd>
+              </div>
+              <div>
+                <dt>Temperature</dt>
+                <dd title={temperatureDetail(node.temperature)}>
+                  {celsius(node.temperature?.celsius)}
+                </dd>
+              </div>
+              <div>
+                <dt>Hottest sensor</dt>
+                {/* Naming the sensor keeps the number attributable; a machine
+                    with none says so rather than showing a blank. */}
+                <dd>{node.temperature?.label ?? "No sensor readable"}</dd>
               </div>
               <div>
                 <dt>Connection</dt>

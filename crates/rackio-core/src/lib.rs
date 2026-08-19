@@ -9,6 +9,6 @@ pub use clock::Clock;
 pub use collector::SystemCollector;
 pub use model::{
     CapabilityState, CollectorError, ConnectionPath, DiskMetric, HealthSnapshot, MetricCapability,
-    MetricSample, NetworkMetric, NodeInfo, NodeState, ProtocolVersion,
+    MetricSample, NetworkMetric, NodeInfo, NodeState, ProtocolVersion, TemperatureMetric,
 };
 pub use storage::{HistoryResolution, MAX_QUERY_ROWS, MetricStore, StoreError};

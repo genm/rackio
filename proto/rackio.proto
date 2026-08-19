@@ -37,6 +37,21 @@ message DiskMetric {
   uint64 used_bytes = 3;
 }
 
+// The hottest sensor on the machine, named so the reading is attributable.
+//
+// A summary rather than the full sensor list: a laptop exposes forty-odd
+// sensors, and carrying every one of them in a two-second sample would exhaust
+// the 64 MiB history cap long before the retention window did.
+// `critical_celsius` is the manufacturer threshold when the OS exposes one;
+// Rackio never invents a threshold for hardware it knows nothing about.
+message TemperatureMetric {
+  string label = 1;
+  float celsius = 2;
+  optional float critical_celsius = 3;
+  // How many sensors this is the maximum of, so "hottest" stays checkable.
+  uint32 sensor_count = 4;
+}
+
 message NetworkMetric {
   uint64 received_bytes_per_second = 1;
   uint64 sent_bytes_per_second = 2;
@@ -60,6 +75,9 @@ message MetricSample {
   optional NetworkMetric network = 9;
   uint64 uptime_seconds = 10;
   repeated CollectorError errors = 11;
+  // Added in protocol 1.1. A viewer on 1.0 ignores the field, and an agent on
+  // 1.0 simply sends none, so neither side has to be upgraded first.
+  optional TemperatureMetric temperature = 12;
 }
 
 enum NodeState {

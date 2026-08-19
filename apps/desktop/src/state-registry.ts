@@ -76,6 +76,12 @@ const detailFixtureNode = {
   cpuPercent: 42,
   memoryUsedBytes: 12_000_000_000,
   memoryTotalBytes: 32_000_000_000,
+  temperature: {
+    label: "Package id 0",
+    celsius: 61.5,
+    criticalCelsius: 100,
+    sensorCount: 7,
+  },
   rttMs: 8,
   lastSeenMs: 1_750_000_000_000,
   history: [32, 39, 42],
