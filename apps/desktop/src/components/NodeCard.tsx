@@ -1,7 +1,22 @@
-import { bytes, celsius, percent } from "../format";
+import { ago, bytes, celsius, percent, shortDuration } from "../format";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
 import type { FleetNode, TemperatureReading } from "../types";
-import { Sparkline } from "./Sparkline";
+import { TrendChart } from "./TrendChart";
+
+/**
+ * The agent streams one metric sample every two seconds (see
+ * `apps/agent/src/runtime.rs`), so the card's trend window is derived from the
+ * sample count rather than guessed. There are no timestamps in the live
+ * snapshot to derive it from instead.
+ */
+const SAMPLE_INTERVAL_SECONDS = 2;
+
+/**
+ * States in which the metric stream is still delivering: everything shown is
+ * current. Stale/offline/auth/incompatible machines keep their last numbers on
+ * screen, but those must read as "as of last contact", not as live.
+ */
+const liveStates = new Set(["healthy", "warning", "degraded", "critical"]);
 
 /**
  * Name the sensor the reading came from, and say how many sensors it was the
@@ -28,8 +43,10 @@ export function NodeCard({
 }) {
   const state = nodeStateRegistry[node.state];
   const path = connectionPathRegistry[node.path];
+  const live = liveStates.has(node.state);
+  const trendSpan = shortDuration((node.history.length - 1) * SAMPLE_INTERVAL_SECONDS);
   return (
-    <article className="node-card">
+    <article className={`node-card${live ? "" : " node-card-not-live"}`}>
       <header>
         <div>
           <p className="eyebrow">{node.os}</p>
@@ -42,7 +59,20 @@ export function NodeCard({
           </span>
         </div>
       </header>
-      <Sparkline values={node.history} label={`${node.name} CPU history`} />
+      <div className="trend-head">
+        <span className="trend-title">CPU load</span>
+        <span className="trend-now">
+          {node.cpuPercent == null ? "" : `${Math.round(node.cpuPercent)}%`}
+        </span>
+      </div>
+      <TrendChart
+        values={node.history}
+        label={`${node.name} CPU load over the last ${trendSpan}`}
+        startLabel={node.history.length >= 2 ? `${trendSpan} ago` : undefined}
+        endLabel={live ? "now" : "last contact"}
+        emptyText="Collecting CPU samples…"
+        muted={!live}
+      />
       <dl className="metrics">
         <div>
           <dt>CPU</dt>
@@ -80,6 +110,11 @@ export function NodeCard({
             (node.state === "healthy"
               ? "Collectors operational"
               : `No detail reported · ${state.label}`)}
+          {/* The failure detail must stay visible; the age is appended so the
+              frozen numbers above are datable without hiding the cause. */}
+          {!live && node.lastSeenMs !== undefined
+            ? ` · last contact ${ago(node.lastSeenMs, Date.now())}`
+            : null}
         </span>
       </footer>
       <button

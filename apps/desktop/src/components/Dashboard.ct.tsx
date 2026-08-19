@@ -48,6 +48,49 @@ const snapshot: FleetSnapshot = {
   ],
 };
 
+test("labels the trend chart with its metric and time window", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const studio = component.locator("article").filter({ hasText: "Studio Mac" });
+  // Six samples at the agent's two-second cadence span ten seconds.
+  await expect(
+    studio.getByRole("img", { name: "Studio Mac CPU load over the last 10 s" }),
+  ).toBeVisible();
+  await expect(studio.getByText("10 s ago")).toBeVisible();
+  await expect(studio.getByText("now", { exact: true })).toBeVisible();
+});
+
+test("dates an offline machine's numbers instead of presenting them as live", async ({ mount }) => {
+  const offline: FleetSnapshot = {
+    daemon: "connected",
+    nodes: [
+      {
+        id: "node-3",
+        endpointId: "endpoint-node-3",
+        name: "Steam Deck",
+        os: "Linux · x86_64",
+        state: "offline",
+        path: "lan_direct",
+        cpuPercent: 2,
+        memoryUsedBytes: 4_000_000_000,
+        memoryTotalBytes: 15_500_000_000,
+        rttMs: 111,
+        lastSeenMs: Date.now() - 5 * 60_000,
+        history: [2, 3, 2, 4, 2, 3],
+        detail: "remote operation timed out: connect",
+      },
+    ],
+  };
+  const component = await mount(<Dashboard snapshot={offline} />);
+  const card = component.locator("article").filter({ hasText: "Steam Deck" });
+  // The frozen trend must not claim to end "now", and the stale numbers must
+  // be datable without hiding the failure cause.
+  await expect(card.getByText("last contact", { exact: true })).toBeVisible();
+  await expect(
+    card.getByText(/remote operation timed out: connect · last contact 5 min ago/),
+  ).toBeVisible();
+  await card.screenshot({ path: "../../output/playwright/node-card-offline.png" });
+});
+
 test("shows relay and degraded state without disguising them as direct health", async ({
   mount,
 }) => {

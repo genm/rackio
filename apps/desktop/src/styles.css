@@ -66,6 +66,12 @@ main {
   opacity: 0.42;
 }
 
+.history-button:focus-visible,
+.secondary-button:focus-visible {
+  outline: 2px solid #69db98;
+  outline-offset: 2px;
+}
+
 .machine-detail {
   width: min(720px, 100%);
   max-height: calc(100vh - 40px);
@@ -578,6 +584,11 @@ h2 {
 
 .node-card {
   padding: 17px;
+  transition: border-color 0.15s ease;
+}
+
+.node-card:hover {
+  border-color: #2e3d35;
 }
 
 .badges {
@@ -632,21 +643,134 @@ h2 {
   background-color: #272d2a;
 }
 
-.sparkline {
-  width: 100%;
-  height: 76px;
-  margin: 16px 0 10px;
-  border-bottom: 1px solid #222c26;
+.trend-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-top: 16px;
 }
 
-.sparkline polyline {
+.trend-title {
+  color: #76847c;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.trend-now {
+  color: #8fe6b4;
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.trend {
+  margin: 6px 0 14px;
+}
+
+.trend-plot {
+  position: relative;
+  height: 72px;
+  overflow: hidden;
+  border-top: 1px solid #222c26;
+  border-bottom: 1px solid #2b3830;
+  background: rgba(9, 13, 11, 0.55);
+}
+
+.trend-plot svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.trend-gridline {
+  stroke: #202b25;
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.trend-area {
+  fill: rgba(98, 214, 146, 0.12);
+}
+
+.trend-line {
   fill: none;
   stroke: #62d692;
   stroke-width: 1.5;
 }
 
-.sparkline-empty {
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.02), transparent);
+.trend-scale {
+  position: absolute;
+  left: 5px;
+  color: #5c6b62;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.trend-scale-top {
+  top: 3px;
+}
+
+.trend-scale-mid {
+  top: calc(50% - 12px);
+}
+
+.trend-scale-bottom {
+  bottom: 3px;
+}
+
+.trend-dot {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 99px;
+  background: #8fe6b4;
+  box-shadow: 0 0 0 3px rgba(98, 214, 146, 0.22);
+  transform: translate(-50%, -50%);
+}
+
+.trend-axis {
+  display: flex;
+  justify-content: space-between;
+  margin: 5px 0 0;
+  color: #5c6b62;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-empty {
+  display: grid;
+  place-items: center;
+  height: 72px;
+  margin: 6px 0 14px;
+  border-top: 1px solid #222c26;
+  border-bottom: 1px solid #2b3830;
+  color: #5c6b62;
+  background: rgba(9, 13, 11, 0.55);
+  font-size: 11px;
+}
+
+/* A frozen trend must not look like a live one: the last numbers stay
+   readable, but the green "live" treatment is withdrawn. */
+.trend-muted .trend-line {
+  stroke: #5c6b62;
+}
+
+.trend-muted .trend-area {
+  fill: rgba(122, 134, 127, 0.08);
+}
+
+.trend-muted .trend-dot {
+  background: #76847c;
+  box-shadow: none;
+}
+
+.node-card-not-live .trend-now {
+  color: #76847c;
 }
 
 .metrics {
@@ -671,6 +795,7 @@ h2 {
 .metrics dd {
   margin: 3px 0 0;
   font-size: 14px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 

@@ -1,9 +1,9 @@
-import { bytes, celsius, percent } from "../format";
+import { bytes, celsius, percent, timeOfDay } from "../format";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
 import type { MachineDetailState } from "../types";
 import { useModalDialog } from "../useModalDialog";
 import { temperatureDetail } from "./NodeCard";
-import { Sparkline } from "./Sparkline";
+import { TrendChart } from "./TrendChart";
 
 export function MachineDetail({
   detail,
@@ -80,11 +80,20 @@ function MachineDetailDialog({
               <div className="history-heading">
                 <div>
                   <p className="eyebrow">LAST 24 HOURS</p>
-                  <strong>CPU</strong>
+                  <strong>CPU load</strong>
                 </div>
                 <span>{detail.points.length} one-minute buckets</span>
               </div>
-              <Sparkline values={cpuHistory} label={`${node.name} 24-hour CPU history`} />
+              {/* The axis ends come from the buckets themselves, so a partial
+                  range (a machine that was off overnight) is labelled with the
+                  hours it actually covers rather than a hardcoded "24h ago". */}
+              <TrendChart
+                values={cpuHistory}
+                label={`${node.name} 24-hour CPU history`}
+                startLabel={timeOfDay(detail.points[0].timestampMs)}
+                endLabel={timeOfDay(detail.points[detail.points.length - 1].timestampMs)}
+                emptyText="No CPU samples in this range"
+              />
             </section>
             <dl className="detail-metrics">
               <div>
