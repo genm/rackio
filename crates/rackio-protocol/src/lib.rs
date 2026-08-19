@@ -9,7 +9,7 @@ pub use framing::{FrameError, MAX_FRAME_BYTES, read_frame, write_frame};
 
 pub const ALPN: &[u8] = b"rackio/metrics/1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 0;
+pub const PROTOCOL_MINOR: u32 = 1;
 
 #[must_use]
 pub const fn current_version() -> v1::ProtocolVersion {

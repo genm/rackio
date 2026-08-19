@@ -23,6 +23,15 @@ pub(crate) fn metric_sample(sample: &core::MetricSample) -> wire::MetricSample {
             received_bytes_per_second: network.received_bytes_per_second,
             sent_bytes_per_second: network.sent_bytes_per_second,
         }),
+        temperature: sample
+            .temperature
+            .as_ref()
+            .map(|temperature| wire::TemperatureMetric {
+                label: temperature.label.clone(),
+                celsius: temperature.celsius,
+                critical_celsius: temperature.critical_celsius,
+                sensor_count: temperature.sensor_count,
+            }),
         uptime_seconds: sample.uptime_seconds,
         errors: sample
             .errors
@@ -178,6 +187,12 @@ mod tests {
                 received_bytes_per_second: 10,
                 sent_bytes_per_second: 20,
             }),
+            temperature: Some(core::TemperatureMetric {
+                label: String::from("CPU die"),
+                celsius: 48.5,
+                critical_celsius: Some(100.0),
+                sensor_count: 41,
+            }),
             uptime_seconds: 99,
             errors: vec![core::CollectorError {
                 source: String::from("disk"),
@@ -220,6 +235,16 @@ mod tests {
             }],
             "a collector error must keep its capability state"
         );
+        assert_eq!(
+            wire.temperature,
+            Some(wire::TemperatureMetric {
+                label: String::from("CPU die"),
+                celsius: 48.5,
+                critical_celsius: Some(100.0),
+                sensor_count: 41,
+            }),
+            "a reading keeps its label, value, hardware threshold and sensor count"
+        );
     }
 
     #[test]
@@ -236,6 +261,7 @@ mod tests {
             swap_total_bytes: None,
             disks: Vec::new(),
             network: None,
+            temperature: None,
             uptime_seconds: 0,
             errors: Vec::new(),
         };
@@ -245,6 +271,10 @@ mod tests {
         assert_eq!(wire.cpu_percent, None);
         assert_eq!(wire.memory_used_bytes, None);
         assert_eq!(wire.network, None);
+        assert_eq!(
+            wire.temperature, None,
+            "a host with no readable sensor sends no reading at all"
+        );
     }
 
     #[test]
