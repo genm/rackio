@@ -1,7 +1,17 @@
-import { bytes, celsius, percent } from "../format";
+import { useState } from "react";
+
+import { ago, bytes, celsius, percent, shortDuration } from "../format";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
+import { type TrendMetric, trendMetricRegistry, trendScale, trendSeries } from "../trend-series";
 import type { FleetNode, TemperatureReading } from "../types";
-import { Sparkline } from "./Sparkline";
+import { TrendChart } from "./TrendChart";
+
+/**
+ * States in which the metric stream is still delivering: everything shown is
+ * current. Stale/offline/auth/incompatible machines keep their last numbers on
+ * screen, but those must read as "as of last contact", not as live.
+ */
+const liveStates = new Set(["healthy", "warning", "degraded", "critical"]);
 
 /**
  * Name the sensor the reading came from, and say how many sensors it was the
@@ -28,8 +38,48 @@ export function NodeCard({
 }) {
   const state = nodeStateRegistry[node.state];
   const path = connectionPathRegistry[node.path];
+  const live = liveStates.has(node.state);
+  const [metric, setMetric] = useState<TrendMetric>("cpu");
+  const spec = trendMetricRegistry[metric];
+  const series = trendSeries(node.trend, metric);
+  const spanSeconds =
+    series.firstMs !== undefined && series.lastMs !== undefined
+      ? (series.lastMs - series.firstMs) / 1000
+      : 0;
+  const tileValues: Record<TrendMetric, string> = {
+    cpu: node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`,
+    memory: percent(node.memoryUsedBytes, node.memoryTotalBytes),
+    disk: percent(node.diskUsedBytes, node.diskTotalBytes),
+    temp: celsius(node.temperature?.celsius),
+    rtt: node.rttMs == null ? "—" : `${node.rttMs} ms`,
+  };
+  const currentValue = tileValues[metric] === "—" ? "" : tileValues[metric];
+  // A machine that streams samples but never reports this metric (a sensorless
+  // host, the local machine's RTT) must say so instead of promising data.
+  const emptyText =
+    node.trend.length >= 2
+      ? `No ${spec.label} readings on this machine`
+      : `Collecting ${spec.label} samples…`;
+  const metricTile = (tileMetric: TrendMetric) => (
+    <button
+      key={tileMetric}
+      type="button"
+      className="metric metric-selectable"
+      aria-pressed={metric === tileMetric}
+      title={`Show the ${trendMetricRegistry[tileMetric].label} trend`}
+      onClick={() => setMetric(tileMetric)}
+    >
+      <span className="metric-label">{trendMetricRegistry[tileMetric].label}</span>
+      <span
+        className="metric-value"
+        title={tileMetric === "temp" ? temperatureDetail(node.temperature) : undefined}
+      >
+        {tileValues[tileMetric]}
+      </span>
+    </button>
+  );
   return (
-    <article className="node-card">
+    <article className={`node-card${live ? "" : " node-card-not-live"}`}>
       <header>
         <div>
           <p className="eyebrow">{node.os}</p>
@@ -42,32 +92,22 @@ export function NodeCard({
           </span>
         </div>
       </header>
-      <Sparkline values={node.history} label={`${node.name} CPU history`} />
-      <dl className="metrics">
-        <div>
-          <dt>CPU</dt>
-          <dd>{node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`}</dd>
-        </div>
-        <div>
-          <dt>Memory</dt>
-          <dd>{percent(node.memoryUsedBytes, node.memoryTotalBytes)}</dd>
-        </div>
-        <div>
-          <dt>Disk</dt>
-          <dd>{percent(node.diskUsedBytes, node.diskTotalBytes)}</dd>
-        </div>
-        <div>
-          <dt>Temp</dt>
-          {/* Titled with the sensor and how many it was the hottest of: the
-              number alone cannot be told apart from a battery reading, and a
-              machine without sensors must show "—" rather than 0 °C. */}
-          <dd title={temperatureDetail(node.temperature)}>{celsius(node.temperature?.celsius)}</dd>
-        </div>
-        <div>
-          <dt>RTT</dt>
-          <dd>{node.rttMs == null ? "—" : `${node.rttMs} ms`}</dd>
-        </div>
-      </dl>
+      <div className="trend-head">
+        <span className="trend-title">{spec.chartTitle}</span>
+        <span className="trend-now">{currentValue}</span>
+      </div>
+      <TrendChart
+        values={series.values}
+        scale={trendScale(spec.scale, series.values)}
+        label={`${node.name} ${spec.chartTitle} over the last ${shortDuration(spanSeconds)}`}
+        startLabel={series.values.length >= 2 ? `${shortDuration(spanSeconds)} ago` : undefined}
+        endLabel={live ? "now" : "last contact"}
+        emptyText={emptyText}
+        muted={!live}
+      />
+      <div className="metrics">
+        {(Object.keys(trendMetricRegistry) as TrendMetric[]).map(metricTile)}
+      </div>
       <footer>
         <span>
           Memory {bytes(node.memoryUsedBytes)} / {bytes(node.memoryTotalBytes)}
@@ -80,6 +120,11 @@ export function NodeCard({
             (node.state === "healthy"
               ? "Collectors operational"
               : `No detail reported · ${state.label}`)}
+          {/* The failure detail must stay visible; the age is appended so the
+              frozen numbers above are datable without hiding the cause. */}
+          {!live && node.lastSeenMs !== undefined
+            ? ` · last contact ${ago(node.lastSeenMs, Date.now())}`
+            : null}
         </span>
       </footer>
       <button

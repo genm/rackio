@@ -1,8 +1,27 @@
 import { expect, test } from "@playwright/experimental-ct-react";
 
-import type { FleetSnapshot } from "../types";
+import type { FleetSnapshot, TrendPoint } from "../types";
 import { traySurfaceStateRegistry } from "../state-registry";
 import { Dashboard } from "./Dashboard";
+
+/** Timestamped points at the agent's two-second cadence, newest last. */
+function trendFixture(
+  cpuValues: number[],
+  memoryUsedBytes: number,
+  memoryTotalBytes: number,
+): TrendPoint[] {
+  const base = 1_750_000_000_000;
+  return cpuValues.map((cpuPercent, index) => ({
+    timestampMs: base + index * 2_000,
+    cpuPercent,
+    memoryUsedBytes,
+    memoryTotalBytes,
+    diskUsedBytes: 320_000_000_000,
+    diskTotalBytes: 1_000_000_000_000,
+    temperatureCelsius: 55 + cpuPercent / 10,
+    rttMs: 4 + (index % 3),
+  }));
+}
 
 const snapshot: FleetSnapshot = {
   daemon: "connected",
@@ -25,7 +44,7 @@ const snapshot: FleetSnapshot = {
         sensorCount: 41,
       },
       rttMs: 4,
-      history: [18, 23, 21, 34, 29, 28],
+      trend: trendFixture([18, 23, 21, 34, 29, 28], 12_800_000_000, 32_000_000_000),
     },
     {
       id: "node-2",
@@ -42,11 +61,86 @@ const snapshot: FleetSnapshot = {
       // A machine with no readable sensor — a container or cloud VM.
       temperature: null,
       rttMs: 43,
-      history: [42, 54, 66, 71, 64, 61],
+      trend: trendFixture([42, 54, 66, 71, 64, 61], 24_000_000_000, 64_000_000_000),
       detail: "Storage degraded",
     },
   ],
 };
+
+test("labels the trend chart with its metric and time window", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const studio = component.locator("article").filter({ hasText: "Studio Mac" });
+  // Six samples at the agent's two-second cadence span ten seconds.
+  await expect(
+    studio.getByRole("img", { name: "Studio Mac CPU load over the last 10 s" }),
+  ).toBeVisible();
+  await expect(studio.getByText("10 s ago")).toBeVisible();
+  await expect(studio.getByText("now", { exact: true })).toBeVisible();
+});
+
+test("switches the trend chart to memory from its metric tile", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const studio = component.locator("article").filter({ hasText: "Studio Mac" });
+  // The tile's accessible name is its content ("Memory 40%"); the title
+  // attribute is only the pointer tooltip.
+  const memoryTile = studio.getByRole("button", { name: /^Memory/ });
+  await memoryTile.click();
+  await expect(
+    studio.getByRole("img", { name: "Studio Mac Memory load over the last 10 s" }),
+  ).toBeVisible();
+  await expect(memoryTile).toHaveAttribute("aria-pressed", "true");
+  await studio.screenshot({ path: "../../output/playwright/node-card-memory.png" });
+});
+
+test("every metric tile switches the trend chart", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const studio = component.locator("article").filter({ hasText: "Studio Mac" });
+  const expectations = [
+    { tile: /^Disk/, chart: "Studio Mac Disk usage over the last 10 s" },
+    { tile: /^Temp/, chart: "Studio Mac Temperature over the last 10 s" },
+    { tile: /^RTT/, chart: "Studio Mac RTT over the last 10 s" },
+  ];
+  for (const { tile, chart } of expectations) {
+    await studio.getByRole("button", { name: tile }).click();
+    await expect(studio.getByRole("img", { name: chart })).toBeVisible();
+  }
+  // The RTT axis derives its ceiling from the data instead of pretending the
+  // unit is a percentage.
+  await expect(studio.getByText("10 ms")).toBeVisible();
+  await studio.screenshot({ path: "../../output/playwright/node-card-rtt.png" });
+});
+
+test("dates an offline machine's numbers instead of presenting them as live", async ({ mount }) => {
+  const offline: FleetSnapshot = {
+    daemon: "connected",
+    nodes: [
+      {
+        id: "node-3",
+        endpointId: "endpoint-node-3",
+        name: "Steam Deck",
+        os: "Linux · x86_64",
+        state: "offline",
+        path: "lan_direct",
+        cpuPercent: 2,
+        memoryUsedBytes: 4_000_000_000,
+        memoryTotalBytes: 15_500_000_000,
+        rttMs: 111,
+        lastSeenMs: Date.now() - 5 * 60_000,
+        trend: trendFixture([2, 3, 2, 4, 2, 3], 4_000_000_000, 15_500_000_000),
+        detail: "remote operation timed out: connect",
+      },
+    ],
+  };
+  const component = await mount(<Dashboard snapshot={offline} />);
+  const card = component.locator("article").filter({ hasText: "Steam Deck" });
+  // The frozen trend must not claim to end "now", and the stale numbers must
+  // be datable without hiding the failure cause.
+  await expect(card.getByText("last contact", { exact: true })).toBeVisible();
+  await expect(
+    card.getByText(/remote operation timed out: connect · last contact 5 min ago/),
+  ).toBeVisible();
+  await card.screenshot({ path: "../../output/playwright/node-card-offline.png" });
+});
 
 test("shows relay and degraded state without disguising them as direct health", async ({
   mount,
@@ -68,7 +162,7 @@ test("shows a machine temperature without inventing one for a sensorless host", 
   await expect(studio.getByText("61 °C")).toBeVisible();
   // The named sensor and the count it was the hottest of keep the reading
   // attributable rather than presenting an anonymous number.
-  await expect(studio.locator("dd", { hasText: "61 °C" })).toHaveAttribute(
+  await expect(studio.locator(".metric-value", { hasText: "61 °C" })).toHaveAttribute(
     "title",
     "PMU tdie8 · hottest of 41 sensors",
   );
@@ -76,7 +170,7 @@ test("shows a machine temperature without inventing one for a sensorless host", 
   // A machine with no readable sensor shows an em dash, never 0 °C.
   const server = component.locator("article").filter({ hasText: "Home Server" });
   await expect(server.getByText("0 °C")).toHaveCount(0);
-  await expect(server.locator("dd").filter({ hasText: /^—$/ }).first()).toBeVisible();
+  await expect(server.locator(".metric-value").filter({ hasText: /^—$/ }).first()).toBeVisible();
 });
 
 test("imports a one-time pairing bundle from the desktop", async ({ mount }) => {

@@ -12,6 +12,7 @@ use chrono::Utc;
 use rackio_core::{
     CapabilityState, CollectorError, ConnectionPath, DiskMetric, HealthSnapshot, MetricCapability,
     MetricSample, NetworkMetric, NodeInfo, NodeState, ProtocolVersion, TemperatureMetric,
+    TrendSample, TrendWindow,
 };
 use rackio_iroh::{ClientConnection, PairingBundle, PairingError, TransportError};
 use rackio_protocol::{
@@ -35,7 +36,6 @@ const HISTORY_RESPONSE_TIMEOUT: Duration = Duration::from_mins(1);
 const MAX_REMOTE_HISTORY_SAMPLES: usize = rackio_core::MAX_QUERY_ROWS;
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
-const HISTORY_POINTS: usize = 120;
 const MAX_HISTORY_RANGE_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 
 #[derive(Debug, Error)]
@@ -86,7 +86,11 @@ struct PersistedRemoteSnapshot {
     path: ConnectionPath,
     rtt_ms: Option<u64>,
     last_seen_ms: Option<i64>,
-    history: Vec<f32>,
+    /// Defaulted so registries written before the trend window existed still
+    /// deserialise; their pre-trend `history` array is ignored and the window
+    /// refills from the live stream.
+    #[serde(default)]
+    trend: TrendWindow,
     details: Vec<String>,
 }
 
@@ -214,7 +218,7 @@ pub struct RemoteMachineSnapshot {
     pub path: ConnectionPath,
     pub rtt_ms: Option<u64>,
     pub last_seen_ms: Option<i64>,
-    pub history: Vec<f32>,
+    pub trend: TrendWindow,
     pub details: Vec<String>,
 }
 
@@ -229,7 +233,7 @@ impl RemoteMachineSnapshot {
                 path: persisted.path,
                 rtt_ms: persisted.rtt_ms,
                 last_seen_ms: persisted.last_seen_ms,
-                history: persisted.history.clone(),
+                trend: persisted.trend.clone(),
                 details: persisted.details.clone(),
             };
         }
@@ -241,7 +245,7 @@ impl RemoteMachineSnapshot {
             path: ConnectionPath::Unknown,
             rtt_ms: None,
             last_seen_ms: None,
-            history: Vec::new(),
+            trend: TrendWindow::default(),
             details: vec![String::from("Waiting for remote connection")],
         }
     }
@@ -276,7 +280,7 @@ impl From<&RemoteMachineSnapshot> for PersistedRemoteSnapshot {
             path: snapshot.path,
             rtt_ms: snapshot.rtt_ms,
             last_seen_ms: snapshot.last_seen_ms,
-            history: snapshot.history.clone(),
+            trend: snapshot.trend.clone(),
             details: snapshot.details.clone(),
         }
     }
@@ -465,7 +469,7 @@ impl RemoteFleet {
             path: ConnectionPath::Unknown,
             rtt_ms: None,
             last_seen_ms: Some(Utc::now().timestamp_millis()),
-            history: Vec::new(),
+            trend: TrendWindow::default(),
             details: vec![String::from("health_unknown")],
         };
         match get_health(&client).await {
@@ -604,13 +608,11 @@ async fn monitor_session(
                 let snapshot = entries
                     .entry(record.endpoint_id.clone())
                     .or_insert_with(|| RemoteMachineSnapshot::offline(record));
-                if let Some(cpu) = sample.cpu_percent {
-                    snapshot.history.push(cpu);
-                    if snapshot.history.len() > HISTORY_POINTS {
-                        let excess = snapshot.history.len() - HISTORY_POINTS;
-                        snapshot.history.drain(..excess);
-                    }
-                }
+                // RTT is the viewer's own measurement of this connection, so
+                // it is stamped here rather than carried by the peer's sample.
+                let mut point = TrendSample::from(&sample);
+                point.rtt_ms = snapshot.rtt_ms;
+                snapshot.trend.push(point);
                 snapshot.latest = Some(sample);
                 // Do not restamp `state` here. `refresh_remote_state` owns it
                 // and refreshes it every five seconds; re-applying the

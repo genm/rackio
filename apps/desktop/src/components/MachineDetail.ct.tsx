@@ -12,6 +12,16 @@ test("renders the shared ready history state", async ({ mount }) => {
   await component.screenshot({ path: "../../output/playwright/machine-detail-history.png" });
 });
 
+test("switches the 24-hour chart between CPU and memory", async ({ mount }) => {
+  const component = await mount(
+    <MachineDetail detail={machineDetailStateRegistry.ready} onClose={() => undefined} />,
+  );
+  await expect(component.getByRole("img", { name: /24-hour CPU history/ })).toBeVisible();
+  const toggle = component.getByLabel("History metric");
+  await toggle.getByRole("button", { name: "Memory" }).click();
+  await expect(component.getByRole("img", { name: /24-hour Memory history/ })).toBeVisible();
+});
+
 test("keeps remote history failure visible without hiding live state", async ({ mount }) => {
   const component = await mount(
     <MachineDetail detail={machineDetailStateRegistry.error} onClose={() => undefined} />,

@@ -13,6 +13,31 @@ export function celsius(value?: number | null): string {
   return `${Math.round(value)} °C`;
 }
 
+/** "45 s" below 90 seconds, whole minutes above — chart-axis granularity. */
+export function shortDuration(seconds: number): string {
+  if (seconds < 90) return `${Math.round(seconds)} s`;
+  return `${Math.round(seconds / 60)} min`;
+}
+
+/** Wall-clock label for a history axis, e.g. "09:30". */
+export function timeOfDay(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+export function ago(thenMs: number, nowMs: number): string {
+  const seconds = Math.max(0, Math.round((nowMs - thenMs) / 1000));
+  if (seconds < 60) return `${seconds} s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} d ago`;
+}
+
 export function bytes(value?: number | null): string {
   if (value == null) return "—";
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];

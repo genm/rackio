@@ -45,7 +45,10 @@ async fn fleet_snapshot() -> Result<serde_json::Value, String> {
             .get("latest")
             .and_then(|latest| latest.get("timestamp_ms"))
             .and_then(serde_json::Value::as_i64),
-        Vec::new(),
+        local
+            .get("trend")
+            .and_then(serde_json::Value::as_array)
+            .map_or(&[][..], Vec::as_slice),
         local
             .get("health")
             .and_then(|health| health.get("details"))
@@ -60,11 +63,10 @@ async fn fleet_snapshot() -> Result<serde_json::Value, String> {
     let mut nodes = Vec::with_capacity(remotes.len().saturating_add(1));
     nodes.push(local_node);
     for remote in remotes {
-        let history = remote
-            .get("history")
+        let trend = remote
+            .get("trend")
             .and_then(serde_json::Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+            .map_or(&[][..], Vec::as_slice);
         nodes.push(machine_json(
             remote,
             remote
@@ -79,7 +81,7 @@ async fn fleet_snapshot() -> Result<serde_json::Value, String> {
             remote
                 .get("last_seen_ms")
                 .and_then(serde_json::Value::as_i64),
-            history,
+            trend,
             remote
                 .get("details")
                 .and_then(serde_json::Value::as_array)
@@ -769,13 +771,28 @@ fn state_icon(color: [u8; 4]) -> Image<'static> {
     Image::new_owned(rgba, SIZE_U32, SIZE_U32)
 }
 
+/// Convert a daemon-side trend sample to the camelCase point shape the
+/// dashboard shares with its 24-hour history query.
+fn trend_point_json(sample: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "timestampMs": sample.get("timestamp_ms"),
+        "cpuPercent": sample.get("cpu_percent"),
+        "memoryUsedBytes": sample.get("memory_used_bytes"),
+        "memoryTotalBytes": sample.get("memory_total_bytes"),
+        "diskUsedBytes": sample.get("disk_used_bytes"),
+        "diskTotalBytes": sample.get("disk_total_bytes"),
+        "temperatureCelsius": sample.get("temperature_celsius"),
+        "rttMs": sample.get("rtt_ms"),
+    })
+}
+
 fn machine_json(
     source: &serde_json::Value,
     node_state: &str,
     path: &str,
     rtt_ms: Option<u64>,
     last_seen_ms: Option<i64>,
-    history: Vec<serde_json::Value>,
+    trend: &[serde_json::Value],
     detail: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     let node = source
@@ -846,11 +863,7 @@ fn machine_json(
         "temperature": temperature,
         "rttMs": rtt_ms,
         "lastSeenMs": last_seen_ms,
-        "history": if history.is_empty() {
-            cpu.into_iter().map(serde_json::Value::from).collect()
-        } else {
-            history
-        },
+        "trend": trend.iter().map(trend_point_json).collect::<Vec<_>>(),
         "detail": detail,
     }))
 }
@@ -1169,16 +1182,8 @@ mod tests {
             },
         });
 
-        let machine = machine_json(
-            &source,
-            "healthy",
-            "lan_direct",
-            None,
-            None,
-            Vec::new(),
-            None,
-        )
-        .unwrap_or_else(|error| panic!("{error}"));
+        let machine = machine_json(&source, "healthy", "lan_direct", None, None, &[], None)
+            .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(
             machine.get("temperature"),
             Some(&serde_json::json!({
@@ -1194,17 +1199,43 @@ mod tests {
             "node": { "node_id": "id", "display_name": "Server" },
             "latest": { "cpu_percent": 12.0 },
         });
-        let machine = machine_json(
-            &sensorless,
-            "healthy",
-            "lan_direct",
-            None,
-            None,
-            Vec::new(),
-            None,
-        )
-        .unwrap_or_else(|error| panic!("{error}"));
+        let machine = machine_json(&sensorless, "healthy", "lan_direct", None, None, &[], None)
+            .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(machine.get("temperature"), Some(&serde_json::Value::Null));
+    }
+
+    #[test]
+    fn trend_samples_reach_the_viewer_as_timestamped_points() {
+        let source = serde_json::json!({
+            "node": { "node_id": "id", "display_name": "Server" },
+            "latest": { "cpu_percent": 12.0 },
+        });
+        let trend = [serde_json::json!({
+            "timestamp_ms": 1_750_000_000_000_i64,
+            "cpu_percent": 12.5,
+            "memory_used_bytes": 3_000,
+            "memory_total_bytes": 4_000,
+            "disk_used_bytes": 90,
+            "disk_total_bytes": 100,
+            "temperature_celsius": 61.5,
+            "rtt_ms": 8,
+        })];
+
+        let machine = machine_json(&source, "healthy", "lan_direct", None, None, &trend, None)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            machine.get("trend"),
+            Some(&serde_json::json!([{
+                "timestampMs": 1_750_000_000_000_i64,
+                "cpuPercent": 12.5,
+                "memoryUsedBytes": 3_000,
+                "memoryTotalBytes": 4_000,
+                "diskUsedBytes": 90,
+                "diskTotalBytes": 100,
+                "temperatureCelsius": 61.5,
+                "rttMs": 8,
+            }]))
+        );
     }
 
     #[test]
