@@ -1,5 +1,8 @@
+import { useState } from "react";
+
 import { bytes, celsius, percent, timeOfDay } from "../format";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
+import { type TrendMetric, trendMetricRegistry, trendSeries } from "../trend-series";
 import type { MachineDetailState } from "../types";
 import { useModalDialog } from "../useModalDialog";
 import { temperatureDetail } from "./NodeCard";
@@ -27,10 +30,9 @@ function MachineDetailDialog({
 }) {
   const dialogRef = useModalDialog<HTMLElement>(onClose);
   const { node } = detail;
-  const cpuHistory =
-    detail.state === "ready"
-      ? detail.points.flatMap((point) => (point.cpuPercent == null ? [] : [point.cpuPercent]))
-      : [];
+  const [metric, setMetric] = useState<TrendMetric>("cpu");
+  const series = detail.state === "ready" ? trendSeries(detail.points, metric) : { values: [] };
+  const metricLabel = trendMetricRegistry[metric].label;
   return (
     <div className="dialog-backdrop">
       <section
@@ -76,24 +78,37 @@ function MachineDetailDialog({
           </div>
         ) : (
           <>
-            <section className="history-chart" aria-label="24-hour CPU history">
+            <section className="history-chart" aria-label="24-hour history">
               <div className="history-heading">
                 <div>
                   <p className="eyebrow">LAST 24 HOURS</p>
-                  <strong>CPU load</strong>
+                  <strong>{metricLabel} load</strong>
                 </div>
-                <span>{detail.points.length} one-minute buckets</span>
+                <div className="chart-toggle" aria-label="History metric">
+                  {(Object.keys(trendMetricRegistry) as TrendMetric[]).map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      aria-pressed={metric === option}
+                      onClick={() => setMetric(option)}
+                    >
+                      {trendMetricRegistry[option].label}
+                    </button>
+                  ))}
+                </div>
               </div>
-              {/* The axis ends come from the buckets themselves, so a partial
-                  range (a machine that was off overnight) is labelled with the
-                  hours it actually covers rather than a hardcoded "24h ago". */}
+              {/* The axis ends come from the readable buckets themselves, so a
+                  partial range (a machine that was off overnight) is labelled
+                  with the hours it actually covers rather than a hardcoded
+                  "24h ago". */}
               <TrendChart
-                values={cpuHistory}
-                label={`${node.name} 24-hour CPU history`}
-                startLabel={timeOfDay(detail.points[0].timestampMs)}
-                endLabel={timeOfDay(detail.points[detail.points.length - 1].timestampMs)}
-                emptyText="No CPU samples in this range"
+                values={series.values}
+                label={`${node.name} 24-hour ${metricLabel} history`}
+                startLabel={series.firstMs === undefined ? undefined : timeOfDay(series.firstMs)}
+                endLabel={series.lastMs === undefined ? undefined : timeOfDay(series.lastMs)}
+                emptyText={`No ${metricLabel} samples in this range`}
               />
+              <p className="history-buckets">{detail.points.length} one-minute buckets</p>
             </section>
             <dl className="detail-metrics">
               <div>

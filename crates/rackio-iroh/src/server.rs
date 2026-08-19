@@ -7,7 +7,7 @@ use chrono::Utc;
 use iroh::{Endpoint, EndpointId, endpoint::Connection};
 use rackio_core::{
     ConnectionPath, HealthSnapshot, HistoryResolution, MetricSample, MetricStore, NodeInfo,
-    StoreError,
+    StoreError, TrendWindow,
 };
 use rackio_protocol::{
     FrameError, compatible, read_frame,
@@ -58,6 +58,10 @@ pub struct NodeRuntime {
     pub info: NodeInfo,
     pub health: RwLock<HealthSnapshot>,
     pub latest: watch::Receiver<Option<MetricSample>>,
+    /// The local machine's own live trend, fed by the collector loop: the
+    /// viewer shows this machine next to its remotes, so it needs the same
+    /// trend the remotes stream in.
+    pub trend: RwLock<TrendWindow>,
     pub store: Mutex<MetricStore>,
     pub pairing: std::sync::Mutex<PairingManager>,
     pub pairing_mdns: Arc<PairingMdnsState>,
@@ -533,7 +537,7 @@ mod tests {
 
     use rackio_core::{
         ConnectionPath, HealthSnapshot, MetricSample, MetricStore, NodeInfo, NodeState,
-        ProtocolVersion as CoreProtocolVersion,
+        ProtocolVersion as CoreProtocolVersion, TrendWindow,
     };
     use rackio_protocol::{
         current_version,
@@ -594,6 +598,7 @@ mod tests {
                     details: Vec::new(),
                 }),
                 latest,
+                trend: RwLock::new(TrendWindow::default()),
                 store: tokio::sync::Mutex::new(
                     MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}")),
                 ),

@@ -214,6 +214,9 @@ struct StatusPayload {
     relay_url: Option<String>,
     latest: Option<rackio_core::MetricSample>,
     health: HealthSnapshot,
+    /// The local machine's live trend, in the same shape a remote snapshot
+    /// carries, so viewers render every machine from one contract.
+    trend: rackio_core::TrendWindow,
 }
 
 #[derive(Debug, Serialize)]
@@ -246,6 +249,7 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         info,
         health: RwLock::new(healthy()),
         latest: latest_rx,
+        trend: RwLock::new(rackio_core::TrendWindow::default()),
         store: tokio::sync::Mutex::new(MetricStore::open(paths.data.join("metrics.sqlite3"))?),
         pairing: std::sync::Mutex::new(PairingManager::default()),
         pairing_mdns: Arc::new(PairingMdnsState::default()),
@@ -427,6 +431,11 @@ async fn sample_loop(
         }
         apply_alert_health(&runtime, alerts.worst_active_severity(&alert_rules)).await;
         let _ = latest.send(Some(sample.clone()));
+        runtime
+            .trend
+            .write()
+            .await
+            .push(rackio_core::TrendSample::from(&sample));
         pending.push(sample);
         if pending.len() >= 5 {
             let store_result = runtime.store.lock().await.insert_batch(&pending);
@@ -708,6 +717,7 @@ async fn handle_local(
             };
             let latest = runtime.latest.borrow().clone();
             let health = runtime.health.read().await.clone();
+            let trend = runtime.trend.read().await.clone();
             LocalResponse::success(StatusPayload {
                 node: runtime.info.clone(),
                 endpoint_id: endpoint.id().to_string(),
@@ -719,6 +729,7 @@ async fn handle_local(
                 relay_url,
                 latest,
                 health,
+                trend,
             })
         }
         LocalCommand::FleetSnapshot => {
@@ -728,6 +739,7 @@ async fn handle_local(
             };
             let latest = runtime.latest.borrow().clone();
             let health = runtime.health.read().await.clone();
+            let trend = runtime.trend.read().await.clone();
             let local = StatusPayload {
                 node: runtime.info.clone(),
                 endpoint_id: endpoint.id().to_string(),
@@ -739,6 +751,7 @@ async fn handle_local(
                 relay_url,
                 latest,
                 health,
+                trend,
             };
             LocalResponse::success(FleetPayload {
                 local,

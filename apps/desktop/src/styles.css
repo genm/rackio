@@ -780,23 +780,87 @@ h2 {
   margin: 0 0 14px;
 }
 
-.metrics div {
+.metric {
+  display: block;
   padding: 9px 10px;
   border: 1px solid #202b25;
   border-radius: 8px;
+  text-align: left;
   background: #0e1411;
 }
 
-.metrics dt {
+.metric-label {
+  display: block;
   color: #76847c;
   font-size: 10px;
 }
 
-.metrics dd {
-  margin: 3px 0 0;
+.metric-value {
+  display: block;
+  margin-top: 3px;
+  color: #f3f6f1;
   font-size: 14px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+}
+
+.metric-selectable {
+  cursor: pointer;
+  font: inherit;
+}
+
+.metric-selectable:hover {
+  border-color: #3a4a41;
+}
+
+.metric-selectable:focus-visible {
+  outline: 2px solid #69db98;
+  outline-offset: 2px;
+}
+
+.metric-selectable[aria-pressed="true"] {
+  border-color: #4e6f5b;
+  background: #14201a;
+}
+
+.metric-selectable[aria-pressed="true"] .metric-label {
+  color: #8fe6b4;
+}
+
+.chart-toggle {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid #26332c;
+  border-radius: 8px;
+  background: #0b100d;
+}
+
+.chart-toggle button {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 6px;
+  color: #7f8e85;
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chart-toggle button[aria-pressed="true"] {
+  color: #dfe8e2;
+  background: #1b2820;
+}
+
+.chart-toggle button:focus-visible {
+  outline: 2px solid #69db98;
+  outline-offset: 1px;
+}
+
+.history-buckets {
+  margin-top: 2px;
+  color: #5c6b62;
+  font-size: 11px;
+  text-align: right;
 }
 
 .node-card footer {

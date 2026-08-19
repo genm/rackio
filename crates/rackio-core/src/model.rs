@@ -159,6 +159,108 @@ pub struct MetricSample {
     pub errors: Vec<CollectorError>,
 }
 
+/// One point of the live trend a viewer draws without querying storage.
+///
+/// A projection of [`MetricSample`], not the sample itself: the trend window
+/// holds up to [`TrendWindow::CAPACITY`] of these per machine in memory and in
+/// the persisted registry, so it carries only the fields a trend can plot.
+/// The timestamp is the sample's own — a viewer must label its time axis from
+/// the data rather than assuming a sampling cadence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrendSample {
+    pub timestamp_ms: i64,
+    pub cpu_percent: Option<f32>,
+    pub memory_used_bytes: Option<u64>,
+    pub memory_total_bytes: Option<u64>,
+}
+
+impl From<&MetricSample> for TrendSample {
+    fn from(sample: &MetricSample) -> Self {
+        Self {
+            timestamp_ms: sample.timestamp_ms,
+            cpu_percent: sample.cpu_percent,
+            memory_used_bytes: sample.memory_used_bytes,
+            memory_total_bytes: sample.memory_total_bytes,
+        }
+    }
+}
+
+/// The most recent [`TrendSample`]s of one machine, oldest first.
+///
+/// The single owner of the live-trend retention rule: every surface (local
+/// collector, remote metric stream, persisted registry) pushes through this
+/// type so none of them can grow unbounded or disagree on the window size.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TrendWindow {
+    samples: Vec<TrendSample>,
+}
+
+impl TrendWindow {
+    /// At the collector's two-second cadence this spans about four minutes:
+    /// enough to see a spike develop, small enough to ship in every snapshot.
+    pub const CAPACITY: usize = 120;
+
+    pub fn push(&mut self, sample: TrendSample) {
+        self.samples.push(sample);
+        if self.samples.len() > Self::CAPACITY {
+            let excess = self.samples.len() - Self::CAPACITY;
+            self.samples.drain(..excess);
+        }
+    }
+
+    #[must_use]
+    pub fn samples(&self) -> &[TrendSample] {
+        &self.samples
+    }
+}
+
+#[cfg(test)]
+mod trend_window_tests {
+    use super::{TrendSample, TrendWindow};
+
+    fn sample(timestamp_ms: i64) -> TrendSample {
+        TrendSample {
+            timestamp_ms,
+            cpu_percent: Some(10.0),
+            memory_used_bytes: Some(1_000),
+            memory_total_bytes: Some(2_000),
+        }
+    }
+
+    #[test]
+    fn caps_the_window_by_dropping_the_oldest_samples() {
+        let mut window = TrendWindow::default();
+        for index in 0..(TrendWindow::CAPACITY + 5) {
+            window.push(sample(
+                i64::try_from(index).unwrap_or_else(|error| panic!("{error}")),
+            ));
+        }
+
+        assert_eq!(window.samples().len(), TrendWindow::CAPACITY);
+        assert_eq!(
+            window.samples()[0].timestamp_ms,
+            5,
+            "oldest samples leave first"
+        );
+    }
+
+    #[test]
+    fn serialises_as_a_bare_sample_array() {
+        // The transparent representation is what snapshots and the persisted
+        // registry carry; a wrapping object would break both without a
+        // migration.
+        let mut window = TrendWindow::default();
+        window.push(sample(7));
+
+        let json = serde_json::to_value(&window).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(json[0]["timestamp_ms"], 7);
+        let restored: TrendWindow =
+            serde_json::from_value(json).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(restored, window);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthSnapshot {
     pub state: NodeState,

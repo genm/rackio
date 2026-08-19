@@ -84,7 +84,26 @@ const detailFixtureNode = {
   },
   rttMs: 8,
   lastSeenMs: 1_750_000_000_000,
-  history: [32, 39, 42],
+  trend: [
+    {
+      timestampMs: 1_749_999_996_000,
+      cpuPercent: 32,
+      memoryUsedBytes: 11_000_000_000,
+      memoryTotalBytes: 32_000_000_000,
+    },
+    {
+      timestampMs: 1_749_999_998_000,
+      cpuPercent: 39,
+      memoryUsedBytes: 11_600_000_000,
+      memoryTotalBytes: 32_000_000_000,
+    },
+    {
+      timestampMs: 1_750_000_000_000,
+      cpuPercent: 42,
+      memoryUsedBytes: 12_000_000_000,
+      memoryTotalBytes: 32_000_000_000,
+    },
+  ],
 };
 
 export const machineDetailStateRegistry: Record<string, MachineDetailState> = {

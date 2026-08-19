@@ -23,6 +23,19 @@ export interface TemperatureReading {
   sensorCount: number;
 }
 
+/**
+ * One timestamped point of a machine's metric series — the shared domain shape
+ * behind both the live trend (the agent's `TrendWindow`) and the 24-hour
+ * history query. The timestamp is the sample's own: time axes are labelled
+ * from the data, never from an assumed sampling cadence.
+ */
+export interface TrendPoint {
+  timestampMs: number;
+  cpuPercent?: number | null;
+  memoryUsedBytes?: number | null;
+  memoryTotalBytes?: number | null;
+}
+
 export interface FleetNode {
   id: string;
   endpointId?: string;
@@ -39,15 +52,11 @@ export interface FleetNode {
   temperature?: TemperatureReading | null;
   rttMs?: number | null;
   lastSeenMs?: number;
-  history: number[];
+  trend: TrendPoint[];
   detail?: string;
 }
 
-export interface HistoryPoint {
-  timestampMs: number;
-  cpuPercent?: number | null;
-  memoryUsedBytes?: number | null;
-  memoryTotalBytes?: number | null;
+export interface HistoryPoint extends TrendPoint {
   networkReceivedBytesPerSecond?: number | null;
   networkSentBytesPerSecond?: number | null;
 }

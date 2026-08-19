@@ -1,15 +1,10 @@
+import { useState } from "react";
+
 import { ago, bytes, celsius, percent, shortDuration } from "../format";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
+import { type TrendMetric, trendMetricRegistry, trendSeries } from "../trend-series";
 import type { FleetNode, TemperatureReading } from "../types";
 import { TrendChart } from "./TrendChart";
-
-/**
- * The agent streams one metric sample every two seconds (see
- * `apps/agent/src/runtime.rs`), so the card's trend window is derived from the
- * sample count rather than guessed. There are no timestamps in the live
- * snapshot to derive it from instead.
- */
-const SAMPLE_INTERVAL_SECONDS = 2;
 
 /**
  * States in which the metric stream is still delivering: everything shown is
@@ -44,7 +39,30 @@ export function NodeCard({
   const state = nodeStateRegistry[node.state];
   const path = connectionPathRegistry[node.path];
   const live = liveStates.has(node.state);
-  const trendSpan = shortDuration((node.history.length - 1) * SAMPLE_INTERVAL_SECONDS);
+  const [metric, setMetric] = useState<TrendMetric>("cpu");
+  const series = trendSeries(node.trend, metric);
+  const spanSeconds =
+    series.firstMs !== undefined && series.lastMs !== undefined
+      ? (series.lastMs - series.firstMs) / 1000
+      : 0;
+  const metricLabel = trendMetricRegistry[metric].label;
+  const tileValues: Record<TrendMetric, string> = {
+    cpu: node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`,
+    memory: percent(node.memoryUsedBytes, node.memoryTotalBytes),
+  };
+  const currentValue = tileValues[metric] === "—" ? "" : tileValues[metric];
+  const metricTile = (tileMetric: TrendMetric) => (
+    <button
+      type="button"
+      className="metric metric-selectable"
+      aria-pressed={metric === tileMetric}
+      title={`Show the ${trendMetricRegistry[tileMetric].label} trend`}
+      onClick={() => setMetric(tileMetric)}
+    >
+      <span className="metric-label">{trendMetricRegistry[tileMetric].label}</span>
+      <span className="metric-value">{tileValues[tileMetric]}</span>
+    </button>
+  );
   return (
     <article className={`node-card${live ? "" : " node-card-not-live"}`}>
       <header>
@@ -60,44 +78,38 @@ export function NodeCard({
         </div>
       </header>
       <div className="trend-head">
-        <span className="trend-title">CPU load</span>
-        <span className="trend-now">
-          {node.cpuPercent == null ? "" : `${Math.round(node.cpuPercent)}%`}
-        </span>
+        <span className="trend-title">{metricLabel} load</span>
+        <span className="trend-now">{currentValue}</span>
       </div>
       <TrendChart
-        values={node.history}
-        label={`${node.name} CPU load over the last ${trendSpan}`}
-        startLabel={node.history.length >= 2 ? `${trendSpan} ago` : undefined}
+        values={series.values}
+        label={`${node.name} ${metricLabel} load over the last ${shortDuration(spanSeconds)}`}
+        startLabel={series.values.length >= 2 ? `${shortDuration(spanSeconds)} ago` : undefined}
         endLabel={live ? "now" : "last contact"}
-        emptyText="Collecting CPU samples…"
+        emptyText={`Collecting ${metricLabel} samples…`}
         muted={!live}
       />
-      <dl className="metrics">
-        <div>
-          <dt>CPU</dt>
-          <dd>{node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`}</dd>
+      <div className="metrics">
+        {metricTile("cpu")}
+        {metricTile("memory")}
+        <div className="metric">
+          <span className="metric-label">Disk</span>
+          <span className="metric-value">{percent(node.diskUsedBytes, node.diskTotalBytes)}</span>
         </div>
-        <div>
-          <dt>Memory</dt>
-          <dd>{percent(node.memoryUsedBytes, node.memoryTotalBytes)}</dd>
-        </div>
-        <div>
-          <dt>Disk</dt>
-          <dd>{percent(node.diskUsedBytes, node.diskTotalBytes)}</dd>
-        </div>
-        <div>
-          <dt>Temp</dt>
+        <div className="metric">
+          <span className="metric-label">Temp</span>
           {/* Titled with the sensor and how many it was the hottest of: the
               number alone cannot be told apart from a battery reading, and a
               machine without sensors must show "—" rather than 0 °C. */}
-          <dd title={temperatureDetail(node.temperature)}>{celsius(node.temperature?.celsius)}</dd>
+          <span className="metric-value" title={temperatureDetail(node.temperature)}>
+            {celsius(node.temperature?.celsius)}
+          </span>
         </div>
-        <div>
-          <dt>RTT</dt>
-          <dd>{node.rttMs == null ? "—" : `${node.rttMs} ms`}</dd>
+        <div className="metric">
+          <span className="metric-label">RTT</span>
+          <span className="metric-value">{node.rttMs == null ? "—" : `${node.rttMs} ms`}</span>
         </div>
-      </dl>
+      </div>
       <footer>
         <span>
           Memory {bytes(node.memoryUsedBytes)} / {bytes(node.memoryTotalBytes)}
