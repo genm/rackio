@@ -13,12 +13,12 @@ import {
   pairingShareStateRegistry,
   sshBootstrapStateRegistry,
   surfaceStateRegistry,
-  worstState,
 } from "./state-registry";
 import type {
   FleetNode,
   FleetSnapshot,
   HistoryPoint,
+  HistoryRange,
   MachineDetailState,
   NodeState,
   NotificationState,
@@ -60,7 +60,9 @@ export default function App() {
   );
   const [notificationState, setNotificationState] =
     useState<NotificationState>(initialNotificationState);
-  const previousFleetState = useRef<NodeState | undefined>(undefined);
+  // Per machine, not per rack: a fleet-level state hides which box changed and
+  // stays silent when a second machine fails while the first is still down.
+  const previousMachineStates = useRef<Map<string, NodeState>>(new Map());
 
   const pairMachine = async (bundle: string) => {
     setPairing({ state: "submitting" });
@@ -151,22 +153,30 @@ export default function App() {
     }
   };
 
-  const viewHistory = async (node: FleetNode) => {
+  const viewHistory = async (node: FleetNode, hours: HistoryRange = 24) => {
     if (node.endpointId === undefined) return;
-    setMachineDetail({ state: "loading", node });
+    setMachineDetail({ state: "loading", node, hours });
     try {
       const points = await invoke<HistoryPoint[]>("machine_history", {
         endpointId: node.endpointId,
-        hours: 24,
+        hours,
       });
-      setMachineDetail({ state: "ready", node, points });
+      setMachineDetail({ state: "ready", node, hours, points });
     } catch (error: unknown) {
       setMachineDetail({
         state: "error",
         node,
+        hours,
         message: error instanceof Error ? error.message : String(error),
       });
     }
+  };
+
+  const changeHistoryRange = async (hours: HistoryRange) => {
+    // The open dialog owns which machine is being queried; a range change must
+    // not be able to load one machine's history under another's name.
+    if (machineDetail.state === "closed") return;
+    await viewHistory(machineDetail.node, hours);
   };
 
   const enableNotifications = async () => {
@@ -243,22 +253,39 @@ export default function App() {
 
   useEffect(() => {
     if (snapshot.daemon !== "connected" || snapshot.nodes.length === 0) return;
-    const state = worstState(snapshot.nodes.map((node) => node.state));
-    const previous = previousFleetState.current;
-    previousFleetState.current = state;
-    if (
-      notificationState.state !== "enabled" ||
-      previous === undefined ||
-      previous === state ||
-      nodeStateRegistry[state].rank < nodeStateRegistry[notificationState.threshold].rank
-    ) {
-      return;
+    const previous = previousMachineStates.current;
+    const current = new Map(snapshot.nodes.map((node) => [node.id, node]));
+    previousMachineStates.current = new Map(
+      snapshot.nodes.map((node) => [node.id, node.state] as const),
+    );
+    if (notificationState.state !== "enabled" || previous.size === 0) return;
+    const alerting = nodeStateRegistry[notificationState.threshold].rank;
+    const announcements: { title: string; body: string }[] = [];
+    for (const [id, node] of current) {
+      const was = previous.get(id);
+      if (was === undefined || was === node.state) continue;
+      const wasAlerting = nodeStateRegistry[was].rank >= alerting;
+      const isAlerting = nodeStateRegistry[node.state].rank >= alerting;
+      // Naming the machine is the point: "the rack is critical" does not say
+      // which box to look at. Recovery is announced too, so an operator who
+      // was told about a failure learns it ended without opening the app.
+      if (isAlerting && !wasAlerting) {
+        announcements.push({
+          title: `Rackio · ${node.name} is ${nodeStateRegistry[node.state].label}`,
+          body: `${node.name} changed from ${nodeStateRegistry[was].label} to ${nodeStateRegistry[node.state].label}.`,
+        });
+      } else if (wasAlerting && !isAlerting) {
+        announcements.push({
+          title: `Rackio · ${node.name} recovered`,
+          body: `${node.name} is ${nodeStateRegistry[node.state].label} again.`,
+        });
+      }
     }
+    if (announcements.length === 0) return;
     try {
-      sendNotification({
-        title: `Rackio · ${nodeStateRegistry[state].label}`,
-        body: `Your rack changed from ${nodeStateRegistry[previous].label} to ${nodeStateRegistry[state].label}.`,
-      });
+      for (const announcement of announcements) {
+        sendNotification(announcement);
+      }
     } catch (error: unknown) {
       setNotificationState({
         state: "error",
@@ -282,6 +309,7 @@ export default function App() {
       onInstallViaSsh={installViaSsh}
       onViewHistory={viewHistory}
       onCloseHistory={() => setMachineDetail(machineDetailStateRegistry.closed)}
+      onHistoryRangeChange={changeHistoryRange}
       onEnableNotifications={enableNotifications}
       onDisableNotifications={() =>
         setNotificationState({

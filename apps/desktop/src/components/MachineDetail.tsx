@@ -2,29 +2,41 @@ import { useState } from "react";
 
 import { bytes, celsius, percent, timeOfDay } from "../format";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
-import { type TrendMetric, trendMetricRegistry, trendScale, trendSeries } from "../trend-series";
-
-/**
- * The 24-hour query reads the peer's one-minute buckets, which aggregate
- * CPU, memory, disk and temperature. RTT stays out: it is the viewer's own
- * connection measurement, never written to the peer's storage, so there is
- * nothing on the peer side for a wider schema to aggregate.
- */
-const historyMetrics: TrendMetric[] = ["cpu", "memory", "disk", "temp"];
-import type { MachineDetailState } from "../types";
+import { type TrendMetric, trendLines, trendMetricRegistry, trendScale } from "../trend-series";
+import type { HistoryRange, MachineDetailState } from "../types";
 import { useModalDialog } from "../useModalDialog";
 import { temperatureDetail } from "./NodeCard";
 import { TrendChart } from "./TrendChart";
 
+/**
+ * The history query reads the peer's one-minute buckets, which aggregate CPU,
+ * memory, disk and temperature. Network stays out until the schema aggregates
+ * it; RTT stays out for good, being the viewer's own connection measurement
+ * and never written to the peer's storage. The card's live trend covers the
+ * full metric registry either way.
+ */
+const historyMetrics: TrendMetric[] = ["cpu", "memory", "disk", "temp"];
+
+const historyRanges: { hours: HistoryRange; label: string }[] = [
+  { hours: 1, label: "1h" },
+  { hours: 6, label: "6h" },
+  { hours: 24, label: "24h" },
+  // The agent retains one-minute buckets for seven days; a longer range would
+  // return a window the peer cannot fill.
+  { hours: 168, label: "7d" },
+];
+
 export function MachineDetail({
   detail,
   onClose,
+  onRangeChange,
 }: {
   detail: MachineDetailState;
   onClose: () => void;
+  onRangeChange?: (hours: HistoryRange) => void;
 }) {
   if (detail.state === "closed") return null;
-  return <MachineDetailDialog detail={detail} onClose={onClose} />;
+  return <MachineDetailDialog detail={detail} onClose={onClose} onRangeChange={onRangeChange} />;
 }
 
 // A separate component so the modal hook mounts and unmounts with the dialog:
@@ -32,15 +44,21 @@ export function MachineDetail({
 function MachineDetailDialog({
   detail,
   onClose,
+  onRangeChange,
 }: {
   detail: Exclude<MachineDetailState, { state: "closed" }>;
   onClose: () => void;
+  onRangeChange?: (hours: HistoryRange) => void;
 }) {
   const dialogRef = useModalDialog<HTMLElement>(onClose);
   const { node } = detail;
   const [metric, setMetric] = useState<TrendMetric>("cpu");
-  const series = detail.state === "ready" ? trendSeries(detail.points, metric) : { values: [] };
+  const series =
+    detail.state === "ready"
+      ? trendLines(detail.points, metric)
+      : { lines: [], values: [] as number[] };
   const spec = trendMetricRegistry[metric];
+  const rangeLabel = historyRanges.find((range) => range.hours === detail.hours)?.label ?? "24h";
   return (
     <div className="dialog-backdrop">
       <section
@@ -68,11 +86,24 @@ function MachineDetailDialog({
             {connectionPathRegistry[node.path].label}
           </span>
           <span className="badge">{node.rttMs == null ? "RTT —" : `${node.rttMs} ms`}</span>
+          <div className="chart-toggle detail-range" aria-label="History range">
+            {historyRanges.map((range) => (
+              <button
+                key={range.hours}
+                type="button"
+                aria-pressed={detail.hours === range.hours}
+                disabled={detail.state === "loading"}
+                onClick={() => onRangeChange?.(range.hours)}
+              >
+                {range.label}
+              </button>
+            ))}
+          </div>
         </div>
         {detail.state === "loading" ? (
           <p className="progress-message" role="status">
             <span className="spinner" aria-hidden="true" />
-            Loading 24-hour history from this machine…
+            Loading {rangeLabel} history from this machine…
           </p>
         ) : detail.state === "error" ? (
           <div className="history-message error-message" role="alert">
@@ -86,10 +117,10 @@ function MachineDetailDialog({
           </div>
         ) : (
           <>
-            <section className="history-chart" aria-label="24-hour history">
+            <section className="history-chart" aria-label="Machine history">
               <div className="history-heading">
                 <div>
-                  <p className="eyebrow">LAST 24 HOURS</p>
+                  <p className="eyebrow">LAST {rangeLabel.toUpperCase()}</p>
                   <strong>{spec.chartTitle}</strong>
                 </div>
                 <div className="chart-toggle" aria-label="History metric">
@@ -107,15 +138,16 @@ function MachineDetailDialog({
               </div>
               {/* The axis ends come from the readable buckets themselves, so a
                   partial range (a machine that was off overnight) is labelled
-                  with the hours it actually covers rather than a hardcoded
-                  "24h ago". */}
+                  with the hours it actually covers rather than the range that
+                  was requested. */}
               <TrendChart
-                values={series.values}
+                lines={series.lines}
                 scale={trendScale(spec.scale, series.values)}
-                label={`${node.name} 24-hour ${spec.label} history`}
+                label={`${node.name} ${rangeLabel} ${spec.label} history`}
                 startLabel={series.firstMs === undefined ? undefined : timeOfDay(series.firstMs)}
                 endLabel={series.lastMs === undefined ? undefined : timeOfDay(series.lastMs)}
                 emptyText={`No ${spec.label} samples in this range`}
+                formatTime={timeOfDay}
               />
               <p className="history-buckets">{detail.points.length} one-minute buckets</p>
             </section>

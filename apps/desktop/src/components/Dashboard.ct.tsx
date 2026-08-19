@@ -19,6 +19,8 @@ function trendFixture(
     diskUsedBytes: 320_000_000_000,
     diskTotalBytes: 1_000_000_000_000,
     temperatureCelsius: 55 + cpuPercent / 10,
+    networkReceivedBytesPerSecond: 1_024 * (index + 1),
+    networkSentBytesPerSecond: 256 * (index + 1),
     rttMs: 4 + (index % 3),
   }));
 }
@@ -40,9 +42,11 @@ const snapshot: FleetSnapshot = {
       temperature: {
         label: "PMU tdie8",
         celsius: 60.7,
-        criticalCelsius: null,
+        criticalCelsius: 95,
         sensorCount: 41,
       },
+      networkReceivedBytesPerSecond: 6_144,
+      networkSentBytesPerSecond: 1_536,
       rttMs: 4,
       trend: trendFixture([18, 23, 21, 34, 29, 28], 12_800_000_000, 32_000_000_000),
     },
@@ -142,6 +146,80 @@ test("dates an offline machine's numbers instead of presenting them as live", as
   await card.screenshot({ path: "../../output/playwright/node-card-offline.png" });
 });
 
+test("puts the worst machine first so it needs no scrolling", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  // Home Server is degraded and Studio Mac is healthy, so the degraded card
+  // leads regardless of the order the daemon reported them in.
+  await expect(component.locator("article h2").first()).toHaveText("Home Server");
+});
+
+test("plots network as two lines and draws the hardware temperature limit", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const studio = component.locator("article").filter({ hasText: "Studio Mac" });
+
+  await studio.getByRole("button", { name: /^Net/ }).click();
+  await expect(
+    studio.getByRole("img", { name: "Studio Mac Network throughput over the last 10 s" }),
+  ).toBeVisible();
+  // Received and sent are separate quantities; summing them would report a
+  // throughput no sample measured.
+  await expect(studio.locator("polyline")).toHaveCount(2);
+  await expect(studio.getByText("Received")).toBeVisible();
+
+  await studio.getByRole("button", { name: /^Temp/ }).click();
+  await expect(studio.getByText("critical 95 °C")).toBeVisible();
+  await studio.screenshot({ path: "../../output/playwright/node-card-network.png" });
+});
+
+test("reads out the time and value under the pointer", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const plot = component
+    .locator("article")
+    .filter({ hasText: "Studio Mac" })
+    .locator(".trend-plot");
+  await plot.hover();
+  const tooltip = component.locator(".trend-tooltip");
+  await expect(tooltip).toBeVisible();
+  // The readout carries a real sample's value, not an interpolation.
+  await expect(tooltip).toContainText("%");
+});
+
+test("compares every machine on one chart when asked", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const compare = component.getByRole("button", { name: "Compare machines" });
+  await compare.click();
+  const chart = component.getByLabel("Compare machines");
+  await expect(chart.getByRole("img", { name: /CPU load across every machine/ })).toBeVisible();
+  await expect(chart.getByText("Studio Mac")).toBeVisible();
+  await expect(chart.getByText("Home Server")).toBeVisible();
+  await chart.screenshot({ path: "../../output/playwright/fleet-compare.png" });
+  await component.getByRole("button", { name: "Hide comparison" }).click();
+  await expect(component.getByLabel("Compare machines")).toHaveCount(0);
+});
+
+test("keeps each card's chosen metric across a remount", async ({ mount }) => {
+  const first = await mount(<Dashboard snapshot={snapshot} />);
+  await first
+    .locator("article")
+    .filter({ hasText: "Studio Mac" })
+    .getByRole("button", { name: /^Disk/ })
+    .click();
+  await first.unmount();
+
+  const second = await mount(<Dashboard snapshot={snapshot} />);
+  const studio = second.locator("article").filter({ hasText: "Studio Mac" });
+  await expect(studio.getByRole("button", { name: /^Disk/ })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  // Only the machine that was touched changes; the others keep the default.
+  const server = second.locator("article").filter({ hasText: "Home Server" });
+  await expect(server.getByRole("button", { name: /^CPU/ })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+});
+
 test("shows relay and degraded state without disguising them as direct health", async ({
   mount,
 }) => {
@@ -164,7 +242,7 @@ test("shows a machine temperature without inventing one for a sensorless host", 
   // attributable rather than presenting an anonymous number.
   await expect(studio.locator(".metric-value", { hasText: "61 °C" })).toHaveAttribute(
     "title",
-    "PMU tdie8 · hottest of 41 sensors",
+    "PMU tdie8 · hottest of 41 sensors · hardware critical 95 °C",
   );
 
   // A machine with no readable sensor shows an em dash, never 0 °C.

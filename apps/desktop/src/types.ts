@@ -38,6 +38,8 @@ export interface TrendPoint {
   diskUsedBytes?: number | null;
   diskTotalBytes?: number | null;
   temperatureCelsius?: number | null;
+  networkReceivedBytesPerSecond?: number | null;
+  networkSentBytesPerSecond?: number | null;
   /** The viewer's own connection measurement; absent for the local machine. */
   rttMs?: number | null;
 }
@@ -56,22 +58,24 @@ export interface FleetNode {
   diskTotalBytes?: number | null;
   /** Absent or null on a machine with no readable sensor. */
   temperature?: TemperatureReading | null;
+  networkReceivedBytesPerSecond?: number | null;
+  networkSentBytesPerSecond?: number | null;
   rttMs?: number | null;
   lastSeenMs?: number;
   trend: TrendPoint[];
   detail?: string;
 }
 
-export interface HistoryPoint extends TrendPoint {
-  networkReceivedBytesPerSecond?: number | null;
-  networkSentBytesPerSecond?: number | null;
-}
+export type HistoryPoint = TrendPoint;
+
+/** Ranges the history query offers; the agent accepts 1–168 hours. */
+export type HistoryRange = 1 | 6 | 24 | 168;
 
 export type MachineDetailState =
   | { state: "closed" }
-  | { state: "loading"; node: FleetNode }
-  | { state: "ready"; node: FleetNode; points: HistoryPoint[] }
-  | { state: "error"; node: FleetNode; message: string };
+  | { state: "loading"; node: FleetNode; hours: HistoryRange }
+  | { state: "ready"; node: FleetNode; hours: HistoryRange; points: HistoryPoint[] }
+  | { state: "error"; node: FleetNode; hours: HistoryRange; message: string };
 
 export type TraySurfaceState = { state: "available" } | { state: "unavailable"; message: string };
 

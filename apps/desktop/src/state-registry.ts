@@ -108,10 +108,11 @@ const detailFixtureNode = {
 
 export const machineDetailStateRegistry: Record<string, MachineDetailState> = {
   closed: { state: "closed" },
-  loading: { state: "loading", node: detailFixtureNode },
+  loading: { state: "loading", node: detailFixtureNode, hours: 24 },
   ready: {
     state: "ready",
     node: detailFixtureNode,
+    hours: 24,
     points: [
       {
         timestampMs: 1_750_000_000_000,
@@ -131,12 +132,27 @@ export const machineDetailStateRegistry: Record<string, MachineDetailState> = {
         diskTotalBytes: 500_000_000_000,
         temperatureCelsius: 61,
       },
+      // A gap far wider than the one-minute spacing: the chart must break the
+      // line here rather than draw across an outage the machine never reported.
+      {
+        timestampMs: 1_750_003_600_000,
+        cpuPercent: 51,
+        memoryUsedBytes: 13_000_000_000,
+        memoryTotalBytes: 32_000_000_000,
+      },
+      {
+        timestampMs: 1_750_003_660_000,
+        cpuPercent: 47,
+        memoryUsedBytes: 12_800_000_000,
+        memoryTotalBytes: 32_000_000_000,
+      },
     ],
   },
-  empty: { state: "ready", node: detailFixtureNode, points: [] },
+  empty: { state: "ready", node: detailFixtureNode, hours: 24, points: [] },
   error: {
     state: "error",
     node: detailFixtureNode,
+    hours: 24,
     message: "History request timed out. Live monitoring continues.",
   },
 };

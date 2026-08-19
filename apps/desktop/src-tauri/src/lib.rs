@@ -797,6 +797,8 @@ fn trend_point_json(sample: &serde_json::Value) -> serde_json::Value {
         "diskUsedBytes": sample.get("disk_used_bytes"),
         "diskTotalBytes": sample.get("disk_total_bytes"),
         "temperatureCelsius": sample.get("temperature_celsius"),
+        "networkReceivedBytesPerSecond": sample.get("network_received_bytes_per_second"),
+        "networkSentBytesPerSecond": sample.get("network_sent_bytes_per_second"),
         "rttMs": sample.get("rtt_ms"),
     })
 }
@@ -876,6 +878,12 @@ fn machine_json(
         "diskUsedBytes": disk_used,
         "diskTotalBytes": disk_total,
         "temperature": temperature,
+        "networkReceivedBytesPerSecond": latest
+            .get("network")
+            .and_then(|network| network.get("received_bytes_per_second")),
+        "networkSentBytesPerSecond": latest
+            .get("network")
+            .and_then(|network| network.get("sent_bytes_per_second")),
         "rttMs": rtt_ms,
         "lastSeenMs": last_seen_ms,
         "trend": trend.iter().map(trend_point_json).collect::<Vec<_>>(),
@@ -1234,6 +1242,8 @@ mod tests {
             "disk_used_bytes": 90,
             "disk_total_bytes": 100,
             "temperature_celsius": 61.5,
+            "network_received_bytes_per_second": 2_048,
+            "network_sent_bytes_per_second": 512,
             "rtt_ms": 8,
         })];
 
@@ -1249,6 +1259,8 @@ mod tests {
                 "diskUsedBytes": 90,
                 "diskTotalBytes": 100,
                 "temperatureCelsius": 61.5,
+                "networkReceivedBytesPerSecond": 2_048,
+                "networkSentBytesPerSecond": 512,
                 "rttMs": 8,
             }]))
         );
