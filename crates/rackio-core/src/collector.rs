@@ -1,16 +1,18 @@
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use sysinfo::{Disks, Networks, System};
+use sysinfo::{Components, Disks, Networks, System};
 
 use crate::{
     CapabilityState, CollectorError, DiskMetric, MetricCapability, MetricSample, NetworkMetric,
+    TemperatureMetric,
 };
 
 pub struct SystemCollector {
     system: System,
     disks: Disks,
     networks: Networks,
+    components: Components,
     sequence: u64,
     last_network_refresh: Instant,
 }
@@ -26,6 +28,7 @@ impl SystemCollector {
             system,
             disks: Disks::new_with_refreshed_list(),
             networks: Networks::new_with_refreshed_list(),
+            components: Components::new_with_refreshed_list(),
             sequence: 0,
             last_network_refresh: Instant::now(),
         }
@@ -48,7 +51,22 @@ impl SystemCollector {
             readable_memory_total(self.system.total_memory()).is_some(),
             self.disks.list().len(),
             self.networks.list().len(),
+            self.hottest_temperature().is_some(),
         )
+    }
+
+    /// The hottest sensor that reports a usable reading right now.
+    ///
+    /// A component whose temperature is absent or non-finite is skipped rather
+    /// than ranked as 0 °C, which would read as a frozen machine.
+    fn hottest_temperature(&self) -> Option<TemperatureMetric> {
+        hottest_temperature(self.components.list().iter().map(|component| {
+            (
+                component.label(),
+                component.temperature(),
+                component.critical(),
+            )
+        }))
     }
 
     #[must_use]
@@ -56,6 +74,7 @@ impl SystemCollector {
         self.system.refresh_cpu_usage();
         self.system.refresh_memory();
         self.disks.refresh(true);
+        self.components.refresh(true);
 
         let elapsed = self.last_network_refresh.elapsed();
         self.networks.refresh(true);
@@ -111,6 +130,12 @@ impl SystemCollector {
         }
         let network = network_metric(readable_totals(interface_count, received, sent), elapsed);
 
+        // No collector error when nothing is readable: a cloud VM, a container
+        // and an unprivileged macOS host genuinely expose no sensor, and
+        // reporting that as a degraded collector would pin those machines to
+        // `Degraded` forever. The absence is declared once, in `capabilities`.
+        let temperature = self.hottest_temperature();
+
         MetricSample {
             timestamp_ms: Utc::now().timestamp_millis(),
             sequence: self.sequence,
@@ -121,6 +146,7 @@ impl SystemCollector {
             swap_total_bytes: Some(self.system.total_swap()),
             disks,
             network,
+            temperature,
             uptime_seconds: System::uptime(),
             errors,
         }
@@ -137,6 +163,7 @@ fn capabilities_from(
     memory: bool,
     disks: usize,
     interfaces: usize,
+    temperature: bool,
 ) -> Vec<MetricCapability> {
     vec![
         capability("cpu", cpu, "no CPU is readable"),
@@ -149,6 +176,14 @@ fn capabilities_from(
             "network",
             interfaces > 0,
             "no network interface is enumerable",
+        ),
+        // Unlike swap, a machine that exposes no sensor cannot be said to be at
+        // zero degrees, so absence is reported as an unsupported source with a
+        // reason instead of a reading.
+        capability(
+            "temperature",
+            temperature,
+            "no temperature sensor is readable on this host",
         ),
     ]
 }
@@ -200,6 +235,36 @@ fn network_metric(totals: Option<(u64, u64)>, elapsed: Duration) -> Option<Netwo
     })
 }
 
+/// Reduce every sensor the host lists to the hottest usable reading.
+///
+/// A sensor the host lists but cannot read has no temperature; ranking it as
+/// 0 °C would let an unreadable sensor stand in for a frozen one, and letting a
+/// NaN into the comparison would make the maximum depend on iteration order.
+/// Unreadable sensors are excluded from `sensor_count` too, so the published
+/// count matches what the reading was actually chosen from. The hardware's own
+/// critical threshold is carried only when it is a real number, so the viewer
+/// never compares against a NaN.
+fn hottest_temperature<'a>(
+    sensors: impl Iterator<Item = (&'a str, Option<f32>, Option<f32>)>,
+) -> Option<TemperatureMetric> {
+    let readable: Vec<(&str, f32, Option<f32>)> = sensors
+        .filter_map(|(label, celsius, critical)| {
+            let celsius = celsius.filter(|value| value.is_finite())?;
+            Some((label, celsius, critical.filter(|value| value.is_finite())))
+        })
+        .collect();
+    let sensor_count = u32::try_from(readable.len()).unwrap_or(u32::MAX);
+    let (label, celsius, critical_celsius) = readable
+        .into_iter()
+        .max_by(|(_, left, _), (_, right, _)| left.total_cmp(right))?;
+    Some(TemperatureMetric {
+        label: label.to_owned(),
+        celsius,
+        critical_celsius,
+        sensor_count,
+    })
+}
+
 fn capability(name: &str, supported: bool, detail: &str) -> MetricCapability {
     MetricCapability {
         name: name.to_owned(),
@@ -239,8 +304,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        SystemCollector, capabilities_from, capability, disk_metric, network_metric,
-        rate_per_second, readable_cpu_percent, readable_memory_total, readable_totals,
+        SystemCollector, capabilities_from, capability, disk_metric, hottest_temperature,
+        network_metric, rate_per_second, readable_cpu_percent, readable_memory_total,
+        readable_totals,
     };
     use crate::CapabilityState;
 
@@ -281,8 +347,8 @@ mod tests {
     fn a_source_that_cannot_be_read_is_declared_unsupported_with_a_reason() {
         // Each rule is exercised in both directions here, which no single host
         // can do: this machine either has a disk or it does not.
-        let all = capabilities_from(true, true, 1, 1);
-        for name in ["cpu", "memory", "swap", "disk", "network"] {
+        let all = capabilities_from(true, true, 1, 1, true);
+        for name in ["cpu", "memory", "swap", "disk", "network", "temperature"] {
             let capability = all
                 .iter()
                 .find(|capability| capability.name == name)
@@ -294,8 +360,8 @@ mod tests {
             );
         }
 
-        let none = capabilities_from(false, false, 0, 0);
-        for name in ["cpu", "memory", "disk", "network"] {
+        let none = capabilities_from(false, false, 0, 0, false);
+        for name in ["cpu", "memory", "disk", "network", "temperature"] {
             let capability = none
                 .iter()
                 .find(|capability| capability.name == name)
@@ -357,6 +423,52 @@ mod tests {
     }
 
     #[test]
+    fn the_hottest_readable_sensor_wins_and_unreadable_ones_are_not_zero_degrees() {
+        // A listed-but-unreadable sensor is the common case on macOS without
+        // privileges and inside containers. Zero degrees would both render as a
+        // frozen machine and inflate the count the reading is drawn from.
+        let hottest = hottest_temperature(
+            [
+                ("SSD", Some(41.0), None),
+                ("CPU die", Some(72.5), Some(100.0)),
+                ("Fan intake", None, None),
+                ("Broken", Some(f32::NAN), None),
+                ("Also broken", Some(f32::INFINITY), None),
+            ]
+            .into_iter(),
+        )
+        .unwrap_or_else(|| panic!("two sensors are readable"));
+        assert_eq!(hottest.label, "CPU die");
+        assert!((hottest.celsius - 72.5).abs() < f32::EPSILON);
+        assert_eq!(hottest.critical_celsius, Some(100.0));
+        assert_eq!(
+            hottest.sensor_count, 2,
+            "only the sensors the reading could be chosen from are counted"
+        );
+
+        // Sub-zero is a real reading on cold hardware, so it must survive
+        // rather than lose to an absent sensor treated as zero.
+        let cold =
+            hottest_temperature([("Intake", Some(-5.0), None), ("Dead", None, None)].into_iter())
+                .unwrap_or_else(|| panic!("a sub-zero reading is still a reading"));
+        assert!((cold.celsius + 5.0).abs() < f32::EPSILON);
+        assert_eq!(cold.sensor_count, 1);
+
+        // A hardware threshold the host reports as non-finite is no threshold.
+        assert_eq!(
+            hottest_temperature([("CPU", Some(40.0), Some(f32::NAN))].into_iter())
+                .unwrap_or_else(|| panic!("the reading itself is finite"))
+                .critical_celsius,
+            None
+        );
+
+        // A host with no sensor, and one whose every sensor is unreadable, both
+        // report nothing rather than a 0 °C stand-in.
+        assert!(hottest_temperature(std::iter::empty()).is_none());
+        assert!(hottest_temperature([("Dead", None, None)].into_iter()).is_none());
+    }
+
+    #[test]
     fn an_unsupported_capability_carries_its_reason() {
         let supported = capability("cpu", true, "no CPU is readable");
         assert_eq!(supported.state, CapabilityState::Supported);
@@ -379,7 +491,7 @@ mod tests {
         let collector = SystemCollector::new();
         let capabilities = collector.capabilities();
 
-        for name in ["cpu", "memory", "swap", "disk", "network"] {
+        for name in ["cpu", "memory", "swap", "disk", "network", "temperature"] {
             let capability = capabilities
                 .iter()
                 .find(|capability| capability.name == name)
@@ -446,6 +558,41 @@ mod tests {
         }
         if sample.network.is_some() {
             assert_eq!(state("network"), CapabilityState::Supported);
+        }
+        if sample.temperature.is_some() {
+            assert_eq!(
+                state("temperature"),
+                CapabilityState::Supported,
+                "a sample carrying a sensor cannot come with an unsupported temperature capability"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreadable_sensor_degrades_nothing_and_publishes_nothing() {
+        // Hosts without sensors are the majority of a fleet — cloud VMs and
+        // containers. They must stay healthy, so the absence is a capability
+        // statement and never a collector error.
+        let mut collector = SystemCollector::new();
+        let sample = collector.sample();
+
+        assert!(
+            !sample
+                .errors
+                .iter()
+                .any(|error| error.source == "temperature"),
+            "an absent sensor is not a degraded collector"
+        );
+        if let Some(temperature) = &sample.temperature {
+            assert!(
+                temperature.celsius.is_finite(),
+                "{} reported a non-finite reading",
+                temperature.label
+            );
+            assert!(
+                temperature.sensor_count > 0,
+                "a published reading came from at least the sensor it names"
+            );
         }
     }
 

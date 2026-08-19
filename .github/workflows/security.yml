@@ -132,6 +132,18 @@ jobs:
         run: |
           corepack enable
           corepack install
+      - name: Resolve pnpm store path
+        if: env.RUN_SECURITY_POLICY == 'true'
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - name: Cache pnpm store
+        if: env.RUN_SECURITY_POLICY == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
       - name: Install dependencies
         if: env.RUN_SECURITY_POLICY == 'true'
         run: pnpm install --frozen-lockfile

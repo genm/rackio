@@ -10,6 +10,19 @@ export type NodeState =
 
 export type ConnectionPath = "lan_direct" | "wan_direct" | "relayed" | "unknown";
 
+/**
+ * The hottest sensor on a machine, named so the reading is attributable: an
+ * unlabelled number cannot be told apart from a battery or drive reading.
+ * `criticalCelsius` is the hardware's own threshold and is absent whenever the
+ * OS does not publish one — the viewer never substitutes a guess.
+ */
+export interface TemperatureReading {
+  label: string;
+  celsius: number;
+  criticalCelsius?: number | null;
+  sensorCount: number;
+}
+
 export interface FleetNode {
   id: string;
   endpointId?: string;
@@ -22,6 +35,8 @@ export interface FleetNode {
   memoryTotalBytes?: number | null;
   diskUsedBytes?: number | null;
   diskTotalBytes?: number | null;
+  /** Absent or null on a machine with no readable sensor. */
+  temperature?: TemperatureReading | null;
   rttMs?: number | null;
   lastSeenMs?: number;
   history: number[];

@@ -11,7 +11,7 @@ use std::{
 use chrono::Utc;
 use rackio_core::{
     CapabilityState, CollectorError, ConnectionPath, DiskMetric, HealthSnapshot, MetricCapability,
-    MetricSample, NetworkMetric, NodeInfo, NodeState, ProtocolVersion,
+    MetricSample, NetworkMetric, NodeInfo, NodeState, ProtocolVersion, TemperatureMetric,
 };
 use rackio_iroh::{ClientConnection, PairingBundle, PairingError, TransportError};
 use rackio_protocol::{
@@ -835,6 +835,12 @@ fn metric_sample(sample: rackio_protocol::v1::MetricSample) -> MetricSample {
             received_bytes_per_second: network.received_bytes_per_second,
             sent_bytes_per_second: network.sent_bytes_per_second,
         }),
+        temperature: sample.temperature.map(|temperature| TemperatureMetric {
+            label: temperature.label,
+            celsius: temperature.celsius,
+            critical_celsius: temperature.critical_celsius,
+            sensor_count: temperature.sensor_count,
+        }),
         uptime_seconds: sample.uptime_seconds,
         errors: sample
             .errors
@@ -989,6 +995,7 @@ mod tests {
             swap_total_bytes: None,
             disks: Vec::new(),
             network: None,
+            temperature: None,
             uptime_seconds: 1,
             errors: Vec::new(),
         });
