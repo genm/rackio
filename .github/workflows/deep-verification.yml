@@ -87,6 +87,15 @@ jobs:
       # Needed only to replace the accumulated-corpus cache entry below under
       # its stable key; every other step stays read-only.
       actions: write
+    env:
+      # cargo-fuzz needs the sanitizer and coverage instrumentation that is
+      # nightly-only. The shipped workspace stays on the pinned stable
+      # toolchain; only the detached fuzz crate is built this way. Pinned to a
+      # dated channel, like every other tool in this repository (cargo-fuzz
+      # itself is pinned two steps below), so a nightly regression cannot land
+      # as an unexplained fuzz failure (#117). Bump deliberately; there is no
+      # automated update for this pin.
+      FUZZ_NIGHTLY_CHANNEL: nightly-2026-08-01
     strategy:
       fail-fast: false
       matrix:
@@ -97,12 +106,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Install the nightly toolchain required by libFuzzer
-        # cargo-fuzz needs the sanitizer and coverage instrumentation that is
-        # nightly-only. The shipped workspace stays on the pinned stable
-        # toolchain; only the detached fuzz crate is built this way.
         run: |
-          rustup toolchain install nightly --profile minimal --component rust-src
-          cargo +nightly install cargo-fuzz --version 0.13.2 --locked
+          rustup toolchain install "$FUZZ_NIGHTLY_CHANNEL" --profile minimal --component rust-src
+          cargo "+$FUZZ_NIGHTLY_CHANNEL" install cargo-fuzz --version 0.13.2 --locked
       - name: Cache cargo registry and fuzz target
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -126,7 +132,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           FUZZ_SECONDS: ${{ inputs.fuzz-seconds || '900' }}
         run: |
-          cargo +nightly fuzz run "$TARGET" -- \
+          cargo "+$FUZZ_NIGHTLY_CHANNEL" fuzz run "$TARGET" -- \
             -max_total_time="$FUZZ_SECONDS" \
             -rss_limit_mb=2048
       - name: Replace the accumulated corpus cache entry

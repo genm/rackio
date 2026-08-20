@@ -114,6 +114,13 @@ jobs:
       - name: Check Rust advisories, licenses and sources
         if: env.RUN_SECURITY_POLICY == 'true'
         run: cargo deny check
+      - name: Check fuzz crate advisories, licenses and sources
+        # fuzz/Cargo.lock has its own Dependabot schedule (dependabot.yml) but
+        # is a separate Cargo workspace, so the root check above never
+        # inspects it. cargo-deny resolves deny.toml by walking up from
+        # --manifest-path, so this reuses the same policy (#117).
+        if: env.RUN_SECURITY_POLICY == 'true'
+        run: cargo deny --manifest-path fuzz/Cargo.toml check
       - name: Verify bundled third-party license notices
         if: env.RUN_SECURITY_POLICY == 'true'
         run: |
