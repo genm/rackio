@@ -12,7 +12,10 @@ members = [
 [workspace.package]
 version = "0.1.0-rc.1"
 edition = "2024"
-rust-version = "1.95"
+# Matches rust-toolchain.toml, the only Rust version ever built or verified.
+# Bump both together; see "Minimum supported Rust version" in
+# docs/development.md for why they must stay in lockstep (#116).
+rust-version = "1.97.1"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
