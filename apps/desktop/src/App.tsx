@@ -1,4 +1,3 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
 import {
   isPermissionGranted,
   requestPermission,
@@ -7,11 +6,19 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { Dashboard } from "./components/Dashboard";
-import { initialDesktopState, nodeStateRegistry } from "./state-model";
+import {
+  bootstrapSsh,
+  createPairingShare as requestPairingShare,
+  fetchFleetSnapshot,
+  fetchMachineHistory,
+  importPairingBundle,
+  inspectSshHost as fetchSshHostIdentity,
+} from "./desktop-client";
+import { machineNotificationTransitions } from "./notification-policy";
+import { initialDesktopState } from "./state-model";
 import type {
   FleetNode,
   FleetSnapshot,
-  HistoryPoint,
   HistoryRange,
   MachineDetailState,
   NodeState,
@@ -21,8 +28,6 @@ import type {
   PairingShareState,
   SshBootstrapInput,
   SshBootstrapStatus,
-  SshHostIdentity,
-  SshProgress,
   SshTarget,
 } from "./types";
 
@@ -61,14 +66,12 @@ export default function App() {
   const pairMachine = async (bundle: string) => {
     setPairing({ state: "submitting" });
     try {
-      const machine = await invoke<{ node?: { display_name?: string } }>("pair_machine", {
-        bundle,
-      });
+      const machine = await importPairingBundle(bundle);
       setPairing({
         state: "success",
         machineName: machine.node?.display_name ?? "Machine",
       });
-      const value = await invoke<FleetSnapshot>("fleet_snapshot");
+      const value = await fetchFleetSnapshot();
       setSnapshot(value);
     } catch (error: unknown) {
       setPairing({
@@ -82,7 +85,7 @@ export default function App() {
   const inspectSshHost = async (target: SshTarget) => {
     setSshBootstrap({ state: "checking_host" });
     try {
-      const identity = await invoke<SshHostIdentity>("ssh_inspect_host", { target });
+      const identity = await fetchSshHostIdentity(target);
       setSshBootstrap({ state: "confirming_host_key", ...identity });
     } catch (error: unknown) {
       setSshBootstrap({
@@ -97,13 +100,7 @@ export default function App() {
     try {
       setPairingShare({
         state: "ready",
-        ...(await invoke<{
-          bundle: string;
-          expiresAtMs: number;
-          qrDataUrl?: string;
-          qrError?: string;
-          lanWarning?: string;
-        }>("create_pairing_share")),
+        ...(await requestPairingShare()),
       });
     } catch (error: unknown) {
       setPairingShare({
@@ -114,23 +111,17 @@ export default function App() {
   };
 
   const installViaSsh = async (input: SshBootstrapInput) => {
-    const onProgress = new Channel<SshProgress>();
-    onProgress.onmessage = ({ stage, detail }) => {
-      setSshBootstrap({ state: "running", stage, detail });
-    };
+    const installation = bootstrapSsh(input, ({ stage, detail }) =>
+      setSshBootstrap({ state: "running", stage, detail }),
+    );
     try {
-      const installed = await invoke<{ pairingBundle: string; remotePlatform: string }>(
-        "ssh_bootstrap",
-        { request: input, onProgress },
-      );
+      const installed = await installation;
       setSshBootstrap({
         state: "running",
         stage: "connecting_p2p",
         detail: "Authorizing the new machine over the encrypted P2P connection",
       });
-      const machine = await invoke<{ node?: { display_name?: string } }>("pair_machine", {
-        bundle: installed.pairingBundle,
-      });
+      const machine = await importPairingBundle(installed.pairingBundle);
       const machineName = machine.node?.display_name ?? input.target.host;
       setSshBootstrap({
         state: "completed",
@@ -138,7 +129,7 @@ export default function App() {
         remotePlatform: installed.remotePlatform,
       });
       setPairing({ state: "success", machineName });
-      setSnapshot(await invoke<FleetSnapshot>("fleet_snapshot"));
+      setSnapshot(await fetchFleetSnapshot());
     } catch (error: unknown) {
       setSshBootstrap({
         state: "failed",
@@ -151,10 +142,7 @@ export default function App() {
     if (node.endpointId === undefined) return;
     setMachineDetail({ state: "loading", node, hours });
     try {
-      const points = await invoke<HistoryPoint[]>("machine_history", {
-        endpointId: node.endpointId,
-        hours,
-      });
+      const points = await fetchMachineHistory(node.endpointId, hours);
       setMachineDetail({ state: "ready", node, hours, points });
     } catch (error: unknown) {
       setMachineDetail({
@@ -224,7 +212,7 @@ export default function App() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const refresh = async () => {
       try {
-        const value = await invoke<FleetSnapshot>("fleet_snapshot");
+        const value = await fetchFleetSnapshot();
         if (active) setSnapshot(value);
       } catch (error: unknown) {
         if (active) {
@@ -248,33 +236,15 @@ export default function App() {
   useEffect(() => {
     if (snapshot.daemon !== "connected" || snapshot.nodes.length === 0) return;
     const previous = previousMachineStates.current;
-    const current = new Map(snapshot.nodes.map((node) => [node.id, node]));
     previousMachineStates.current = new Map(
       snapshot.nodes.map((node) => [node.id, node.state] as const),
     );
     if (notificationState.state !== "enabled" || previous.size === 0) return;
-    const alerting = nodeStateRegistry[notificationState.threshold].rank;
-    const announcements: { title: string; body: string }[] = [];
-    for (const [id, node] of current) {
-      const was = previous.get(id);
-      if (was === undefined || was === node.state) continue;
-      const wasAlerting = nodeStateRegistry[was].rank >= alerting;
-      const isAlerting = nodeStateRegistry[node.state].rank >= alerting;
-      // Naming the machine is the point: "the rack is critical" does not say
-      // which box to look at. Recovery is announced too, so an operator who
-      // was told about a failure learns it ended without opening the app.
-      if (isAlerting && !wasAlerting) {
-        announcements.push({
-          title: `Rackio · ${node.name} is ${nodeStateRegistry[node.state].label}`,
-          body: `${node.name} changed from ${nodeStateRegistry[was].label} to ${nodeStateRegistry[node.state].label}.`,
-        });
-      } else if (wasAlerting && !isAlerting) {
-        announcements.push({
-          title: `Rackio · ${node.name} recovered`,
-          body: `${node.name} is ${nodeStateRegistry[node.state].label} again.`,
-        });
-      }
-    }
+    const announcements = machineNotificationTransitions(
+      previous,
+      snapshot.nodes,
+      notificationState.threshold,
+    );
     if (announcements.length === 0) return;
     try {
       for (const announcement of announcements) {
