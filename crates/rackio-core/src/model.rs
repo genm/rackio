@@ -186,6 +186,14 @@ pub struct TrendSample {
     pub temperature_celsius: Option<f32>,
     #[serde(default)]
     pub rtt_ms: Option<u64>,
+    /// Received and sent are kept as two independent optional readings rather
+    /// than summed: a saturated download and an idle upload would average to
+    /// "moderate" and hide which direction is actually loaded. Absent (not
+    /// zero) whenever the sample carried no `network` reading at all.
+    #[serde(default)]
+    pub network_received_bytes_per_second: Option<u64>,
+    #[serde(default)]
+    pub network_sent_bytes_per_second: Option<u64>,
 }
 
 impl MetricSample {
@@ -219,6 +227,14 @@ impl From<&MetricSample> for TrendSample {
                 .as_ref()
                 .map(|temperature| temperature.celsius),
             rtt_ms: None,
+            network_received_bytes_per_second: sample
+                .network
+                .as_ref()
+                .map(|network| network.received_bytes_per_second),
+            network_sent_bytes_per_second: sample
+                .network
+                .as_ref()
+                .map(|network| network.sent_bytes_per_second),
         }
     }
 }
@@ -255,10 +271,10 @@ impl TrendWindow {
 
 #[cfg(test)]
 mod trend_sample_tests {
-    use super::{DiskMetric, MetricSample, TemperatureMetric, TrendSample};
+    use super::{DiskMetric, MetricSample, NetworkMetric, TemperatureMetric, TrendSample};
 
     #[test]
-    fn projects_the_fullest_disk_and_the_hottest_sensor() {
+    fn projects_the_fullest_disk_the_hottest_sensor_and_both_network_directions() {
         let sample = MetricSample {
             timestamp_ms: 1,
             sequence: 0,
@@ -286,7 +302,10 @@ mod trend_sample_tests {
                     used_bytes: 0,
                 },
             ],
-            network: None,
+            network: Some(NetworkMetric {
+                received_bytes_per_second: 12_000,
+                sent_bytes_per_second: 3_000,
+            }),
             temperature: Some(TemperatureMetric {
                 label: String::from("Package id 0"),
                 celsius: 61.5,
@@ -301,10 +320,36 @@ mod trend_sample_tests {
         assert_eq!(point.disk_used_bytes, Some(90));
         assert_eq!(point.disk_total_bytes, Some(100));
         assert_eq!(point.temperature_celsius, Some(61.5));
+        assert_eq!(point.network_received_bytes_per_second, Some(12_000));
+        assert_eq!(point.network_sent_bytes_per_second, Some(3_000));
         assert_eq!(
             point.rtt_ms, None,
             "RTT is stamped by the stream loop, not the sample"
         );
+    }
+
+    #[test]
+    fn projects_no_network_reading_when_the_sample_carried_none() {
+        // Absent, not zero: a machine whose network capability is unreadable
+        // must not be plotted as a saturated 0 B/s link.
+        let sample = MetricSample {
+            timestamp_ms: 1,
+            sequence: 0,
+            cpu_percent: None,
+            memory_used_bytes: None,
+            memory_total_bytes: None,
+            swap_used_bytes: None,
+            swap_total_bytes: None,
+            disks: Vec::new(),
+            network: None,
+            temperature: None,
+            uptime_seconds: 0,
+            errors: Vec::new(),
+        };
+
+        let point = TrendSample::from(&sample);
+        assert_eq!(point.network_received_bytes_per_second, None);
+        assert_eq!(point.network_sent_bytes_per_second, None);
     }
 
     #[test]
@@ -319,6 +364,8 @@ mod trend_sample_tests {
         .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(point.disk_used_bytes, None);
         assert_eq!(point.rtt_ms, None);
+        assert_eq!(point.network_received_bytes_per_second, None);
+        assert_eq!(point.network_sent_bytes_per_second, None);
     }
 }
 
@@ -336,6 +383,8 @@ mod trend_window_tests {
             disk_total_bytes: Some(100),
             temperature_celsius: Some(61.5),
             rtt_ms: Some(8),
+            network_received_bytes_per_second: Some(12_000),
+            network_sent_bytes_per_second: Some(3_000),
         }
     }
 

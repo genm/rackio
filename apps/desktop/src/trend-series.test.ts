@@ -54,6 +54,26 @@ describe("trendSeries", () => {
     expect(trendSeries(rich, "temp").samples).toEqual([{ value: 61.5, timestampMs: 1_000 }]);
     expect(trendSeries(rich, "rtt").samples).toEqual([{ value: 8, timestampMs: 1_000 }]);
   });
+
+  it("projects received and sent network throughput as independent metrics", () => {
+    // A history payload as `machine_history` ships it: a minute where only
+    // the outbound direction was readable must not fabricate an inbound 0.
+    const historyPayload = [
+      {
+        timestampMs: 1_000,
+        networkReceivedBytesPerSecond: 12_000,
+        networkSentBytesPerSecond: 3_000,
+      },
+      { timestampMs: 2_000, networkReceivedBytesPerSecond: null, networkSentBytesPerSecond: 1_500 },
+    ];
+    expect(trendSeries(historyPayload, "netRx").samples).toEqual([
+      { value: 12_000, timestampMs: 1_000 },
+    ]);
+    expect(trendSeries(historyPayload, "netTx").samples).toEqual([
+      { value: 3_000, timestampMs: 1_000 },
+      { value: 1_500, timestampMs: 2_000 },
+    ]);
+  });
 });
 
 describe("trendCoordinates", () => {
@@ -103,5 +123,13 @@ describe("trendScale", () => {
     expect(trendScale("milliseconds", [111]).max).toBe(200);
     // An all-quiet series still gets a positive ceiling instead of NaN.
     expect(trendScale("milliseconds", []).max).toBe(10);
+  });
+
+  it("gives a byte rate a data-derived ceiling labelled as a rate, not a fixed percentage", () => {
+    expect(trendScale("byteRate", [1_100_000, 400_000])).toEqual({
+      max: 2_000_000,
+      topLabel: "1.9 MiB/s",
+      midLabel: "977 KiB/s",
+    });
   });
 });

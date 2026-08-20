@@ -40,6 +40,9 @@ export interface TrendPoint {
   temperatureCelsius?: number | null;
   /** The viewer's own connection measurement; absent for the local machine. */
   rttMs?: number | null;
+  /** Two independent directions rather than one figure; see `trendMetricRegistry`. */
+  networkReceivedBytesPerSecond?: number | null;
+  networkSentBytesPerSecond?: number | null;
 }
 
 export interface FleetNode {
@@ -57,15 +60,14 @@ export interface FleetNode {
   /** Absent or null on a machine with no readable sensor. */
   temperature?: TemperatureReading | null;
   rttMs?: number | null;
+  networkReceivedBytesPerSecond?: number | null;
+  networkSentBytesPerSecond?: number | null;
   lastSeenMs?: number;
   trend: TrendPoint[];
   detail?: string;
 }
 
-export interface HistoryPoint extends TrendPoint {
-  networkReceivedBytesPerSecond?: number | null;
-  networkSentBytesPerSecond?: number | null;
-}
+export type HistoryPoint = TrendPoint;
 
 export type MachineDetailState =
   | { state: "closed" }

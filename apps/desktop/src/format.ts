@@ -49,3 +49,9 @@ export function bytes(value?: number | null): string {
   }
   return `${current.toFixed(index > 1 ? 1 : 0)} ${units[index]}`;
 }
+
+/** A byte count rendered as a rate, e.g. "1.2 MiB/s". */
+export function bytesPerSecond(value?: number | null): string {
+  if (value == null) return "—";
+  return `${bytes(value)}/s`;
+}

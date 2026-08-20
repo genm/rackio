@@ -1,3 +1,4 @@
+import { bytesPerSecond } from "./format";
 import type { TrendPoint } from "./types";
 
 /**
@@ -5,9 +6,9 @@ import type { TrendPoint } from "./types";
  * shows on a cadence must also be plottable, without exception. Adding a tile
  * to the card means adding an entry here, never a static tile.
  */
-export type TrendMetric = "cpu" | "memory" | "disk" | "temp" | "rtt";
+export type TrendMetric = "cpu" | "memory" | "disk" | "temp" | "rtt" | "netRx" | "netTx";
 
-export type TrendScaleKind = "percent" | "celsius" | "milliseconds";
+export type TrendScaleKind = "percent" | "celsius" | "milliseconds" | "byteRate";
 
 function ratio(used?: number | null, total?: number | null): number | null {
   if (used == null || total == null || total <= 0) return null;
@@ -52,6 +53,23 @@ export const trendMetricRegistry: Record<
     chartTitle: "RTT",
     scale: "milliseconds",
     read: (point) => point.rttMs,
+  },
+  // Received and sent are separate metrics rather than one combined
+  // throughput number: a saturated download alongside an idle upload would
+  // average into a misleading "moderate" reading and hide which direction is
+  // actually loaded. Each stays absent (never a fabricated zero) whenever
+  // that direction's reading was unavailable, matching every other metric.
+  netRx: {
+    label: "Net In",
+    chartTitle: "Network received",
+    scale: "byteRate",
+    read: (point) => point.networkReceivedBytesPerSecond,
+  },
+  netTx: {
+    label: "Net Out",
+    chartTitle: "Network sent",
+    scale: "byteRate",
+    read: (point) => point.networkSentBytesPerSecond,
   },
 };
 
@@ -133,8 +151,9 @@ function niceCeiling(value: number): number {
 
 /**
  * Bounded units get a fixed scale so a calm chart and a loaded chart can
- * never look alike; unbounded milliseconds are the exception and take the
- * smallest round ceiling that fits the data.
+ * never look alike; unbounded milliseconds and byte rates are the exception
+ * and take the smallest round ceiling that fits the data — a byte rate has no
+ * natural 100% the way a percentage or a hardware threshold does.
  */
 export function trendScale(kind: TrendScaleKind, values: number[]): TrendScale {
   switch (kind) {
@@ -147,6 +166,10 @@ export function trendScale(kind: TrendScaleKind, values: number[]): TrendScale {
     case "milliseconds": {
       const max = niceCeiling(Math.max(...values, 1));
       return { max, topLabel: `${max} ms`, midLabel: `${max / 2}` };
+    }
+    case "byteRate": {
+      const max = niceCeiling(Math.max(...values, 1));
+      return { max, topLabel: bytesPerSecond(max), midLabel: bytesPerSecond(max / 2) };
     }
   }
 }

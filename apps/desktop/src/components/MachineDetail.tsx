@@ -6,11 +6,12 @@ import { type TrendMetric, trendMetricRegistry, trendScale, trendSeries } from "
 
 /**
  * The 24-hour query reads the peer's one-minute buckets, which aggregate
- * CPU, memory, disk and temperature. RTT stays out: it is the viewer's own
- * connection measurement, never written to the peer's storage, so there is
- * nothing on the peer side for a wider schema to aggregate.
+ * CPU, memory, disk, temperature and network throughput. RTT stays out: it
+ * is the viewer's own connection measurement, never written to the peer's
+ * storage, so there is nothing on the peer side for a wider schema to
+ * aggregate.
  */
-const historyMetrics: TrendMetric[] = ["cpu", "memory", "disk", "temp"];
+const historyMetrics: TrendMetric[] = ["cpu", "memory", "disk", "temp", "netRx", "netTx"];
 import type { MachineDetailState } from "../types";
 import { useModalDialog } from "../useModalDialog";
 import { temperatureDetail } from "./NodeCard";

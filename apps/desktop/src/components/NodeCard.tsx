@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { ago, bytes, celsius, percent, shortDuration } from "../format";
+import { ago, bytes, bytesPerSecond, celsius, percent, shortDuration } from "../format";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
 import { type TrendMetric, trendMetricRegistry, trendScale, trendSeries } from "../trend-series";
 import type { FleetNode, TemperatureReading } from "../types";
@@ -52,6 +52,8 @@ export function NodeCard({
     disk: percent(node.diskUsedBytes, node.diskTotalBytes),
     temp: celsius(node.temperature?.celsius),
     rtt: node.rttMs == null ? "—" : `${node.rttMs} ms`,
+    netRx: bytesPerSecond(node.networkReceivedBytesPerSecond),
+    netTx: bytesPerSecond(node.networkSentBytesPerSecond),
   };
   const currentValue = tileValues[metric] === "—" ? "" : tileValues[metric];
   // A machine that streams samples but never reports this metric (a sensorless

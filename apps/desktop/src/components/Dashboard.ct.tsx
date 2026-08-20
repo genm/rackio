@@ -20,6 +20,8 @@ function trendFixture(
     diskTotalBytes: 1_000_000_000_000,
     temperatureCelsius: 55 + cpuPercent / 10,
     rttMs: 4 + (index % 3),
+    networkReceivedBytesPerSecond: 1_000_000 + cpuPercent * 10_000,
+    networkSentBytesPerSecond: 200_000 + cpuPercent * 1_000,
   }));
 }
 
@@ -44,6 +46,8 @@ const snapshot: FleetSnapshot = {
         sensorCount: 41,
       },
       rttMs: 4,
+      networkReceivedBytesPerSecond: 1_180_000,
+      networkSentBytesPerSecond: 228_000,
       trend: trendFixture([18, 23, 21, 34, 29, 28], 12_800_000_000, 32_000_000_000),
     },
     {
@@ -98,6 +102,8 @@ test("every metric tile switches the trend chart", async ({ mount }) => {
   const expectations = [
     { tile: /^Disk/, chart: "Studio Mac Disk usage over the last 10 s" },
     { tile: /^Temp/, chart: "Studio Mac Temperature over the last 10 s" },
+    { tile: /^Net In/, chart: "Studio Mac Network received over the last 10 s" },
+    { tile: /^Net Out/, chart: "Studio Mac Network sent over the last 10 s" },
     { tile: /^RTT/, chart: "Studio Mac RTT over the last 10 s" },
   ];
   for (const { tile, chart } of expectations) {
@@ -108,6 +114,11 @@ test("every metric tile switches the trend chart", async ({ mount }) => {
   // unit is a percentage.
   await expect(studio.getByText("10 ms")).toBeVisible();
   await studio.screenshot({ path: "../../output/playwright/node-card-rtt.png" });
+
+  // Network throughput gets the same treatment: a byte-rate ceiling and unit,
+  // not a fixed percentage.
+  await studio.getByRole("button", { name: /^Net In/ }).click();
+  await expect(studio.getByText("1.9 MiB/s")).toBeVisible();
 });
 
 test("dates an offline machine's numbers instead of presenting them as live", async ({ mount }) => {

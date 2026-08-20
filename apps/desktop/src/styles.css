@@ -775,7 +775,7 @@ h2 {
 
 .metrics {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
   gap: 8px;
   margin: 0 0 14px;
 }
@@ -829,6 +829,8 @@ h2 {
 
 .chart-toggle {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 4px;
   padding: 3px;
   border: 1px solid #26332c;

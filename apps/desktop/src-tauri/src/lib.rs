@@ -798,6 +798,8 @@ fn trend_point_json(sample: &serde_json::Value) -> serde_json::Value {
         "diskTotalBytes": sample.get("disk_total_bytes"),
         "temperatureCelsius": sample.get("temperature_celsius"),
         "rttMs": sample.get("rtt_ms"),
+        "networkReceivedBytesPerSecond": sample.get("network_received_bytes_per_second"),
+        "networkSentBytesPerSecond": sample.get("network_sent_bytes_per_second"),
     })
 }
 
@@ -877,6 +879,12 @@ fn machine_json(
         "diskTotalBytes": disk_total,
         "temperature": temperature,
         "rttMs": rtt_ms,
+        "networkReceivedBytesPerSecond": latest
+            .get("network")
+            .and_then(|network| network.get("received_bytes_per_second")),
+        "networkSentBytesPerSecond": latest
+            .get("network")
+            .and_then(|network| network.get("sent_bytes_per_second")),
         "lastSeenMs": last_seen_ms,
         "trend": trend.iter().map(trend_point_json).collect::<Vec<_>>(),
         "detail": detail,
@@ -1221,6 +1229,48 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_carries_its_current_network_throughput_or_nothing_at_all() {
+        let source = serde_json::json!({
+            "node": { "node_id": "id", "display_name": "Server" },
+            "latest": {
+                "cpu_percent": 12.0,
+                "network": {
+                    "received_bytes_per_second": 12_000,
+                    "sent_bytes_per_second": 3_000,
+                },
+            },
+        });
+
+        let machine = machine_json(&source, "healthy", "lan_direct", None, None, &[], None)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            machine.get("networkReceivedBytesPerSecond"),
+            Some(&serde_json::json!(12_000))
+        );
+        assert_eq!(
+            machine.get("networkSentBytesPerSecond"),
+            Some(&serde_json::json!(3_000))
+        );
+
+        // A machine whose network capability never reported must not acquire a
+        // fabricated zero here.
+        let unreadable = serde_json::json!({
+            "node": { "node_id": "id", "display_name": "Server" },
+            "latest": { "cpu_percent": 12.0 },
+        });
+        let machine = machine_json(&unreadable, "healthy", "lan_direct", None, None, &[], None)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            machine.get("networkReceivedBytesPerSecond"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            machine.get("networkSentBytesPerSecond"),
+            Some(&serde_json::Value::Null)
+        );
+    }
+
+    #[test]
     fn trend_samples_reach_the_viewer_as_timestamped_points() {
         let source = serde_json::json!({
             "node": { "node_id": "id", "display_name": "Server" },
@@ -1235,6 +1285,8 @@ mod tests {
             "disk_total_bytes": 100,
             "temperature_celsius": 61.5,
             "rtt_ms": 8,
+            "network_received_bytes_per_second": 12_000,
+            "network_sent_bytes_per_second": 3_000,
         })];
 
         let machine = machine_json(&source, "healthy", "lan_direct", None, None, &trend, None)
@@ -1250,6 +1302,8 @@ mod tests {
                 "diskTotalBytes": 100,
                 "temperatureCelsius": 61.5,
                 "rttMs": 8,
+                "networkReceivedBytesPerSecond": 12_000,
+                "networkSentBytesPerSecond": 3_000,
             }]))
         );
     }

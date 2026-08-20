@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ago, shortDuration } from "./format";
+import { ago, bytesPerSecond, shortDuration } from "./format";
 
 describe("shortDuration", () => {
   it("keeps sub-90-second spans in seconds so a short trend is not rounded to 1 min", () => {
@@ -10,6 +10,17 @@ describe("shortDuration", () => {
 
   it("rounds longer spans to whole minutes", () => {
     expect(shortDuration(238)).toBe("4 min");
+  });
+});
+
+describe("bytesPerSecond", () => {
+  it("reads as a rate rather than a bare size", () => {
+    expect(bytesPerSecond(1_258_291)).toBe("1.2 MiB/s");
+  });
+
+  it("shows an em dash rather than fabricating a zero rate", () => {
+    expect(bytesPerSecond(null)).toBe("—");
+    expect(bytesPerSecond(undefined)).toBe("—");
   });
 });
 

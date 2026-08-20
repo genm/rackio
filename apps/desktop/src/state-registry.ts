@@ -121,6 +121,8 @@ export const machineDetailStateRegistry: Record<string, MachineDetailState> = {
         diskUsedBytes: 180_000_000_000,
         diskTotalBytes: 500_000_000_000,
         temperatureCelsius: 58,
+        networkReceivedBytesPerSecond: 1_200_000,
+        networkSentBytesPerSecond: 240_000,
       },
       {
         timestampMs: 1_750_000_060_000,
@@ -130,6 +132,8 @@ export const machineDetailStateRegistry: Record<string, MachineDetailState> = {
         diskUsedBytes: 185_000_000_000,
         diskTotalBytes: 500_000_000_000,
         temperatureCelsius: 61,
+        networkReceivedBytesPerSecond: 1_800_000,
+        networkSentBytesPerSecond: 260_000,
       },
     ],
   },

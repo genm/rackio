@@ -39,6 +39,22 @@ test("also offers disk and temperature on the 24-hour chart", async ({ mount }) 
   await expect(toggle.getByRole("button", { name: "RTT" })).toHaveCount(0);
 });
 
+test("renders network throughput from the 24-hour history payload", async ({ mount }) => {
+  const component = await mount(
+    <MachineDetail detail={machineDetailStateRegistry.ready} onClose={() => undefined} />,
+  );
+  const toggle = component.getByLabel("History metric");
+
+  await toggle.getByRole("button", { name: "Net In" }).click();
+  await expect(component.getByRole("img", { name: /24-hour Net In history/ })).toBeVisible();
+  // The data-derived ceiling covers the fixture's 1.8 MB/s peak.
+  await expect(component.getByText("1.9 MiB/s")).toBeVisible();
+
+  await toggle.getByRole("button", { name: "Net Out" }).click();
+  await expect(component.getByRole("img", { name: /24-hour Net Out history/ })).toBeVisible();
+  await expect(component.getByText("488 KiB/s")).toBeVisible();
+});
+
 test("keeps remote history failure visible without hiding live state", async ({ mount }) => {
   const component = await mount(
     <MachineDetail detail={machineDetailStateRegistry.error} onClose={() => undefined} />,
