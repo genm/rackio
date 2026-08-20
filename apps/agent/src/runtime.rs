@@ -1,15 +1,10 @@
+mod config;
+
 #[cfg(unix)]
 use std::time::Instant;
-use std::{
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
-};
+use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
-use anyhow::{Context, anyhow};
-use directories::ProjectDirs;
+use anyhow::anyhow;
 use rackio_core::{
     HealthSnapshot, HistoryResolution, MetricCapability, MetricStore, NodeInfo, NodeState,
     ProtocolVersion, SystemCollector,
@@ -23,10 +18,15 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     sync::{RwLock, watch},
 };
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 use uuid::Uuid;
 
 use crate::remote::{RemoteFleet, RemoteHistoryResolution, RemoteMachineSnapshot};
+use config::{
+    create_directories, init_logging, load_config, load_or_create_node_id, save_config,
+    validate_relay_url,
+};
+
+pub use config::{AppPaths, app_paths};
 
 // The Windows local IPC listener has its own connect loop, so these bound the
 // Unix accept loop only.
@@ -62,83 +62,6 @@ async fn shutdown_signal() -> anyhow::Result<()> {
     {
         tokio::signal::ctrl_c().await.map_err(anyhow::Error::from)
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct AppPaths {
-    pub config: PathBuf,
-    pub data: PathBuf,
-    pub state: PathBuf,
-    pub log: PathBuf,
-    #[cfg(unix)]
-    pub local_socket: PathBuf,
-}
-
-pub fn app_paths() -> anyhow::Result<AppPaths> {
-    let config_override = std::env::var_os("RACKIO_CONFIG_DIR").map(PathBuf::from);
-    let data_override = std::env::var_os("RACKIO_DATA_DIR").map(PathBuf::from);
-    let state_override = std::env::var_os("RACKIO_STATE_DIR").map(PathBuf::from);
-    // Service accounts may intentionally provide every owned path while OS
-    // user-profile directories are unavailable. Only require ProjectDirs for
-    // values that actually need a platform default.
-    let dirs = if config_override.is_none() || data_override.is_none() || state_override.is_none() {
-        Some(
-            ProjectDirs::from("dev", "rackio", "rackio")
-                .ok_or_else(|| anyhow!("OS application directories are unavailable"))?,
-        )
-    } else {
-        None
-    };
-    let config_dir = match config_override {
-        Some(path) => path,
-        None => dirs
-            .as_ref()
-            .ok_or_else(|| anyhow!("OS config directory is unavailable"))?
-            .config_dir()
-            .to_path_buf(),
-    };
-    let data_dir = match data_override {
-        Some(path) => path,
-        None => dirs
-            .as_ref()
-            .ok_or_else(|| anyhow!("OS data directory is unavailable"))?
-            .data_local_dir()
-            .to_path_buf(),
-    };
-    let state_dir = if let Some(path) = state_override {
-        path
-    } else {
-        let dirs = dirs
-            .as_ref()
-            .ok_or_else(|| anyhow!("OS state directory is unavailable"))?;
-        dirs.state_dir()
-            .unwrap_or_else(|| dirs.data_local_dir())
-            .to_path_buf()
-    };
-    #[cfg(unix)]
-    let local_socket = std::env::var_os("RACKIO_SOCKET")
-        .map_or_else(|| state_dir.join("agent.sock"), PathBuf::from);
-    let log_dir =
-        std::env::var_os("RACKIO_LOG_DIR").map_or_else(|| state_dir.join("logs"), PathBuf::from);
-    Ok(AppPaths {
-        config: config_dir,
-        data: data_dir,
-        state: state_dir,
-        log: log_dir,
-        #[cfg(unix)]
-        local_socket,
-    })
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct AgentConfig {
-    relay_url: Option<String>,
-    /// Operator-defined local health thresholds. Empty by default: Rackio does
-    /// not invent thresholds for a machine it knows nothing about, and
-    /// `docs/operations.md` documents `warning`/`critical` as "a *configured*
-    /// local health threshold was crossed".
-    #[serde(default)]
-    alerts: Vec<rackio_core::AlertRule>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1013,95 +936,12 @@ fn healthy() -> HealthSnapshot {
     }
 }
 
-fn create_directories(paths: &AppPaths) -> anyhow::Result<()> {
-    for path in [&paths.config, &paths.data, &paths.state, &paths.log] {
-        fs::create_dir_all(path)?;
-    }
-    Ok(())
-}
-
-fn config_path(paths: &AppPaths) -> PathBuf {
-    paths.config.join("config.json")
-}
-
-fn validate_relay_url(relay_url: Option<&str>) -> Result<(), &'static str> {
-    if relay_url.is_some_and(|value| value.parse::<iroh::RelayUrl>().is_err()) {
-        Err("relay URL is invalid")
-    } else {
-        Ok(())
-    }
-}
-
-fn load_config(paths: &AppPaths) -> anyhow::Result<AgentConfig> {
-    match fs::read(config_path(paths)) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AgentConfig::default()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn save_config(paths: &AppPaths, config: &AgentConfig) -> anyhow::Result<()> {
-    fs::create_dir_all(&paths.config)?;
-    let target = config_path(paths);
-    let mut file = tempfile::Builder::new()
-        .prefix(".config-")
-        .tempfile_in(&paths.config)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))?;
-    }
-    file.write_all(&serde_json::to_vec_pretty(config)?)?;
-    file.as_file().sync_all()?;
-    file.persist(target).map_err(|error| error.error)?;
-    Ok(())
-}
-
-fn load_or_create_node_id(path: &Path) -> anyhow::Result<Uuid> {
-    match fs::read_to_string(path) {
-        Ok(value) => Ok(Uuid::parse_str(value.trim())?),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let node_id = Uuid::new_v4();
-            fs::write(path, node_id.to_string())?;
-            Ok(node_id)
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn init_logging(paths: &AppPaths) -> anyhow::Result<()> {
-    fs::create_dir_all(&paths.log)?;
-    let file = tracing_appender::rolling::daily(&paths.log, "agent.jsonl");
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .with(tracing_subscriber::fmt::layer().json().with_writer(file))
-        .try_init()
-        .context("structured logging initialization failed")
-}
-
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
     use std::path::PathBuf;
 
-    use rackio_core::{AlertRule, Comparison, NodeState};
-
-    use super::{
-        AgentConfig, AppPaths, MAX_LOCAL_REQUEST_BYTES, load_config, read_local_request,
-        save_config, validate_relay_url,
-    };
-
-    fn test_paths(root: &std::path::Path) -> AppPaths {
-        AppPaths {
-            config: root.join("config"),
-            data: root.join("data"),
-            state: root.join("state"),
-            log: root.join("log"),
-            #[cfg(unix)]
-            local_socket: root.join("agent.sock"),
-        }
-    }
+    use super::{MAX_LOCAL_REQUEST_BYTES, read_local_request};
 
     async fn read_request(payload: &[u8]) -> Result<super::LocalCommand, super::LocalResponse> {
         let mut reader = tokio::io::BufReader::new(tokio::io::AsyncReadExt::take(
@@ -1146,67 +986,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    use super::local_socket_candidates;
-
-    #[test]
-    fn relay_url_validation_fails_closed() {
-        assert!(validate_relay_url(Some("not a relay URL")).is_err());
-        assert!(validate_relay_url(Some("https://relay.example.test")).is_ok());
-        assert!(validate_relay_url(None).is_ok());
-    }
-
-    #[test]
-    fn a_missing_config_is_direct_only_without_invented_alerts() {
-        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
-        let config =
-            load_config(&test_paths(directory.path())).unwrap_or_else(|error| panic!("{error}"));
-
-        assert!(config.relay_url.is_none());
-        assert!(config.alerts.is_empty());
-    }
-
-    #[test]
-    fn config_round_trips_every_operator_owned_field() {
-        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
-        let paths = test_paths(directory.path());
-        let expected = AgentConfig {
-            relay_url: Some(String::from("https://relay.example.test")),
-            alerts: vec![AlertRule {
-                id: String::from("cpu-warning"),
-                metric: String::from("cpu_percent"),
-                comparison: Comparison::GreaterThanOrEqual,
-                threshold: 80.0,
-                consecutive_samples: 3,
-                severity: NodeState::Warning,
-            }],
-        };
-
-        save_config(&paths, &expected).unwrap_or_else(|error| panic!("{error}"));
-        let actual = load_config(&paths).unwrap_or_else(|error| panic!("{error}"));
-
-        assert_eq!(actual.relay_url, expected.relay_url);
-        assert_eq!(actual.alerts, expected.alerts);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(paths.config.join("config.json"))
-                .unwrap_or_else(|error| panic!("{error}"))
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
-    }
-
-    #[test]
-    fn an_invalid_config_fails_closed_instead_of_using_defaults() {
-        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
-        let paths = test_paths(directory.path());
-        std::fs::create_dir_all(&paths.config).unwrap_or_else(|error| panic!("{error}"));
-        std::fs::write(paths.config.join("config.json"), b"not json")
-            .unwrap_or_else(|error| panic!("{error}"));
-
-        assert!(load_config(&paths).is_err());
-    }
+    use super::{AppPaths, local_socket_candidates};
 
     #[test]
     #[cfg(unix)]
