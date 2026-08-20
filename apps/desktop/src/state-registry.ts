@@ -1,49 +1,23 @@
+// Component-test state-space fixtures. Production code imports `state-model`
+// so representative secrets, errors, and degraded states never ship.
+
 import type {
-  ConnectionPath,
   FleetSnapshot,
   MachineDetailState,
-  NodeState,
   NotificationState,
   PairingShareState,
   SshBootstrapStatus,
   TraySurfaceState,
 } from "./types";
-
-export const nodeStateRegistry: Record<NodeState, { label: string; rank: number; tone: string }> = {
-  healthy: { label: "Healthy", rank: 0, tone: "good" },
-  warning: { label: "Warning", rank: 1, tone: "warn" },
-  degraded: { label: "Degraded", rank: 2, tone: "warn" },
-  stale: { label: "Stale", rank: 3, tone: "muted" },
-  critical: { label: "Critical", rank: 4, tone: "bad" },
-  offline: { label: "Offline", rank: 5, tone: "bad" },
-  auth_error: { label: "Auth error", rank: 6, tone: "bad" },
-  incompatible: { label: "Incompatible", rank: 6, tone: "bad" },
-};
-
-export const connectionPathRegistry: Record<
-  ConnectionPath,
-  { label: string; description: string }
-> = {
-  lan_direct: { label: "LAN Direct", description: "Direct local connection" },
-  wan_direct: { label: "WAN Direct", description: "Direct internet connection" },
-  relayed: {
-    label: "Relayed",
-    description: "E2E encrypted through your configured relay",
-  },
-  unknown: { label: "Unknown path", description: "Path has not been verified" },
-};
+import { initialDesktopState } from "./state-model";
 
 export const surfaceStateRegistry: Record<string, FleetSnapshot> = {
   empty: { daemon: "connected", nodes: [], message: "No machines paired yet." },
-  daemonUnavailable: {
-    daemon: "unavailable",
-    nodes: [],
-    message: "The background agent is not reachable.",
-  },
+  daemonUnavailable: initialDesktopState.snapshot,
 };
 
 export const sshBootstrapStateRegistry: Record<string, SshBootstrapStatus> = {
-  editing: { state: "editing" },
+  editing: initialDesktopState.sshBootstrap,
   checkingHost: { state: "checking_host" },
   confirmingHostKey: {
     state: "confirming_host_key",
@@ -107,7 +81,7 @@ const detailFixtureNode = {
 };
 
 export const machineDetailStateRegistry: Record<string, MachineDetailState> = {
-  closed: { state: "closed" },
+  closed: initialDesktopState.machineDetail,
   loading: { state: "loading", node: detailFixtureNode, hours: 24 },
   ready: {
     state: "ready",
@@ -158,7 +132,7 @@ export const machineDetailStateRegistry: Record<string, MachineDetailState> = {
 };
 
 export const traySurfaceStateRegistry: Record<string, TraySurfaceState> = {
-  available: { state: "available" },
+  available: initialDesktopState.traySurface,
   unavailable: {
     state: "unavailable",
     message: "System tray is unavailable in this desktop environment. Rackio remains open here.",
@@ -166,7 +140,7 @@ export const traySurfaceStateRegistry: Record<string, TraySurfaceState> = {
 };
 
 export const notificationStateRegistry: Record<string, NotificationState> = {
-  disabled: { state: "disabled", threshold: "critical" },
+  disabled: initialDesktopState.notificationState,
   requesting: { state: "requesting", threshold: "critical" },
   enabled: { state: "enabled", threshold: "critical" },
   denied: {
@@ -188,7 +162,7 @@ const PAIRING_WINDOW_MS = 5 * 60 * 1_000;
 const pairingWindowOpenedAtMs = Date.now();
 
 export const pairingShareStateRegistry: Record<string, PairingShareState> = {
-  idle: { state: "idle" },
+  idle: initialDesktopState.pairingShare,
   loading: { state: "loading" },
   ready: {
     state: "ready",
@@ -223,11 +197,3 @@ export const pairingShareStateRegistry: Record<string, PairingShareState> = {
     message: "The local agent could not open a pairing window.",
   },
 };
-
-export function worstState(states: NodeState[]): NodeState {
-  return states.reduce<NodeState>(
-    (worst, state) =>
-      nodeStateRegistry[state].rank > nodeStateRegistry[worst].rank ? state : worst,
-    "healthy",
-  );
-}

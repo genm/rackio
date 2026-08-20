@@ -1,7 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
 import { save as chooseSavePath } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
 
+import { savePairingBundle } from "../desktop-client";
 import type { PairingShareState } from "../types";
 
 function countdownLabel(remainingMs: number): string {
@@ -39,7 +39,7 @@ export function PairingShare({
         filters: [{ name: "Rackio pairing bundle", extensions: ["txt"] }],
       });
       if (path === null) return;
-      await invoke("save_pairing_bundle", { path, bundle });
+      await savePairingBundle(path, bundle);
       setMessage("Pairing bundle saved.");
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : String(error));
