@@ -21,7 +21,9 @@ trivy = "0.72.0"
 
 [tasks.check]
 description = "Run repository quality gates"
-env = { CARGO_INCREMENTAL = "0", RUSTDOCFLAGS = "-D warnings" }
+# The fuzz crate is a nested workspace; sharing this target avoids compiling
+# the same Rust graph into both `target/` and `fuzz/target/` during one gate.
+env = { CARGO_INCREMENTAL = "0", CARGO_TARGET_DIR = "target", RUSTDOCFLAGS = "-D warnings" }
 run = [
   "actionlint",
   "zizmor --no-progress .github/workflows/",
