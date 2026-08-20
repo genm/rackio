@@ -422,6 +422,31 @@ mod trend_window_tests {
     }
 
     #[test]
+    fn restores_the_capacity_bound_from_an_over_capacity_window() {
+        // Pushing one at a time never leaves the window more than a single
+        // sample over capacity, so that path alone cannot show that the trim
+        // is proportional to the overshoot. A window deserialised from a
+        // persisted snapshot can start arbitrarily far over the bound, and the
+        // next push has to bring it back regardless of how far.
+        let oversized: Vec<TrendSample> = (0..(TrendWindow::CAPACITY * 4))
+            .map(|index| sample(i64::try_from(index).unwrap_or_else(|error| panic!("{error}"))))
+            .collect();
+        let mut window: TrendWindow = serde_json::from_value(
+            serde_json::to_value(&oversized).unwrap_or_else(|error| panic!("{error}")),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+
+        window.push(sample(i64::MAX));
+
+        assert_eq!(window.samples().len(), TrendWindow::CAPACITY);
+        assert_eq!(
+            window.samples()[TrendWindow::CAPACITY - 1].timestamp_ms,
+            i64::MAX,
+            "the newest sample survives the trim"
+        );
+    }
+
+    #[test]
     fn serialises_as_a_bare_sample_array() {
         // The transparent representation is what snapshots and the persisted
         // registry carry; a wrapping object would break both without a
