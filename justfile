@@ -29,6 +29,7 @@ links:
 
 dependencies:
     mise exec -- cargo deny check
+    mise exec -- cargo deny --manifest-path fuzz/Cargo.toml check
     mise exec -- cargo machete
     mise run licenses:check
     mise run secrets:history

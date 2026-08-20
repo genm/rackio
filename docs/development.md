@@ -26,6 +26,17 @@ For the user/operator lifecycle rather than source development, use
 [`operations.md`](operations.md); it is also the authoritative guide for the
 SSH-assisted Linux bootstrap trust boundary.
 
+## Minimum supported Rust version
+
+`Cargo.toml`'s `workspace.package.rust-version` is the single stated owner of
+the MSRV, and it is pinned to the exact version in `rust-toolchain.toml`. This
+repository does not verify a lower MSRV: every CI job builds with the pinned
+toolchain, and `cargo clippy --workspace --all-targets --all-features`
+routinely relies on newly stabilised APIs, so a floor below the pinned
+toolchain would be an unverified claim rather than a supported target. Bump
+`rust-version` and `rust-toolchain.toml` together; do not change one without
+the other (#116).
+
 ## Host prerequisites
 
 The bootstrap task does not invoke an administrator package manager.

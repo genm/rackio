@@ -182,18 +182,21 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Cache cargo registry and build output
+      - name: Select pinned Rust toolchain
         if: env.RUN_RUST == 'true'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        run: rustup show
+      - name: Cache cargo registry and dependency build output
+        if: env.RUN_RUST == 'true'
+        # Swatinem/rust-cache caches the registry plus the *dependency* portion
+        # of target/ and deliberately excludes this workspace's own crate
+        # output, which changes on every commit and is cheap to rebuild
+        # incrementally. Caching the whole target/ tree here is what pushed
+        # the repository over the 10 GB Actions cache limit (#114); the
+        # rustc host triple and this job's id already separate the matrix
+        # entries, and `key` adds the OS explicitly for clarity.
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/cache
-            ~/.cargo/registry/index
-            ~/.cargo/git/db
-            target/
-          key: cargo-${{ matrix.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-${{ matrix.os }}-
+          key: ${{ matrix.os }}
       - name: Validate Windows PowerShell syntax
         if: env.RUN_RUST == 'true' && runner.os == 'Windows'
         shell: pwsh
@@ -231,9 +234,6 @@ jobs:
             sleep "$backoff"
             attempt=$((attempt + 1))
           done
-      - name: Select pinned Rust toolchain
-        if: env.RUN_RUST == 'true'
-        run: rustup show
       - name: Install nextest
         if: env.RUN_RUST == 'true'
         uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
@@ -306,21 +306,16 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Cache cargo registry and build output
-        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry/cache
-            ~/.cargo/registry/index
-            ~/.cargo/git/db
-            target/
-          key: cargo-windows-gnu-cross-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-windows-gnu-cross-
       - name: Select pinned Rust toolchain
         if: env.RUN_RUST_WINDOWS_CROSS == 'true'
         run: rustup show
+      - name: Cache cargo registry and dependency build output
+        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
+        # See the equivalent step in the `rust` job for why this replaces a
+        # whole-target/ cache (#114).
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: windows-gnu-cross
       - name: Install Windows GNU cross-compile target and linker
         if: env.RUN_RUST_WINDOWS_CROSS == 'true'
         env:

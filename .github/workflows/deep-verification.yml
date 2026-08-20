@@ -43,17 +43,15 @@ jobs:
           persist-credentials: false
       - name: Select pinned Rust toolchain
         run: rustup show
-      - name: Cache cargo registry and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Cache cargo registry and dependency build output
+        # See the equivalent step in ci.yml's `rust` job for why this replaces
+        # a whole-target/ cache (#114). cargo-mutants rebuilds and re-tests the
+        # crate once per mutant, so caching the compiled *dependency* graph
+        # instead of the whole target/ tree is what makes each scheduled run
+        # affordable without also being the largest cache entry in the repo.
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/cache
-            ~/.cargo/registry/index
-            ~/.cargo/git/db
-            target/
-          key: cargo-mutants-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-mutants-
+          key: mutants-${{ matrix.package }}
       - name: Install mutation and test tools
         uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
         with:
@@ -79,11 +77,29 @@ jobs:
           name: mutants-${{ matrix.package }}
           path: test-results/mutants/
           retention-days: 14
+          # The default (warn) lets a run that produced no evidence at all
+          # upload nothing and still look complete. An empty evidence set must
+          # fail the job the same way a missed mutant does (#115).
+          if-no-files-found: error
 
   fuzz:
     name: Fuzzing (${{ matrix.target }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+      # Needed only to replace the accumulated-corpus cache entry below under
+      # its stable key; every other step stays read-only.
+      actions: write
+    env:
+      # cargo-fuzz needs the sanitizer and coverage instrumentation that is
+      # nightly-only. The shipped workspace stays on the pinned stable
+      # toolchain; only the detached fuzz crate is built this way. Pinned to a
+      # dated channel, like every other tool in this repository (cargo-fuzz
+      # itself is pinned two steps below), so a nightly regression cannot land
+      # as an unexplained fuzz failure (#117). Bump deliberately; there is no
+      # automated update for this pin.
+      FUZZ_NIGHTLY_CHANNEL: nightly-2026-08-01
     strategy:
       fail-fast: false
       matrix:
@@ -94,12 +110,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Install the nightly toolchain required by libFuzzer
-        # cargo-fuzz needs the sanitizer and coverage instrumentation that is
-        # nightly-only. The shipped workspace stays on the pinned stable
-        # toolchain; only the detached fuzz crate is built this way.
         run: |
-          rustup toolchain install nightly --profile minimal --component rust-src
-          cargo +nightly install cargo-fuzz --version 0.13.2 --locked
+          rustup toolchain install "$FUZZ_NIGHTLY_CHANNEL" --profile minimal --component rust-src
+          cargo "+$FUZZ_NIGHTLY_CHANNEL" install cargo-fuzz --version 0.13.2 --locked
       - name: Cache cargo registry and fuzz target
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -112,21 +125,37 @@ jobs:
           restore-keys: |
             cargo-fuzz-
       - name: Restore the accumulated corpus
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # Each run starts from what previous runs found interesting instead of
           # rediscovering the same coverage from the tracked seeds every week.
           path: fuzz/corpus/${{ matrix.target }}
-          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
-          restore-keys: fuzz-corpus-${{ matrix.target }}-
+          key: fuzz-corpus-${{ matrix.target }}
       - name: Fuzz
         env:
           TARGET: ${{ matrix.target }}
           FUZZ_SECONDS: ${{ inputs.fuzz-seconds || '900' }}
         run: |
-          cargo +nightly fuzz run "$TARGET" -- \
+          cargo "+$FUZZ_NIGHTLY_CHANNEL" fuzz run "$TARGET" -- \
             -max_total_time="$FUZZ_SECONDS" \
             -rss_limit_mb=2048
+      - name: Replace the accumulated corpus cache entry
+        # A cache entry is immutable once written, so the previous save under
+        # this same stable key must be deleted before a new one can replace
+        # it. This is what lets the corpus accumulate across scheduled runs
+        # without writing a fresh cache entry (keyed on github.run_id) every
+        # time, which never got reused by key and only grew the total cache
+        # footprint (#114).
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh cache delete "fuzz-corpus-${{ matrix.target }}" --repo "$GITHUB_REPOSITORY" || true
+      - name: Save the accumulated corpus
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}
       - name: Upload the crashing input
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -160,3 +189,42 @@ jobs:
           # Third-party rate limiting is why this is scheduled rather than a
           # pull-request gate, but a rejected link is still reported, not hidden.
           jobSummary: true
+
+  notify-on-failure:
+    name: File a durable signal for a red scheduled run
+    # A red result here is never downgraded to a warning (see the workflow
+    # header), so a scheduled failure must not be able to pass silently either
+    # (#115). needs.*.result covers every upstream job regardless of matrix
+    # fan-out; workflow_dispatch runs also file, since a maintainer diagnosing
+    # one wants the same durable record.
+    needs: [mutants, fuzz, links]
+    if: always() && contains(needs.*.result, 'failure')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: File or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Scheduled Deep verification is failing"
+          run_note="- $(date -u +%Y-%m-%dT%H:%M:%SZ) run: $RUN_URL"
+          # Search by exact title rather than a dedicated label so this reuses
+          # the repository's existing label set; an open issue with this title
+          # is the durable signal, updated in place rather than duplicated.
+          existing="$(
+            gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+              --search "in:title \"$title\"" --json number,title \
+              --jq "[.[] | select(.title == \"$title\")][0].number // empty"
+          )"
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$run_note"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
+              --label area:ci --label type:bug --label priority:p1 \
+              --body "$(printf 'Scheduled Deep verification failed and stayed red until this issue is closed.\n\nEach failing run appends a comment here instead of filing a duplicate.\n\n%s' "$run_note")"
+          fi

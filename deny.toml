@@ -28,6 +28,9 @@ allow = [
   "ISC",
   "MIT",
   "MPL-2.0",
+  # libfuzzer-sys bundles LLVM's compiler-rt under this permissive license; it
+  # only ever reaches the detached fuzz/Cargo.lock (see #117).
+  "NCSA",
   "Unlicense",
   "Unicode-3.0",
   "Zlib",

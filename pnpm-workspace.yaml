@@ -9,14 +9,12 @@ packages:
 sharedWorkspaceLockfile: true
 preferWorkspacePackages: true
 minimumReleaseAge: 4320
-# Exact exceptions for the dependency versions explicitly selected by the latest-stable upgrade.
+# Exact exceptions for the dependency versions explicitly selected by the
+# latest-stable upgrade. An entry is dead weight, not a live exception, once
+# the resolved version in pnpm-lock.yaml moves past the pinned version here
+# (#120); remove it at that point rather than letting it accumulate.
 minimumReleaseAgeExclude:
-  - "@playwright/experimental-ct-core@1.62.0"
-  - "@playwright/experimental-ct-react@1.62.0"
   - "es-toolkit@1.50.0"
-  - "playwright-core@1.62.0"
-  - "playwright@1.62.0"
-  - "postcss@8.5.23"
   - "yargs@18.1.0"
 # Transitive advisories that their direct parents have not released a fix for.
 # Each entry is the patched range from the advisory itself, so removing the
