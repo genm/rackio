@@ -271,6 +271,8 @@ test("imports a one-time pairing bundle from the desktop", async ({ mount }) => 
   await dialog.getByRole("button", { name: /pair machine/i }).click();
   await expect.poll(() => submitted).toBe("rackio-pair:test-bundle");
   await expect(dialog).not.toBeVisible();
+  await component.getByRole("button", { name: /pair machine/i }).click();
+  await expect(dialog.getByRole("textbox", { name: "Pairing bundle" })).toHaveValue("");
 });
 
 test("keeps pairing rejection visible instead of adding a fake healthy machine", async ({
@@ -280,10 +282,19 @@ test("keeps pairing rejection visible instead of adding a fake healthy machine",
     <Dashboard
       snapshot={snapshot}
       pairing={{ state: "error", message: "pairing failed: pairing window has expired" }}
+      onPair={async () => {
+        throw new Error("pairing window has expired");
+      }}
     />,
   );
   await component.getByRole("button", { name: /pair machine/i }).click();
-  await expect(component.getByRole("alert")).toContainText("pairing window has expired");
+  const dialog = component.getByRole("dialog", { name: /pair a machine/i });
+  const draft = dialog.getByRole("textbox", { name: "Pairing bundle" });
+  await draft.fill("rackio-pair:expired-bundle");
+  await dialog.getByRole("button", { name: "Pair machine" }).click();
+  await expect(dialog).toBeVisible();
+  await expect(draft).toHaveValue("rackio-pair:expired-bundle");
+  await expect(dialog.getByRole("alert")).toContainText("pairing window has expired");
   await expect(component.getByText("Studio Mac")).toBeVisible();
   await expect(component.getByText("Home Server")).toBeVisible();
 });
@@ -347,6 +358,46 @@ test("closes the pairing dialog with Escape and returns focus to its opener", as
   await component.page().keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   await expect(opener).toBeFocused();
+});
+
+test("does not abandon a pairing request that is already submitting", async ({ mount }) => {
+  const component = await mount(
+    <Dashboard snapshot={snapshot} pairing={{ state: "submitting" }} />,
+  );
+  await component.getByRole("button", { name: /pair machine/i }).click();
+  const dialog = component.getByRole("dialog", { name: /pair a machine/i });
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Pairing…" })).toBeDisabled();
+
+  await component.page().keyboard.press("Escape");
+
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator(":focus")).toHaveCount(1);
+});
+
+test("keeps the selected pairing method and draft across a close and reopen", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const opener = component.getByRole("button", { name: /pair machine/i });
+  await opener.click();
+  const dialog = component.getByRole("dialog", { name: /pair a machine/i });
+  await dialog.getByRole("textbox", { name: "Pairing bundle" }).fill("rackio-pair:draft");
+  await dialog.getByRole("tab", { name: "Install over SSH" }).click();
+  await dialog.getByLabel("Host").fill("server.test");
+
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
+  await opener.click();
+
+  await expect(dialog.getByRole("tab", { name: "Install over SSH" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(dialog.getByLabel("Host")).toHaveValue("");
+  await dialog.getByRole("tab", { name: "Pairing bundle" }).click();
+  await expect(dialog.getByRole("textbox", { name: "Pairing bundle" })).toHaveValue(
+    "rackio-pair:draft",
+  );
 });
 
 test("keeps Tab focus inside the modal pairing dialog", async ({ mount }) => {
