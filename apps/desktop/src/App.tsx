@@ -7,7 +7,8 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { Dashboard } from "./components/Dashboard";
-import { initialDesktopState, nodeStateRegistry } from "./state-model";
+import { machineNotificationTransitions } from "./notification-policy";
+import { initialDesktopState } from "./state-model";
 import type {
   FleetNode,
   FleetSnapshot,
@@ -248,33 +249,15 @@ export default function App() {
   useEffect(() => {
     if (snapshot.daemon !== "connected" || snapshot.nodes.length === 0) return;
     const previous = previousMachineStates.current;
-    const current = new Map(snapshot.nodes.map((node) => [node.id, node]));
     previousMachineStates.current = new Map(
       snapshot.nodes.map((node) => [node.id, node.state] as const),
     );
     if (notificationState.state !== "enabled" || previous.size === 0) return;
-    const alerting = nodeStateRegistry[notificationState.threshold].rank;
-    const announcements: { title: string; body: string }[] = [];
-    for (const [id, node] of current) {
-      const was = previous.get(id);
-      if (was === undefined || was === node.state) continue;
-      const wasAlerting = nodeStateRegistry[was].rank >= alerting;
-      const isAlerting = nodeStateRegistry[node.state].rank >= alerting;
-      // Naming the machine is the point: "the rack is critical" does not say
-      // which box to look at. Recovery is announced too, so an operator who
-      // was told about a failure learns it ended without opening the app.
-      if (isAlerting && !wasAlerting) {
-        announcements.push({
-          title: `Rackio · ${node.name} is ${nodeStateRegistry[node.state].label}`,
-          body: `${node.name} changed from ${nodeStateRegistry[was].label} to ${nodeStateRegistry[node.state].label}.`,
-        });
-      } else if (wasAlerting && !isAlerting) {
-        announcements.push({
-          title: `Rackio · ${node.name} recovered`,
-          body: `${node.name} is ${nodeStateRegistry[node.state].label} again.`,
-        });
-      }
-    }
+    const announcements = machineNotificationTransitions(
+      previous,
+      snapshot.nodes,
+      notificationState.threshold,
+    );
     if (announcements.length === 0) return;
     try {
       for (const announcement of announcements) {
