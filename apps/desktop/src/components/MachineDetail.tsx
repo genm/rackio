@@ -1,11 +1,11 @@
 import { useState } from "react";
 
 import { bytes, celsius, percent, timeOfDay } from "../format";
+import { temperatureDetail } from "../machine-presentation";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-model";
 import { type TrendMetric, trendLines, trendMetricRegistry, trendScale } from "../trend-series";
 import type { HistoryRange, MachineDetailState } from "../types";
 import { useModalDialog } from "../useModalDialog";
-import { temperatureDetail } from "./NodeCard";
 import { TrendChart } from "./TrendChart";
 
 /**
