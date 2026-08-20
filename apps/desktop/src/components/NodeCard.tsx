@@ -1,5 +1,5 @@
 import { ago, bytes, celsius, percent, shortDuration, timeOfDay } from "../format";
-import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
+import { connectionPathRegistry, nodeStateRegistry } from "../state-model";
 import { type TrendMetric, trendLines, trendMetricRegistry, trendScale } from "../trend-series";
 import type { FleetNode, TemperatureReading } from "../types";
 import { TrendChart } from "./TrendChart";

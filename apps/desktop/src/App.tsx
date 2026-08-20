@@ -7,13 +7,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { Dashboard } from "./components/Dashboard";
-import {
-  machineDetailStateRegistry,
-  nodeStateRegistry,
-  pairingShareStateRegistry,
-  sshBootstrapStateRegistry,
-  surfaceStateRegistry,
-} from "./state-registry";
+import { initialDesktopState, nodeStateRegistry } from "./state-model";
 import type {
   FleetNode,
   FleetSnapshot,
@@ -47,16 +41,16 @@ function initialNotificationState(): NotificationState {
 }
 
 export default function App() {
-  const [snapshot, setSnapshot] = useState<FleetSnapshot>(surfaceStateRegistry.daemonUnavailable);
-  const [pairing, setPairing] = useState<PairingStatus>({ state: "idle" });
+  const [snapshot, setSnapshot] = useState<FleetSnapshot>(initialDesktopState.snapshot);
+  const [pairing, setPairing] = useState<PairingStatus>(initialDesktopState.pairing);
   const [pairingShare, setPairingShare] = useState<PairingShareState>(
-    pairingShareStateRegistry.idle,
+    initialDesktopState.pairingShare,
   );
   const [sshBootstrap, setSshBootstrap] = useState<SshBootstrapStatus>(
-    sshBootstrapStateRegistry.editing,
+    initialDesktopState.sshBootstrap,
   );
   const [machineDetail, setMachineDetail] = useState<MachineDetailState>(
-    machineDetailStateRegistry.closed,
+    initialDesktopState.machineDetail,
   );
   const [notificationState, setNotificationState] =
     useState<NotificationState>(initialNotificationState);
@@ -308,7 +302,7 @@ export default function App() {
       onInspectSshHost={inspectSshHost}
       onInstallViaSsh={installViaSsh}
       onViewHistory={viewHistory}
-      onCloseHistory={() => setMachineDetail(machineDetailStateRegistry.closed)}
+      onCloseHistory={() => setMachineDetail(initialDesktopState.machineDetail)}
       onHistoryRangeChange={changeHistoryRange}
       onEnableNotifications={enableNotifications}
       onDisableNotifications={() =>

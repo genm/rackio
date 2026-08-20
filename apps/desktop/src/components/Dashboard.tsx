@@ -1,14 +1,6 @@
 import { useState } from "react";
 
-import {
-  machineDetailStateRegistry,
-  nodeStateRegistry,
-  notificationStateRegistry,
-  pairingShareStateRegistry,
-  sshBootstrapStateRegistry,
-  traySurfaceStateRegistry,
-  worstState,
-} from "../state-registry";
+import { initialDesktopState, nodeStateRegistry, worstState } from "../state-model";
 import type {
   FleetSnapshot,
   FleetNode,
@@ -65,12 +57,12 @@ function PairDialogSurface({
 
 export function Dashboard({
   snapshot,
-  pairing = { state: "idle" },
-  sshBootstrap = sshBootstrapStateRegistry.editing,
-  machineDetail = machineDetailStateRegistry.closed,
-  traySurface = traySurfaceStateRegistry.available,
-  notificationState = notificationStateRegistry.disabled,
-  pairingShare = pairingShareStateRegistry.idle,
+  pairing = initialDesktopState.pairing,
+  sshBootstrap = initialDesktopState.sshBootstrap,
+  machineDetail = initialDesktopState.machineDetail,
+  traySurface = initialDesktopState.traySurface,
+  notificationState = initialDesktopState.notificationState,
+  pairingShare = initialDesktopState.pairingShare,
   onPair = async () => undefined,
   onInspectSshHost = async () => undefined,
   onInstallViaSsh = async () => undefined,

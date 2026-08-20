@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { bytes, celsius, percent, timeOfDay } from "../format";
-import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
+import { connectionPathRegistry, nodeStateRegistry } from "../state-model";
 import { type TrendMetric, trendLines, trendMetricRegistry, trendScale } from "../trend-series";
 import type { HistoryRange, MachineDetailState } from "../types";
 import { useModalDialog } from "../useModalDialog";
