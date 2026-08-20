@@ -77,6 +77,10 @@ jobs:
           name: mutants-${{ matrix.package }}
           path: test-results/mutants/
           retention-days: 14
+          # The default (warn) lets a run that produced no evidence at all
+          # upload nothing and still look complete. An empty evidence set must
+          # fail the job the same way a missed mutant does (#115).
+          if-no-files-found: error
 
   fuzz:
     name: Fuzzing (${{ matrix.target }})
@@ -185,3 +189,42 @@ jobs:
           # Third-party rate limiting is why this is scheduled rather than a
           # pull-request gate, but a rejected link is still reported, not hidden.
           jobSummary: true
+
+  notify-on-failure:
+    name: File a durable signal for a red scheduled run
+    # A red result here is never downgraded to a warning (see the workflow
+    # header), so a scheduled failure must not be able to pass silently either
+    # (#115). needs.*.result covers every upstream job regardless of matrix
+    # fan-out; workflow_dispatch runs also file, since a maintainer diagnosing
+    # one wants the same durable record.
+    needs: [mutants, fuzz, links]
+    if: always() && contains(needs.*.result, 'failure')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: File or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Scheduled Deep verification is failing"
+          run_note="- $(date -u +%Y-%m-%dT%H:%M:%SZ) run: $RUN_URL"
+          # Search by exact title rather than a dedicated label so this reuses
+          # the repository's existing label set; an open issue with this title
+          # is the durable signal, updated in place rather than duplicated.
+          existing="$(
+            gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+              --search "in:title \"$title\"" --json number,title \
+              --jq "[.[] | select(.title == \"$title\")][0].number // empty"
+          )"
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$run_note"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" \
+              --label area:ci --label type:bug --label priority:p1 \
+              --body "$(printf 'Scheduled Deep verification failed and stayed red until this issue is closed.\n\nEach failing run appends a comment here instead of filing a duplicate.\n\n%s' "$run_note")"
+          fi
