@@ -1085,7 +1085,23 @@ mod tests {
     #[cfg(unix)]
     use std::path::PathBuf;
 
-    use super::{MAX_LOCAL_REQUEST_BYTES, read_local_request, validate_relay_url};
+    use rackio_core::{AlertRule, Comparison, NodeState};
+
+    use super::{
+        AgentConfig, AppPaths, MAX_LOCAL_REQUEST_BYTES, load_config, read_local_request,
+        save_config, validate_relay_url,
+    };
+
+    fn test_paths(root: &std::path::Path) -> AppPaths {
+        AppPaths {
+            config: root.join("config"),
+            data: root.join("data"),
+            state: root.join("state"),
+            log: root.join("log"),
+            #[cfg(unix)]
+            local_socket: root.join("agent.sock"),
+        }
+    }
 
     async fn read_request(payload: &[u8]) -> Result<super::LocalCommand, super::LocalResponse> {
         let mut reader = tokio::io::BufReader::new(tokio::io::AsyncReadExt::take(
@@ -1130,13 +1146,66 @@ mod tests {
     }
 
     #[cfg(unix)]
-    use super::{AppPaths, local_socket_candidates};
+    use super::local_socket_candidates;
 
     #[test]
     fn relay_url_validation_fails_closed() {
         assert!(validate_relay_url(Some("not a relay URL")).is_err());
         assert!(validate_relay_url(Some("https://relay.example.test")).is_ok());
         assert!(validate_relay_url(None).is_ok());
+    }
+
+    #[test]
+    fn a_missing_config_is_direct_only_without_invented_alerts() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let config =
+            load_config(&test_paths(directory.path())).unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(config.relay_url.is_none());
+        assert!(config.alerts.is_empty());
+    }
+
+    #[test]
+    fn config_round_trips_every_operator_owned_field() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = test_paths(directory.path());
+        let expected = AgentConfig {
+            relay_url: Some(String::from("https://relay.example.test")),
+            alerts: vec![AlertRule {
+                id: String::from("cpu-warning"),
+                metric: String::from("cpu_percent"),
+                comparison: Comparison::GreaterThanOrEqual,
+                threshold: 80.0,
+                consecutive_samples: 3,
+                severity: NodeState::Warning,
+            }],
+        };
+
+        save_config(&paths, &expected).unwrap_or_else(|error| panic!("{error}"));
+        let actual = load_config(&paths).unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(actual.relay_url, expected.relay_url);
+        assert_eq!(actual.alerts, expected.alerts);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(paths.config.join("config.json"))
+                .unwrap_or_else(|error| panic!("{error}"))
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn an_invalid_config_fails_closed_instead_of_using_defaults() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = test_paths(directory.path());
+        std::fs::create_dir_all(&paths.config).unwrap_or_else(|error| panic!("{error}"));
+        std::fs::write(paths.config.join("config.json"), b"not json")
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(load_config(&paths).is_err());
     }
 
     #[test]
