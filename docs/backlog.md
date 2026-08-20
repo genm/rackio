@@ -14,7 +14,7 @@ the release checklist only after its evidence has been reviewed.
 
 | Order | ID | Work item | Depends on | Suggested labels |
 | --- | --- | --- | --- | --- |
-| 1 | [REL-01](https://github.com/genm/rackio/issues/13) | Create and secure the public GitHub repository | — | `type:release`, `area:governance`, `priority:p0` |
+| 1 | [REL-01](https://github.com/genm/rackio/issues/13) | Create and secure the public GitHub repository *(complete — see [release checklist](release-checklist.md#public-repository-identity))* | — | `type:release`, `area:governance`, `priority:p0` |
 | 2 | [REL-02](https://github.com/genm/rackio/issues/14) | Resolve the Linux Tauri/GTK security blocker | — | `type:security`, `area:desktop`, `platform:linux`, `priority:p0` |
 | 3 | [REL-03](https://github.com/genm/rackio/issues/15) | Verify and sign the Linux service release | REL-01 | `type:release`, `area:packaging`, `platform:linux`, `status:needs-evidence` |
 | 4 | [REL-04](https://github.com/genm/rackio/issues/16) | Verify and sign the macOS service release | REL-01 | `type:release`, `area:packaging`, `platform:macos`, `status:needs-evidence` |
