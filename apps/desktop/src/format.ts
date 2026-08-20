@@ -38,6 +38,11 @@ export function ago(thenMs: number, nowMs: number): string {
   return `${Math.round(hours / 24)} d ago`;
 }
 
+export function bytesPerSecond(value?: number | null): string {
+  if (value == null) return "—";
+  return `${bytes(value)}/s`;
+}
+
 export function bytes(value?: number | null): string {
   if (value == null) return "—";
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];

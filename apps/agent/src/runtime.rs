@@ -40,6 +40,10 @@ const LOCAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// already caps at 16 KiB. 64 KiB leaves ample headroom for every command while
 /// keeping a single request bounded.
 const MAX_LOCAL_REQUEST_BYTES: u64 = 64 * 1024;
+/// How far back a restart reads to refill the local trend. Generous enough to
+/// cover a full `TrendWindow` at the two-second cadence; the window itself
+/// caps how many of those samples are kept.
+const LOCAL_TREND_SEED_MS: i64 = 15 * 60 * 1_000;
 
 /// Resolve on an operator-initiated stop. `systemctl stop`, container runtimes
 /// and package upgrades all send SIGTERM, so waiting only on Ctrl-C would skip
@@ -245,12 +249,29 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     let collector = SystemCollector::new();
     let info = node_info(node_id, collector.capabilities());
     let (latest_tx, latest_rx) = watch::channel(None);
+    let store = MetricStore::open(paths.data.join("metrics.sqlite3"))?;
+    // Resume this machine's own trend from storage. Without it a restart shows
+    // a blank chart for the local machine while every remote keeps the window
+    // its registry persisted. A failed read degrades to an empty window — the
+    // chart then says it is collecting, which is true.
+    let seed_now_ms = rackio_core::Clock::new().now_ms();
+    let trend = match store.query(
+        seed_now_ms.saturating_sub(LOCAL_TREND_SEED_MS),
+        seed_now_ms,
+        HistoryResolution::Raw,
+    ) {
+        Ok(samples) => rackio_core::TrendWindow::from_samples(&samples),
+        Err(error) => {
+            tracing::warn!(error = %error, "local trend could not be resumed from storage");
+            rackio_core::TrendWindow::default()
+        }
+    };
     let runtime = Arc::new(NodeRuntime {
         info,
         health: RwLock::new(healthy()),
         latest: latest_rx,
-        trend: RwLock::new(rackio_core::TrendWindow::default()),
-        store: tokio::sync::Mutex::new(MetricStore::open(paths.data.join("metrics.sqlite3"))?),
+        trend: RwLock::new(trend),
+        store: tokio::sync::Mutex::new(store),
         pairing: std::sync::Mutex::new(PairingManager::default()),
         pairing_mdns: Arc::new(PairingMdnsState::default()),
         peers: PeerRegistry::load(paths.data.join("peers.json"))?,

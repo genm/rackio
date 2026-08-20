@@ -672,7 +672,6 @@ h2 {
 .trend-plot {
   position: relative;
   height: 72px;
-  overflow: hidden;
   border-top: 1px solid #222c26;
   border-bottom: 1px solid #2b3830;
   background: rgba(9, 13, 11, 0.55);
@@ -692,13 +691,8 @@ h2 {
   vector-effect: non-scaling-stroke;
 }
 
-.trend-area {
-  fill: rgba(98, 214, 146, 0.12);
-}
-
 .trend-line {
   fill: none;
-  stroke: #62d692;
   stroke-width: 1.5;
 }
 
@@ -735,11 +729,170 @@ h2 {
 
 .trend-axis {
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: 10px;
   margin: 5px 0 0;
   color: #5c6b62;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
+}
+
+.trend-legend {
+  display: flex;
+  gap: 10px;
+}
+
+.trend-legend span::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+  background: currentcolor;
+}
+
+/* Series colours: distinct in hue and lightness so the lines stay separable
+   without relying on colour vision alone. */
+.trend-series-0 {
+  color: #62d692;
+}
+
+.trend-series-1 {
+  color: #6cb6ff;
+}
+
+.trend-series-2 {
+  color: #f2c96c;
+}
+
+.trend-series-3 {
+  color: #d98be0;
+}
+
+.trend-series-4 {
+  color: #7fe3d4;
+}
+
+.trend-series-5 {
+  color: #ff9a93;
+}
+
+.trend-line {
+  stroke: currentcolor;
+}
+
+.trend-area {
+  fill: currentcolor;
+  opacity: 0.12;
+}
+
+.trend-dot {
+  background: currentcolor;
+}
+
+.trend-threshold {
+  stroke: #ff8b83;
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  opacity: 0.75;
+  vector-effect: non-scaling-stroke;
+}
+
+.trend-threshold-label {
+  position: absolute;
+  right: 5px;
+  color: #ff8b83;
+  font-size: 9px;
+  transform: translateY(-120%);
+  pointer-events: none;
+}
+
+.trend-crosshair {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #4d5a52;
+  pointer-events: none;
+}
+
+.trend-marker {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border: 1px solid #0b0f0d;
+  border-radius: 99px;
+  background: currentcolor;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.trend-tooltip {
+  position: absolute;
+  z-index: 2;
+  top: 6px;
+  display: grid;
+  gap: 1px;
+  margin-left: 8px;
+  padding: 5px 8px;
+  border: 1px solid #2e3d35;
+  border-radius: 7px;
+  background: rgba(9, 14, 11, 0.94);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.trend-tooltip-left {
+  margin-left: 0;
+  transform: translateX(-100%) translateX(-8px);
+}
+
+.trend-tooltip-time {
+  color: #829188;
+}
+
+.trend-tooltip-row {
+  color: currentcolor;
+}
+
+.fleet-compare {
+  margin-bottom: 14px;
+  padding: 16px 17px 12px;
+  border: 1px solid #202b25;
+  border-radius: 13px;
+  background: linear-gradient(150deg, rgba(21, 29, 24, 0.98), rgba(14, 19, 16, 0.98));
+}
+
+.compare-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.compare-toggle {
+  padding: 6px 11px;
+  border-color: #2c3831;
+  border-radius: 8px;
+  color: #afc0b6;
+  font-size: 12px;
+}
+
+.compare-toggle:hover {
+  border-color: #4e6f5b;
+  color: #dfe8e2;
+}
+
+.detail-range {
+  margin-left: auto;
+}
+
+.detail-range button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .trend-empty {
@@ -755,17 +908,12 @@ h2 {
 }
 
 /* A frozen trend must not look like a live one: the last numbers stay
-   readable, but the green "live" treatment is withdrawn. */
-.trend-muted .trend-line {
-  stroke: #5c6b62;
-}
-
-.trend-muted .trend-area {
-  fill: rgba(122, 134, 127, 0.08);
+   readable, but the "live" colour treatment is withdrawn. */
+.trend-muted [class*="trend-series-"] {
+  color: #5c6b62;
 }
 
 .trend-muted .trend-dot {
-  background: #76847c;
   box-shadow: none;
 }
 
@@ -773,11 +921,20 @@ h2 {
   color: #76847c;
 }
 
+/* Six tiles in two even rows: an auto-fit row left the last tile stranded on
+   a line of its own. */
 .metrics {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 8px;
   margin: 0 0 14px;
+}
+
+/* Network carries two numbers in one tile, so it drops a step and stays on
+   one line rather than growing taller than its neighbours. */
+.metric-value-compact {
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .metric {
@@ -933,7 +1090,7 @@ h2 {
   }
 
   .metrics {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
   }
 
   .field-grid {

@@ -1,8 +1,6 @@
-import { useState } from "react";
-
-import { ago, bytes, celsius, percent, shortDuration } from "../format";
+import { ago, bytes, celsius, percent, shortDuration, timeOfDay } from "../format";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-registry";
-import { type TrendMetric, trendMetricRegistry, trendScale, trendSeries } from "../trend-series";
+import { type TrendMetric, trendLines, trendMetricRegistry, trendScale } from "../trend-series";
 import type { FleetNode, TemperatureReading } from "../types";
 import { TrendChart } from "./TrendChart";
 
@@ -29,31 +27,43 @@ export function temperatureDetail(temperature?: TemperatureReading | null): stri
   return `${temperature.label}${sensors}${critical}`;
 }
 
+/** The latest value each tile reports, in the tile's own unit. */
+export function tileValues(node: FleetNode): Record<TrendMetric, string> {
+  return {
+    cpu: node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`,
+    memory: percent(node.memoryUsedBytes, node.memoryTotalBytes),
+    disk: percent(node.diskUsedBytes, node.diskTotalBytes),
+    temp: celsius(node.temperature?.celsius),
+    network:
+      node.networkReceivedBytesPerSecond == null && node.networkSentBytesPerSecond == null
+        ? "—"
+        : `↓${bytes(node.networkReceivedBytesPerSecond)} ↑${bytes(node.networkSentBytesPerSecond)}`,
+    rtt: node.rttMs == null ? "—" : `${node.rttMs} ms`,
+  };
+}
+
 export function NodeCard({
   node,
+  metric,
+  onMetricChange,
   onViewHistory,
 }: {
   node: FleetNode;
+  metric: TrendMetric;
+  onMetricChange: (metric: TrendMetric) => void;
   onViewHistory?: (node: FleetNode) => void;
 }) {
   const state = nodeStateRegistry[node.state];
   const path = connectionPathRegistry[node.path];
   const live = liveStates.has(node.state);
-  const [metric, setMetric] = useState<TrendMetric>("cpu");
   const spec = trendMetricRegistry[metric];
-  const series = trendSeries(node.trend, metric);
+  const series = trendLines(node.trend, metric);
   const spanSeconds =
     series.firstMs !== undefined && series.lastMs !== undefined
       ? (series.lastMs - series.firstMs) / 1000
       : 0;
-  const tileValues: Record<TrendMetric, string> = {
-    cpu: node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`,
-    memory: percent(node.memoryUsedBytes, node.memoryTotalBytes),
-    disk: percent(node.diskUsedBytes, node.diskTotalBytes),
-    temp: celsius(node.temperature?.celsius),
-    rtt: node.rttMs == null ? "—" : `${node.rttMs} ms`,
-  };
-  const currentValue = tileValues[metric] === "—" ? "" : tileValues[metric];
+  const values = tileValues(node);
+  const currentValue = values[metric] === "—" ? "" : values[metric];
   // A machine that streams samples but never reports this metric (a sensorless
   // host, the local machine's RTT) must say so instead of promising data.
   const emptyText =
@@ -67,14 +77,14 @@ export function NodeCard({
       className="metric metric-selectable"
       aria-pressed={metric === tileMetric}
       title={`Show the ${trendMetricRegistry[tileMetric].label} trend`}
-      onClick={() => setMetric(tileMetric)}
+      onClick={() => onMetricChange(tileMetric)}
     >
       <span className="metric-label">{trendMetricRegistry[tileMetric].label}</span>
       <span
-        className="metric-value"
+        className={`metric-value${tileMetric === "network" ? " metric-value-compact" : ""}`}
         title={tileMetric === "temp" ? temperatureDetail(node.temperature) : undefined}
       >
-        {tileValues[tileMetric]}
+        {values[tileMetric]}
       </span>
     </button>
   );
@@ -97,13 +107,24 @@ export function NodeCard({
         <span className="trend-now">{currentValue}</span>
       </div>
       <TrendChart
-        values={series.values}
+        lines={series.lines}
         scale={trendScale(spec.scale, series.values)}
         label={`${node.name} ${spec.chartTitle} over the last ${shortDuration(spanSeconds)}`}
         startLabel={series.values.length >= 2 ? `${shortDuration(spanSeconds)} ago` : undefined}
         endLabel={live ? "now" : "last contact"}
         emptyText={emptyText}
         muted={!live}
+        // Only the threshold the hardware itself declares; Rackio never
+        // invents one for a machine whose sensor layout it does not know.
+        threshold={
+          metric === "temp" && node.temperature?.criticalCelsius != null
+            ? {
+                value: node.temperature.criticalCelsius,
+                label: `critical ${Math.round(node.temperature.criticalCelsius)} °C`,
+              }
+            : undefined
+        }
+        formatTime={timeOfDay}
       />
       <div className="metrics">
         {(Object.keys(trendMetricRegistry) as TrendMetric[]).map(metricTile)}
@@ -134,11 +155,11 @@ export function NodeCard({
         title={
           node.endpointId === undefined
             ? "History is unavailable until this machine has an endpoint identity"
-            : "Query this machine for its 24-hour history"
+            : "Query this machine for its history"
         }
         onClick={() => onViewHistory?.(node)}
       >
-        View 24-hour history
+        View history
       </button>
     </article>
   );
