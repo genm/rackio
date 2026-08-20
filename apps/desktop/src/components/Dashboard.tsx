@@ -12,6 +12,7 @@ import {
 import type {
   FleetSnapshot,
   FleetNode,
+  HistoryRange,
   MachineDetailState,
   NotificationState,
   NotificationThreshold,
@@ -22,7 +23,10 @@ import type {
   SshTarget,
   TraySurfaceState,
 } from "../types";
+import type { TrendMetric } from "../trend-series";
 import { useModalDialog } from "../useModalDialog";
+import { useStoredMetricMap } from "../useStoredMetricMap";
+import { FleetCompare } from "./FleetCompare";
 import { NodeCard } from "./NodeCard";
 import { MachineDetail } from "./MachineDetail";
 import { NotificationControls } from "./NotificationControls";
@@ -72,6 +76,7 @@ export function Dashboard({
   onInstallViaSsh = async () => undefined,
   onViewHistory = async () => undefined,
   onCloseHistory = () => undefined,
+  onHistoryRangeChange = () => undefined,
   onEnableNotifications = async () => undefined,
   onDisableNotifications = () => undefined,
   onNotificationThresholdChange = () => undefined,
@@ -89,6 +94,7 @@ export function Dashboard({
   onInstallViaSsh?: (input: SshBootstrapInput) => Promise<void>;
   onViewHistory?: (node: FleetNode) => Promise<void>;
   onCloseHistory?: () => void;
+  onHistoryRangeChange?: (hours: HistoryRange) => void;
   onEnableNotifications?: () => Promise<void>;
   onDisableNotifications?: () => void;
   onNotificationThresholdChange?: (threshold: NotificationThreshold) => void;
@@ -97,6 +103,9 @@ export function Dashboard({
   const [pairingOpen, setPairingOpen] = useState(false);
   const [pairingMethod, setPairingMethod] = useState<PairingMethod>("bundle");
   const [bundle, setBundle] = useState("");
+  const [cardMetrics, setCardMetrics] = useStoredMetricMap();
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [compareMetric, setCompareMetric] = useState<TrendMetric>("cpu");
   // Escape and Cancel must agree: neither may abandon a pairing request that is
   // already in flight on the agent.
   const closePairing = () => {
@@ -131,6 +140,14 @@ export function Dashboard({
     snapshot.daemon === "connected"
       ? String(snapshot.nodes.filter((node) => node.path === "relayed").length)
       : "—";
+  // Worst first: the machine that needs attention must be on screen without
+  // scrolling. Ties keep a stable alphabetical order so cards do not swap
+  // places on every two-second poll.
+  const orderedNodes = [...snapshot.nodes].sort(
+    (left, right) =>
+      nodeStateRegistry[right.state].rank - nodeStateRegistry[left.state].rank ||
+      left.name.localeCompare(right.name),
+  );
   const submitPairing = async (event: React.FormEvent) => {
     event.preventDefault();
     const normalized = bundle.trim();
@@ -266,7 +283,11 @@ export function Dashboard({
           </PairDialogSurface>
         </div>
       ) : null}
-      <MachineDetail detail={machineDetail} onClose={onCloseHistory} />
+      <MachineDetail
+        detail={machineDetail}
+        onClose={onCloseHistory}
+        onRangeChange={onHistoryRangeChange}
+      />
       {traySurface.state === "unavailable" ? (
         <section className="capability-banner" role="status">
           <strong>Tray unavailable</strong>
@@ -302,11 +323,40 @@ export function Dashboard({
           <p>{snapshot.message ?? "Open a pairing window on another machine to begin."}</p>
         </section>
       ) : (
-        <section className="node-grid" aria-label="Monitored machines">
-          {snapshot.nodes.map((node) => (
-            <NodeCard key={node.id} node={node} onViewHistory={onViewHistory} />
-          ))}
-        </section>
+        <>
+          {/* Comparison is opt-in: a single machine has nothing to compare
+              against, and the grid stays the default view. */}
+          {orderedNodes.length > 1 ? (
+            <div className="compare-bar">
+              <button
+                type="button"
+                className="secondary-button compare-toggle"
+                aria-expanded={compareOpen}
+                onClick={() => setCompareOpen((open) => !open)}
+              >
+                {compareOpen ? "Hide comparison" : "Compare machines"}
+              </button>
+            </div>
+          ) : null}
+          {compareOpen && orderedNodes.length > 1 ? (
+            <FleetCompare
+              nodes={orderedNodes}
+              metric={compareMetric}
+              onMetricChange={setCompareMetric}
+            />
+          ) : null}
+          <section className="node-grid" aria-label="Monitored machines">
+            {orderedNodes.map((node) => (
+              <NodeCard
+                key={node.id}
+                node={node}
+                metric={cardMetrics[node.id] ?? "cpu"}
+                onMetricChange={(metric) => setCardMetrics(node.id, metric)}
+                onViewHistory={onViewHistory}
+              />
+            ))}
+          </section>
+        </>
       )}
     </main>
   );

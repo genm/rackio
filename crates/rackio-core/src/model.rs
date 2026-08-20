@@ -185,6 +185,10 @@ pub struct TrendSample {
     #[serde(default)]
     pub temperature_celsius: Option<f32>,
     #[serde(default)]
+    pub network_received_bytes_per_second: Option<u64>,
+    #[serde(default)]
+    pub network_sent_bytes_per_second: Option<u64>,
+    #[serde(default)]
     pub rtt_ms: Option<u64>,
 }
 
@@ -218,8 +222,34 @@ impl From<&MetricSample> for TrendSample {
                 .temperature
                 .as_ref()
                 .map(|temperature| temperature.celsius),
+            network_received_bytes_per_second: sample
+                .network
+                .as_ref()
+                .map(|network| network.received_bytes_per_second),
+            network_sent_bytes_per_second: sample
+                .network
+                .as_ref()
+                .map(|network| network.sent_bytes_per_second),
             rtt_ms: None,
         }
+    }
+}
+
+impl TrendWindow {
+    /// Rebuild a window from stored samples, oldest first, keeping only the
+    /// most recent [`TrendWindow::CAPACITY`]. The local machine's window lives
+    /// in memory, so without this a daemon restart would blank its own trend
+    /// while every remote kept the one its registry persisted.
+    #[must_use]
+    pub fn from_samples(samples: &[MetricSample]) -> Self {
+        let mut window = Self::default();
+        for sample in samples
+            .iter()
+            .skip(samples.len().saturating_sub(Self::CAPACITY))
+        {
+            window.push(TrendSample::from(sample));
+        }
+        window
     }
 }
 
@@ -255,7 +285,7 @@ impl TrendWindow {
 
 #[cfg(test)]
 mod trend_sample_tests {
-    use super::{DiskMetric, MetricSample, TemperatureMetric, TrendSample};
+    use super::{DiskMetric, MetricSample, NetworkMetric, TemperatureMetric, TrendSample};
 
     #[test]
     fn projects_the_fullest_disk_and_the_hottest_sensor() {
@@ -286,7 +316,10 @@ mod trend_sample_tests {
                     used_bytes: 0,
                 },
             ],
-            network: None,
+            network: Some(NetworkMetric {
+                received_bytes_per_second: 2_048,
+                sent_bytes_per_second: 512,
+            }),
             temperature: Some(TemperatureMetric {
                 label: String::from("Package id 0"),
                 celsius: 61.5,
@@ -301,6 +334,8 @@ mod trend_sample_tests {
         assert_eq!(point.disk_used_bytes, Some(90));
         assert_eq!(point.disk_total_bytes, Some(100));
         assert_eq!(point.temperature_celsius, Some(61.5));
+        assert_eq!(point.network_received_bytes_per_second, Some(2_048));
+        assert_eq!(point.network_sent_bytes_per_second, Some(512));
         assert_eq!(
             point.rtt_ms, None,
             "RTT is stamped by the stream loop, not the sample"
@@ -335,6 +370,8 @@ mod trend_window_tests {
             disk_used_bytes: Some(90),
             disk_total_bytes: Some(100),
             temperature_celsius: Some(61.5),
+            network_received_bytes_per_second: Some(2_048),
+            network_sent_bytes_per_second: Some(512),
             rtt_ms: Some(8),
         }
     }
@@ -353,6 +390,34 @@ mod trend_window_tests {
             window.samples()[0].timestamp_ms,
             5,
             "oldest samples leave first"
+        );
+    }
+
+    #[test]
+    fn rebuilds_from_stored_samples_keeping_only_the_newest() {
+        let stored: Vec<super::MetricSample> = (0..(TrendWindow::CAPACITY + 3))
+            .map(|index| super::MetricSample {
+                timestamp_ms: i64::try_from(index).unwrap_or_else(|error| panic!("{error}")),
+                sequence: 0,
+                cpu_percent: Some(5.0),
+                memory_used_bytes: None,
+                memory_total_bytes: None,
+                swap_used_bytes: None,
+                swap_total_bytes: None,
+                disks: Vec::new(),
+                network: None,
+                temperature: None,
+                uptime_seconds: 0,
+                errors: Vec::new(),
+            })
+            .collect();
+
+        let window = TrendWindow::from_samples(&stored);
+        assert_eq!(window.samples().len(), TrendWindow::CAPACITY);
+        assert_eq!(
+            window.samples()[0].timestamp_ms,
+            3,
+            "a restart resumes at the newest stored samples, not the oldest"
         );
     }
 
