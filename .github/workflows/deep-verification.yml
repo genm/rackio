@@ -43,17 +43,15 @@ jobs:
           persist-credentials: false
       - name: Select pinned Rust toolchain
         run: rustup show
-      - name: Cache cargo registry and target
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Cache cargo registry and dependency build output
+        # See the equivalent step in ci.yml's `rust` job for why this replaces
+        # a whole-target/ cache (#114). cargo-mutants rebuilds and re-tests the
+        # crate once per mutant, so caching the compiled *dependency* graph
+        # instead of the whole target/ tree is what makes each scheduled run
+        # affordable without also being the largest cache entry in the repo.
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry/cache
-            ~/.cargo/registry/index
-            ~/.cargo/git/db
-            target/
-          key: cargo-mutants-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-mutants-
+          key: mutants-${{ matrix.package }}
       - name: Install mutation and test tools
         uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
         with:
@@ -84,6 +82,11 @@ jobs:
     name: Fuzzing (${{ matrix.target }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+      # Needed only to replace the accumulated-corpus cache entry below under
+      # its stable key; every other step stays read-only.
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -112,13 +115,12 @@ jobs:
           restore-keys: |
             cargo-fuzz-
       - name: Restore the accumulated corpus
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # Each run starts from what previous runs found interesting instead of
           # rediscovering the same coverage from the tracked seeds every week.
           path: fuzz/corpus/${{ matrix.target }}
-          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
-          restore-keys: fuzz-corpus-${{ matrix.target }}-
+          key: fuzz-corpus-${{ matrix.target }}
       - name: Fuzz
         env:
           TARGET: ${{ matrix.target }}
@@ -127,6 +129,23 @@ jobs:
           cargo +nightly fuzz run "$TARGET" -- \
             -max_total_time="$FUZZ_SECONDS" \
             -rss_limit_mb=2048
+      - name: Replace the accumulated corpus cache entry
+        # A cache entry is immutable once written, so the previous save under
+        # this same stable key must be deleted before a new one can replace
+        # it. This is what lets the corpus accumulate across scheduled runs
+        # without writing a fresh cache entry (keyed on github.run_id) every
+        # time, which never got reused by key and only grew the total cache
+        # footprint (#114).
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh cache delete "fuzz-corpus-${{ matrix.target }}" --repo "$GITHUB_REPOSITORY" || true
+      - name: Save the accumulated corpus
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}
       - name: Upload the crashing input
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
