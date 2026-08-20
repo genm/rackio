@@ -32,6 +32,7 @@ storage, or packaging behavior.
 | `crates/rackio-core` | Metrics, history, alerts, and transport-independent domain types |
 | `crates/rackio-protocol` | Protobuf schema, framing limits, and protocol compatibility |
 | `crates/rackio-iroh` | Endpoint identity, pairing, peer authorization, and iroh transport |
+| `crates/rackio-windows-ipc` | Windows named-pipe DACL construction and caller-token verification; the only crate permitted to use `unsafe` |
 | `apps/agent` | Daemon lifecycle, local IPC, persistence, and CLI |
 | `apps/desktop` | Tauri tray application and React viewer |
 | `proto/rackio.proto` | Wire-schema source of truth |
@@ -57,9 +58,10 @@ mise run bootstrap
 mise run check
 ```
 
-`mise run check` must pass before handoff. It covers Rust formatting, Clippy,
-Rust tests, frontend formatting, type checking, linting, environment contract
-tests, component tests, and the production frontend build.
+`mise run check` must pass before handoff. Its exact steps are defined in
+`mise.toml`'s `tasks.check`, not restated here — expect it to run further than
+Rust and frontend checks: it also includes the two-daemon pairing and cleanup
+E2E scripts and the Linux installer test, so budget time for those.
 
 - Start behavior changes with a failing test when practical.
 - Exercise at least one realistic invalid, denied, timeout, or degraded path for

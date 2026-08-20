@@ -21,7 +21,8 @@ The source currently supports this development flow:
    pairing and persist a secret-free monitored-machine record;
 5. stream remote metrics into the viewer daemon;
 6. expose local and remote snapshots to Tauri over local IPC;
-7. render state, metrics, connection path and RTT in the desktop rack.
+7. render state, metrics, connection path, RTT and a selectable live trend
+   chart in the desktop rack.
 8. inspect and explicitly confirm an SSH host key, push a local Linux release
    archive, verify and install it without server internet access, then import
    the resulting one-time pairing bundle automatically.
@@ -41,7 +42,7 @@ NAT and mixed-OS release matrices.
 | Remote server | Endpoint authentication, allowlist authorization, immediate revoke teardown, node info, live metrics, health, path and bounded history protocol | NAT and relay migration evidence remains incomplete |
 | Pairing | Five-minute, attempt-limited, single-use secret, window-scoped mDNS endpoint advertisement, copy/paste import, local QR generation and private file import/export | Cross-LAN pairing depends on transferred direct addresses or a configured self-hosted relay |
 | Viewer daemon | Secret-free remote inventory, reconnect loop, persisted last-known snapshot, bounded remote history query, periodic health/path refresh, structured path events and stale/offline derivation | NAT and relay migration evidence remains incomplete |
-| Desktop | Local/remote cards, 24-hour remote history detail, dynamic worst-state tray icon, configurable OS notifications, QR/file/bundle pairing, SSH bootstrap, and explicit degraded states | Cross-platform packaging |
+| Desktop | Local/remote cards with a per-card live trend chart (CPU, memory, disk, temperature or RTT, selectable by clicking a metric tile, spanning the last ~4 minutes at 2-second cadence), a 24-hour remote history dialog with the same metric selector minus RTT, dynamic worst-state tray icon, configurable OS notifications, QR/file/bundle pairing, SSH bootstrap, and explicit degraded states | Cross-platform packaging |
 | Linux packaging | Native x86_64/arm64 release archives with independently verified SLSA provenance, clean Ubuntu systemd lifecycle evidence, HTTPS or client-pushed archive install, checksum verification, viewer-group isolation, preserving/purge uninstaller and gated GitHub pre-release publication | No supported release: the publication workflow refuses a non-pre-release version; SSH client, reboot and supported-distribution coverage are not proven |
 | macOS | Dedicated daemon user/group, LaunchDaemon lifecycle, preserving uninstaller and fail-closed signed/notarized pkg builder | A real Developer ID signature, notarization receipt and reboot evidence require release credentials and a clean macOS host |
 | Windows | Explicit-DACL named-pipe IPC with caller-token verification, Windows Service installer/uninstaller and a GitHub-hosted CI integration scenario | Authenticode/MSI signing, clean-host remote-client rejection and reboot evidence require a Windows release host |

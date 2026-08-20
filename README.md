@@ -140,6 +140,7 @@ between GitHub Releases and `rackio.genm.dev` are defined in
 | `crates/rackio-core` | domain types, collectors, alerts, bounded history |
 | `crates/rackio-protocol` | protobuf schema and length-delimited framing |
 | `crates/rackio-iroh` | endpoint identity, pairing, allowlist, iroh adapter |
+| `crates/rackio-windows-ipc` | Windows named-pipe DACL and caller-token verification (the only crate with `unsafe`) |
 | `apps/agent` | daemon, local IPC and headless CLI |
 | `apps/desktop` | Tauri tray and React viewer |
 | `relay-package` | version-pinned upstream relay container and runbook |
