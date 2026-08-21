@@ -6,10 +6,32 @@ use rackio_core::{NodeState, SystemCollector};
 use rackio_iroh::NodeRuntime;
 use tokio::sync::watch;
 
+/// The single owner of the published node state.
+///
+/// Degradation still wins: a machine whose collector, storage or remote
+/// listener is broken is reported as `Degraded` rather than as a threshold
+/// verdict, because the underlying data is no longer trustworthy. Once every
+/// subsystem is healthy again the state is the worst active alert severity, so
+/// clearing a degradation flag can never claim `Healthy` while an operator
+/// threshold is still breached.
+fn derive_state(health: &mut rackio_core::HealthSnapshot, severity: Option<NodeState>) {
+    health.state = if health.collector_degraded
+        || health.storage_degraded
+        || health.remote_listener_degraded
+    {
+        NodeState::Degraded
+    } else {
+        severity.unwrap_or(NodeState::Healthy)
+    };
+}
+
 /// Reflect the collector's own errors in the published health snapshot, and
-/// clear them again once every source reads. `state` returns to `Healthy` only
-/// when no other subsystem is degraded.
-async fn apply_collector_health(runtime: &NodeRuntime, errors: &[rackio_core::CollectorError]) {
+/// clear them again once every source reads.
+async fn apply_collector_health(
+    runtime: &NodeRuntime,
+    errors: &[rackio_core::CollectorError],
+    severity: Option<NodeState>,
+) {
     let degraded = !errors.is_empty();
     let mut health = runtime.health.write().await;
     if health.collector_degraded == degraded {
@@ -17,7 +39,6 @@ async fn apply_collector_health(runtime: &NodeRuntime, errors: &[rackio_core::Co
     }
     health.collector_degraded = degraded;
     if degraded {
-        health.state = NodeState::Degraded;
         if !health
             .details
             .iter()
@@ -33,23 +54,14 @@ async fn apply_collector_health(runtime: &NodeRuntime, errors: &[rackio_core::Co
         health
             .details
             .retain(|detail| detail != "collector_degraded");
-        if !health.storage_degraded && !health.remote_listener_degraded {
-            health.state = NodeState::Healthy;
-        }
     }
+    derive_state(&mut health, severity);
 }
 
 /// Publish an operator-configured threshold breach as the machine's state.
-///
-/// Degradation still wins: a machine whose storage or collector is broken is
-/// reported as `Degraded` rather than as a threshold warning, because the
-/// underlying data is no longer trustworthy.
 async fn apply_alert_health(runtime: &NodeRuntime, severity: Option<NodeState>) {
     let mut health = runtime.health.write().await;
-    if health.collector_degraded || health.storage_degraded || health.remote_listener_degraded {
-        return;
-    }
-    health.state = severity.unwrap_or(NodeState::Healthy);
+    derive_state(&mut health, severity);
 }
 
 /// Commit whatever is buffered so a graceful stop does not discard history.
@@ -100,9 +112,6 @@ pub(super) async fn sample_loop(
             }
         }
         let sample = collector.sample();
-        // A source the collector could not read must be visible as a degraded
-        // collector, not hidden behind an otherwise healthy snapshot.
-        apply_collector_health(&runtime, &sample.errors).await;
         for signal in alerts.evaluate(&sample, &alert_rules) {
             tracing::info!(
                 rule = %signal.rule_id,
@@ -111,7 +120,13 @@ pub(super) async fn sample_loop(
                 "local health threshold transition"
             );
         }
-        apply_alert_health(&runtime, alerts.worst_active_severity(&alert_rules)).await;
+        // Every state decision in this tick, including the recovery branches
+        // below, is derived from this one severity reading.
+        let severity = alerts.worst_active_severity(&alert_rules);
+        // A source the collector could not read must be visible as a degraded
+        // collector, not hidden behind an otherwise healthy snapshot.
+        apply_collector_health(&runtime, &sample.errors, severity).await;
+        apply_alert_health(&runtime, severity).await;
         let _ = latest.send(Some(sample.clone()));
         runtime
             .trend
@@ -128,9 +143,7 @@ pub(super) async fn sample_loop(
                     if health.storage_degraded {
                         health.storage_degraded = false;
                         health.details.retain(|detail| detail != "storage_degraded");
-                        if !health.collector_degraded && !health.remote_listener_degraded {
-                            health.state = NodeState::Healthy;
-                        }
+                        derive_state(&mut health, severity);
                     }
                 }
                 Err(error) => {
@@ -138,7 +151,7 @@ pub(super) async fn sample_loop(
                     pending.clear();
                     let mut health = runtime.health.write().await;
                     health.storage_degraded = true;
-                    health.state = NodeState::Degraded;
+                    derive_state(&mut health, severity);
                     if !health
                         .details
                         .iter()
@@ -174,5 +187,67 @@ pub(super) async fn sample_loop(
                 tracing::warn!(error = %error, "metric history pruning failed");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rackio_core::HealthSnapshot;
+
+    use super::{NodeState, derive_state};
+
+    fn healthy() -> HealthSnapshot {
+        HealthSnapshot {
+            state: NodeState::Healthy,
+            collector_degraded: false,
+            storage_degraded: false,
+            remote_listener_degraded: false,
+            details: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn storage_recovery_keeps_an_active_alert_severity() {
+        // A recovered disk must not erase a threshold breach that is still live.
+        let mut health = healthy();
+        health.storage_degraded = true;
+        health.state = NodeState::Degraded;
+
+        health.storage_degraded = false;
+        derive_state(&mut health, Some(NodeState::Critical));
+
+        assert_eq!(health.state, NodeState::Critical);
+    }
+
+    #[test]
+    fn collector_recovery_keeps_an_active_alert_severity() {
+        let mut health = healthy();
+        health.collector_degraded = true;
+        health.state = NodeState::Degraded;
+
+        health.collector_degraded = false;
+        derive_state(&mut health, Some(NodeState::Warning));
+
+        assert_eq!(health.state, NodeState::Warning);
+    }
+
+    #[test]
+    fn degradation_outranks_an_alert_severity() {
+        let mut health = healthy();
+        health.storage_degraded = true;
+
+        derive_state(&mut health, Some(NodeState::Critical));
+
+        assert_eq!(health.state, NodeState::Degraded);
+    }
+
+    #[test]
+    fn recovery_without_an_active_alert_reports_healthy() {
+        let mut health = healthy();
+        health.state = NodeState::Degraded;
+
+        derive_state(&mut health, None);
+
+        assert_eq!(health.state, NodeState::Healthy);
     }
 }
