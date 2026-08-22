@@ -21,7 +21,7 @@ const CROSS_PLATFORM_RUST_PATHS = [
 const LINUX_RUST_PATHS = [
   /^install\.sh$/,
   /^packaging\/linux\/(?!.*\.md$)/,
-  /^scripts\/(?:benchmark-agent-resources|test-two-daemon-pairing|check-release-binary-cloud-independence)\.sh$/,
+  /^scripts\/(?:benchmark-agent-resources|test-two-daemon-pairing|test-two-daemon-address-change|check-release-binary-cloud-independence)\.sh$/,
   // The fuzz crate is type-checked only on the Linux leg, so a change to it
   // must reach that leg without pulling in the macOS and Windows runners.
   /^fuzz\/(?!corpus\/)/,

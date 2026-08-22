@@ -35,6 +35,11 @@ enum Command {
         #[command(subcommand)]
         command: RelayCommand,
     },
+    /// Control the fixed UDP port this machine listens on.
+    ListenPort {
+        #[command(subcommand)]
+        command: ListenPortCommand,
+    },
     Doctor,
 }
 
@@ -48,6 +53,15 @@ enum PairingCommand {
 enum PeerCommand {
     List,
     Revoke { endpoint_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum ListenPortCommand {
+    /// Set a fixed listen port, or pass `ephemeral` to let the OS choose one.
+    ///
+    /// A fixed port keeps this machine's direct addresses stable across
+    /// restarts, so already paired viewers reconnect without re-pairing.
+    Set { port: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -102,6 +116,18 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let relay_url = (url != "direct-only").then_some(url);
             print_response(request_local(&paths, LocalCommand::RelaySet { relay_url }).await?)?;
+        }
+        Command::ListenPort {
+            command: ListenPortCommand::Set { port },
+        } => {
+            let bind_port = if port == "ephemeral" {
+                None
+            } else {
+                Some(port.parse::<u16>().map_err(|_| {
+                    anyhow::anyhow!("listen port must be a number from 1 to 65535, or `ephemeral`")
+                })?)
+            };
+            print_response(request_local(&paths, LocalCommand::BindPortSet { bind_port }).await?)?;
         }
         Command::Doctor => print_response(request_local(&paths, LocalCommand::Doctor).await?)?,
     }

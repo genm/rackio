@@ -14,7 +14,7 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, Buf
 
 use crate::remote::{RemoteFleet, RemoteHistoryResolution, RemoteMachineSnapshot};
 
-use super::config::{AppPaths, load_config, save_config, validate_relay_url};
+use super::config::{AppPaths, load_config, save_config, validate_bind_port, validate_relay_url};
 
 // The Windows local IPC listener has its own connect loop, so these bound the
 // Unix accept loop only.
@@ -49,6 +49,9 @@ pub enum LocalCommand {
     },
     RelaySet {
         relay_url: Option<String>,
+    },
+    BindPortSet {
+        bind_port: Option<u16>,
     },
     Doctor,
 }
@@ -103,6 +106,9 @@ struct StatusPayload {
     endpoint_id: String,
     direct_addresses: Vec<String>,
     relay_url: Option<String>,
+    /// The configured fixed listen port, or `None` when this machine takes an
+    /// ephemeral port that a restart will change.
+    bind_port: Option<u16>,
     latest: Option<rackio_core::MetricSample>,
     health: HealthSnapshot,
     /// The local machine's live trend, in the same shape a remote snapshot
@@ -332,53 +338,18 @@ async fn handle_local(
 ) -> LocalResponse {
     match command {
         LocalCommand::Status | LocalCommand::Doctor => {
-            let relay_url = match load_config(paths) {
-                Ok(config) => config.relay_url,
-                Err(error) => return LocalResponse::failure(error),
-            };
-            let latest = runtime.latest.borrow().clone();
-            let health = runtime.health.read().await.clone();
-            let trend = runtime.trend.read().await.clone();
-            LocalResponse::success(StatusPayload {
-                node: runtime.info.clone(),
-                endpoint_id: endpoint.id().to_string(),
-                direct_addresses: endpoint
-                    .addr()
-                    .ip_addrs()
-                    .map(std::string::ToString::to_string)
-                    .collect(),
-                relay_url,
-                latest,
-                health,
-                trend,
-            })
+            match local_status(paths, endpoint, runtime).await {
+                Ok(local) => LocalResponse::success(local),
+                Err(error) => LocalResponse::failure(error),
+            }
         }
-        LocalCommand::FleetSnapshot => {
-            let relay_url = match load_config(paths) {
-                Ok(config) => config.relay_url,
-                Err(error) => return LocalResponse::failure(error),
-            };
-            let latest = runtime.latest.borrow().clone();
-            let health = runtime.health.read().await.clone();
-            let trend = runtime.trend.read().await.clone();
-            let local = StatusPayload {
-                node: runtime.info.clone(),
-                endpoint_id: endpoint.id().to_string(),
-                direct_addresses: endpoint
-                    .addr()
-                    .ip_addrs()
-                    .map(std::string::ToString::to_string)
-                    .collect(),
-                relay_url,
-                latest,
-                health,
-                trend,
-            };
-            LocalResponse::success(FleetPayload {
+        LocalCommand::FleetSnapshot => match local_status(paths, endpoint, runtime).await {
+            Ok(local) => LocalResponse::success(FleetPayload {
                 local,
                 remotes: remote_fleet.snapshots().await,
-            })
-        }
+            }),
+            Err(error) => LocalResponse::failure(error),
+        },
         LocalCommand::PairingCreate => create_pairing_bundle(paths, endpoint, runtime).await,
         LocalCommand::PairingImport { bundle } => {
             match remote_fleet.import_pairing(&bundle).await {
@@ -406,6 +377,25 @@ async fn handle_local(
             Ok(removed) => LocalResponse::success(serde_json::json!({ "revoked": removed })),
             Err(error) => LocalResponse::failure(error),
         },
+        LocalCommand::BindPortSet { bind_port } => {
+            if let Err(error) = validate_bind_port(bind_port) {
+                return LocalResponse::failure(error);
+            }
+            // Preserve every other configured value for the same reason the
+            // relay setting does: one field must not discard the rest.
+            let mut config = match load_config(paths) {
+                Ok(config) => config,
+                Err(error) => return LocalResponse::failure(error),
+            };
+            config.bind_port = bind_port;
+            match save_config(paths, &config) {
+                Ok(()) => LocalResponse::success(serde_json::json!({
+                    "saved": true,
+                    "restart_required": true
+                })),
+                Err(error) => LocalResponse::failure(error),
+            }
+        }
         LocalCommand::RelaySet { relay_url } => {
             if let Err(error) = validate_relay_url(relay_url.as_deref()) {
                 return LocalResponse::failure(error);
@@ -427,6 +417,32 @@ async fn handle_local(
             }
         }
     }
+}
+
+async fn local_status(
+    paths: &AppPaths,
+    endpoint: &iroh::Endpoint,
+    runtime: &Arc<NodeRuntime>,
+) -> anyhow::Result<StatusPayload> {
+    let config = load_config(paths)?;
+    // Read the watch channel into an owned value before the first await: its
+    // guard is not `Send`, and holding it across one makes this whole task
+    // unspawnable.
+    let latest = runtime.latest.borrow().clone();
+    Ok(StatusPayload {
+        node: runtime.info.clone(),
+        endpoint_id: endpoint.id().to_string(),
+        direct_addresses: endpoint
+            .addr()
+            .ip_addrs()
+            .map(std::string::ToString::to_string)
+            .collect(),
+        relay_url: config.relay_url,
+        bind_port: config.bind_port,
+        latest,
+        health: runtime.health.read().await.clone(),
+        trend: runtime.trend.read().await.clone(),
+    })
 }
 
 async fn create_pairing_bundle(

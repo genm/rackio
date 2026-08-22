@@ -28,6 +28,29 @@ public relay configuration.
 - direct addresses are carried in the pairing bundle
 - the selected iroh path, not the attempted address, determines whether the UI
   reports LAN direct, WAN direct or relayed
+- an endpoint takes an ephemeral UDP port unless the operator configures a fixed
+  one, which is what keeps a monitored machine's direct addresses stable across
+  restarts
+
+### Direct address lifecycle
+
+A pairing bundle is a snapshot of where a machine could be reached when it was
+paired. Two mechanisms keep that snapshot usable afterwards, and neither adds a
+discovery service:
+
+- the monitored machine keeps a stable address by listening on an operator
+  configured fixed port (`rackio listen-port set`). A restart then reappears on
+  the address its viewers already hold, and a port that cannot be bound fails
+  the daemon rather than drifting to an ephemeral one;
+- a viewer refreshes a machine's stored addresses from the sessions it already
+  authenticated. Every session is a QUIC connection to the pinned endpoint ID,
+  so the refreshed addresses describe the same machine. It reorders and bounds
+  one existing record; it can neither add a machine to the registry nor widen
+  what any peer is allowed to do.
+
+A viewer whose stored addresses all stop answering cannot invent new ones, so it
+reports the machine as stale and then offline, keeps the last known values, and
+names the recovery step. It never presents such a machine as healthy.
 
 The application protocol uses ALPN `rackio/metrics/1` and length-delimited
 Protocol Buffers directly on bidirectional QUIC streams. Independent requests
