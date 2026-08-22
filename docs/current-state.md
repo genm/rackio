@@ -27,6 +27,12 @@ The source currently supports this development flow:
    archive, verify and install it without server internet access, then import
    the resulting one-time pairing bundle automatically.
 
+A second two-daemon smoke covers restart recovery: a monitored daemon on a
+configured fixed port is restarted and the viewer resumes on its own, a daemon
+moved to another port is reported offline with the recovery step and its last
+known values intact, and returning it to the paired port recovers without
+re-pairing or editing the registry.
+
 A reusable two-daemon same-host smoke exercises this flow: pairing produces one
 `lan_direct` remote machine with a live CPU sample, importing the same bundle
 again fails, and restarting the viewer daemon reconnects from its secret-free
@@ -39,9 +45,9 @@ NAT and mixed-OS release matrices.
 | --- | --- | --- |
 | Collector | CPU, memory, swap, disk, network rate, hottest-sensor temperature, uptime, OS and architecture | GPU, per-sensor temperature history, processes, containers and logs are not implemented |
 | Local history | 2-second samples, SQLite WAL batches, raw/minute retention and 64 MiB pruning | Cross-machine long-term aggregation is intentionally absent |
-| Remote server | Endpoint authentication, allowlist authorization, immediate revoke teardown, node info, live metrics, health, path and bounded history protocol | NAT and relay migration evidence remains incomplete |
+| Remote server | Endpoint authentication, allowlist authorization, immediate revoke teardown, node info, live metrics, health, path and bounded history protocol, and an operator-configured fixed listen port that survives restarts | NAT and relay migration evidence remains incomplete |
 | Pairing | Five-minute, attempt-limited, single-use secret, window-scoped mDNS endpoint advertisement, copy/paste import, local QR generation and private file import/export | Cross-LAN pairing depends on transferred direct addresses or a configured self-hosted relay |
-| Viewer daemon | Secret-free remote inventory, reconnect loop, persisted last-known snapshot, bounded remote history query, periodic health/path refresh, structured path events and stale/offline derivation | NAT and relay migration evidence remains incomplete |
+| Viewer daemon | Secret-free remote inventory, reconnect loop, persisted last-known snapshot, bounded remote history query, periodic health/path refresh, direct-address refresh from authenticated sessions, structured path events and stale/offline derivation | NAT and relay migration evidence remains incomplete |
 | Desktop | Local/remote cards with a per-card live trend chart (CPU, memory, disk, temperature, network or RTT, selected by clicking a metric tile and remembered per card), a remote history dialog over 1/6/24/168 hours with the same selector minus network and RTT, a fleet view overlaying one metric across every machine, severity-ordered cards, dynamic worst-state tray icon, per-machine OS notifications including recovery, QR/file/bundle pairing, SSH bootstrap, and explicit degraded states | Cross-platform packaging |
 | Trend charts | Time-proportional x axis, lines broken across gaps wider than the series' own spacing, hover crosshair reading the real sample rather than an interpolation, the hardware's own temperature critical drawn as a threshold, and network carried as separate received/sent lines | CPU and memory thresholds are deliberately absent: each peer evaluates its own alert rules, so the viewer has no truthful value to draw |
 | Linux packaging | Native x86_64/arm64 release archives with independently verified SLSA provenance, clean Ubuntu systemd lifecycle evidence, HTTPS or client-pushed archive install, checksum verification, viewer-group isolation, preserving/purge uninstaller and gated GitHub pre-release publication | No supported release: the publication workflow refuses a non-pre-release version; SSH client, reboot and supported-distribution coverage are not proven |
@@ -72,7 +78,9 @@ The daemon data directory owns:
 
 `monitored-machines.json` stores the pinned endpoint ID, direct addresses,
 explicit relay URLs, basic node information and pairing time. It never stores
-the one-time pairing secret.
+the one-time pairing secret. The direct addresses are refreshed from sessions
+already authenticated against the pinned endpoint ID and are bounded, so a peer
+that rebinds cannot grow the record without limit.
 
 Inbound authorization and outbound monitoring are separate directions. Pairing
 machine A as a viewer of machine B does not authorize B to view A. Mutual

@@ -13,7 +13,7 @@ pub use pairing::{
 pub use server::{NodeRuntime, RemoteServer, ServerError};
 pub use transport::{
     ClientConnection, ConnectionDetails, EndpointConfig, ResponseStream, TransportError,
-    bind_endpoint, classify_connection,
+    bind_endpoint, classify_connection, observed_direct_addresses,
 };
 
 pub use rackio_protocol::ALPN;

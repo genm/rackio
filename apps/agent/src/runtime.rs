@@ -61,6 +61,7 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         secret,
         &EndpointConfig {
             relay_urls: config.relay_url.clone().into_iter().collect(),
+            bind_port: config.bind_port,
         },
     )
     .await?;
@@ -72,22 +73,7 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     let info = node_info(node_id, collector.capabilities());
     let (latest_tx, latest_rx) = watch::channel(None);
     let store = MetricStore::open(paths.data.join("metrics.sqlite3"))?;
-    // Resume this machine's own trend from storage. Without it a restart shows
-    // a blank chart for the local machine while every remote keeps the window
-    // its registry persisted. A failed read degrades to an empty window — the
-    // chart then says it is collecting, which is true.
-    let seed_now_ms = rackio_core::Clock::new().now_ms();
-    let trend = match store.query(
-        seed_now_ms.saturating_sub(LOCAL_TREND_SEED_MS),
-        seed_now_ms,
-        HistoryResolution::Raw,
-    ) {
-        Ok(samples) => rackio_core::TrendWindow::from_samples(&samples),
-        Err(error) => {
-            tracing::warn!(error = %error, "local trend could not be resumed from storage");
-            rackio_core::TrendWindow::default()
-        }
-    };
+    let trend = resume_local_trend(&store);
     let runtime = Arc::new(NodeRuntime {
         info,
         health: RwLock::new(healthy()),
@@ -107,6 +93,7 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     tracing::info!(
         endpoint_id = %endpoint.id(),
         relay_mode = if config.relay_url.is_some() { "self_hosted" } else { "direct_only" },
+        listen_port = listen_port_label(config.bind_port),
         "agent started"
     );
 
@@ -165,6 +152,32 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         tracing::info!("agent stopped");
     }
     result
+}
+
+/// Resume this machine's own trend from storage. Without it a restart shows a
+/// blank chart for the local machine while every remote keeps the window its
+/// registry persisted. A failed read degrades to an empty window — the chart
+/// then says it is collecting, which is true.
+fn resume_local_trend(store: &MetricStore) -> rackio_core::TrendWindow {
+    let seed_now_ms = rackio_core::Clock::new().now_ms();
+    match store.query(
+        seed_now_ms.saturating_sub(LOCAL_TREND_SEED_MS),
+        seed_now_ms,
+        HistoryResolution::Raw,
+    ) {
+        Ok(samples) => rackio_core::TrendWindow::from_samples(&samples),
+        Err(error) => {
+            tracing::warn!(error = %error, "local trend could not be resumed from storage");
+            rackio_core::TrendWindow::default()
+        }
+    }
+}
+
+/// Describe the configured listen port for the startup log. An ephemeral port
+/// is named as such: it is the difference between a restart that already paired
+/// viewers survive and one that strands them.
+fn listen_port_label(bind_port: Option<u16>) -> String {
+    bind_port.map_or_else(|| String::from("ephemeral"), |port| port.to_string())
 }
 
 /// Build the advertised node information from what this host can actually

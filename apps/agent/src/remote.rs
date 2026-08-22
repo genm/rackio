@@ -37,6 +37,11 @@ const MAX_REMOTE_HISTORY_SAMPLES: usize = rackio_core::MAX_QUERY_ROWS;
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 const MAX_HISTORY_RANGE_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
+/// How many candidate direct addresses one paired machine may keep. A peer that
+/// takes an ephemeral port publishes a new address on every restart, so an
+/// unbounded union would grow this registry for as long as the pairing lives.
+/// The most recently observed addresses are kept and older candidates fall off.
+const MAX_RECORD_DIRECT_ADDRESSES: usize = 8;
 
 #[derive(Debug, Error)]
 pub enum RemoteFleetError {
@@ -163,6 +168,30 @@ impl RemoteMachineRegistry {
             .map_err(|_| RemoteFleetError::RegistryUnavailable)?;
         let mut next = records.clone();
         next.insert(record.endpoint_id.clone(), record);
+        persist_records(&self.path, &next)?;
+        *records = next;
+        Ok(())
+    }
+
+    /// Replace a machine's candidate direct addresses.
+    ///
+    /// The caller has already authenticated the session those addresses were
+    /// observed on, so this refreshes where an existing pairing is reached and
+    /// never adds a machine or widens what it is allowed to do.
+    fn update_addresses(
+        &self,
+        endpoint_id: &str,
+        direct_addresses: Vec<SocketAddr>,
+    ) -> Result<(), RemoteFleetError> {
+        let mut records = self
+            .records
+            .write()
+            .map_err(|_| RemoteFleetError::RegistryUnavailable)?;
+        let mut next = records.clone();
+        let record = next
+            .get_mut(endpoint_id)
+            .ok_or(RemoteFleetError::UnknownMachine)?;
+        record.direct_addresses = direct_addresses;
         persist_records(&self.path, &next)?;
         *records = next;
         Ok(())
@@ -493,7 +522,13 @@ impl RemoteFleet {
         let record = RemoteMachineRecord {
             node,
             endpoint_id: bundle.endpoint_id,
-            direct_addresses: bundle.direct_addresses,
+            // Prefer the address this pairing session actually reached. A
+            // bundle may advertise interfaces that are unreachable from here,
+            // and the reachable one belongs at the front of the list.
+            direct_addresses: merged_direct_addresses(
+                &client.observed_direct_addresses(),
+                &bundle.direct_addresses,
+            ),
             relay_urls: bundle.relay_urls,
             paired_at_ms: Utc::now().timestamp_millis(),
             last_snapshot: None,
@@ -535,11 +570,20 @@ async fn monitor_machine(
     registry: RemoteMachineRegistry,
     snapshots: Arc<AsyncRwLock<BTreeMap<String, RemoteMachineSnapshot>>>,
 ) {
+    // The record is owned rather than borrowed because a session may learn that
+    // the machine moved to another address; the next reconnect has to use the
+    // refreshed set, not the one this task started with.
+    let mut record = record;
     let mut retry_delay = INITIAL_RECONNECT_DELAY;
     loop {
         let started = Instant::now();
-        let result =
-            monitor_session(endpoint.clone(), &record, &registry, Arc::clone(&snapshots)).await;
+        let result = monitor_session(
+            endpoint.clone(),
+            &mut record,
+            &registry,
+            Arc::clone(&snapshots),
+        )
+        .await;
         if let Err(error) = result {
             update_error(&snapshots, &record, &error).await;
         }
@@ -557,11 +601,12 @@ async fn monitor_machine(
 
 async fn monitor_session(
     endpoint: iroh::Endpoint,
-    record: &RemoteMachineRecord,
+    record: &mut RemoteMachineRecord,
     registry: &RemoteMachineRegistry,
     snapshots: Arc<AsyncRwLock<BTreeMap<String, RemoteMachineSnapshot>>>,
 ) -> Result<(), RemoteFleetError> {
     let client = connect_record(endpoint, record).await?;
+    refresh_direct_addresses(&client, record, registry);
     let node = get_node_info(&client).await?;
     let health = get_health(&client).await?;
     let (path, rtt_ms) = get_connection_path(&client).await?;
@@ -642,6 +687,65 @@ async fn monitor_session(
     }
 }
 
+/// Persist where this machine is currently reachable.
+///
+/// `client` is an authenticated session with the pinned endpoint ID, so its
+/// addresses describe the machine this viewer is already paired with. Learning
+/// them is what lets a viewer follow a peer that rebound to another port
+/// instead of retrying the address it was paired on forever. It cannot
+/// introduce a new peer, change which peer is authorized, or reach any
+/// discovery service.
+fn refresh_direct_addresses(
+    client: &ClientConnection,
+    record: &mut RemoteMachineRecord,
+    registry: &RemoteMachineRegistry,
+) {
+    let observed = client.observed_direct_addresses();
+    if observed.is_empty() {
+        // A relay-only session says nothing about direct reachability. Keeping
+        // the known addresses is better than clearing them.
+        return;
+    }
+    let merged = merged_direct_addresses(&observed, &record.direct_addresses);
+    if merged == record.direct_addresses {
+        return;
+    }
+    match registry.update_addresses(&record.endpoint_id, merged.clone()) {
+        Ok(()) => {
+            tracing::info!(
+                endpoint_id = %record.endpoint_id,
+                address_count = merged.len(),
+                "refreshed the direct addresses of a paired machine"
+            );
+            record.direct_addresses = merged;
+        }
+        Err(error) => {
+            // The session is live either way, so this is not fatal: only the
+            // next restart loses the refreshed address.
+            tracing::warn!(
+                endpoint_id = %record.endpoint_id,
+                error = %error,
+                "failed to persist refreshed direct addresses"
+            );
+        }
+    }
+}
+
+/// Order the candidate addresses for the next connection attempt: the ones just
+/// observed first, then previously known ones that a different network still
+/// makes reachable, bounded so a peer with an ephemeral port cannot grow this
+/// list without limit.
+fn merged_direct_addresses(observed: &[SocketAddr], known: &[SocketAddr]) -> Vec<SocketAddr> {
+    let mut merged: Vec<SocketAddr> = Vec::with_capacity(observed.len() + known.len());
+    for address in observed.iter().chain(known.iter()) {
+        if !merged.contains(address) {
+            merged.push(*address);
+        }
+    }
+    merged.truncate(MAX_RECORD_DIRECT_ADDRESSES);
+    merged
+}
+
 async fn refresh_remote_state(
     client: &ClientConnection,
     record: &RemoteMachineRecord,
@@ -716,6 +820,29 @@ async fn update_error(
         _ => snapshot.state_at(Utc::now().timestamp_millis()),
     };
     snapshot.details = vec![error.to_string()];
+    if let Some(hint) = unreachable_hint(error) {
+        // A viewer that only says "connect timed out" leaves the operator
+        // guessing. Name the recoverable cause, because a machine that rebound
+        // to another port looks exactly like one that is switched off.
+        snapshot.details.push(String::from(hint));
+    }
+}
+
+/// The recovery step for an error that means "no known address answered".
+///
+/// Returns `None` for errors that a different address would not fix, so an
+/// authorization or compatibility failure is never dressed up as a reachability
+/// problem.
+fn unreachable_hint(error: &RemoteFleetError) -> Option<&'static str> {
+    match error {
+        RemoteFleetError::Timeout("connect")
+        | RemoteFleetError::Transport(TransportError::Connect(_)) => Some(
+            "no known address answered; if this machine restarted on a new port, \
+             give it a fixed one with `rackio listen-port set <PORT>` and restart it, \
+             or pair again",
+        ),
+        _ => None,
+    }
 }
 
 async fn request(
@@ -893,8 +1020,9 @@ mod tests {
     use iroh::SecretKey;
 
     use super::{
-        OFFLINE_AFTER_MS, RemoteMachineRecord, RemoteMachineRegistry, RemoteMachineSnapshot,
-        STALE_AFTER_MS, validate_bundle,
+        MAX_RECORD_DIRECT_ADDRESSES, OFFLINE_AFTER_MS, RemoteFleetError, RemoteMachineRecord,
+        RemoteMachineRegistry, RemoteMachineSnapshot, STALE_AFTER_MS, SocketAddr,
+        merged_direct_addresses, unreachable_hint, validate_bundle,
     };
     use rackio_core::{NodeInfo, NodeState, ProtocolVersion};
     use rackio_iroh::PairingBundle;
@@ -1016,5 +1144,121 @@ mod tests {
             Some(37.5)
         );
         assert_eq!(restored.last_seen_ms, Some(42));
+    }
+
+    fn address(value: &str) -> SocketAddr {
+        value
+            .parse()
+            .unwrap_or_else(|error| panic!("{value} is not a socket address: {error}"))
+    }
+
+    #[test]
+    fn a_moved_machine_is_tried_at_its_current_address_first() {
+        let merged = merged_direct_addresses(
+            &[address("127.0.0.1:49200")],
+            &[address("127.0.0.1:49100"), address("192.168.1.5:49100")],
+        );
+
+        assert_eq!(
+            merged,
+            vec![
+                address("127.0.0.1:49200"),
+                address("127.0.0.1:49100"),
+                address("192.168.1.5:49100"),
+            ],
+            "the observed address leads, and an address on another network is kept"
+        );
+    }
+
+    #[test]
+    fn refreshed_addresses_neither_duplicate_nor_grow_without_limit() {
+        let known: Vec<SocketAddr> = (0..MAX_RECORD_DIRECT_ADDRESSES + 4)
+            .map(|index| address(&format!("127.0.0.1:{}", 49_100 + index)))
+            .collect();
+
+        let merged = merged_direct_addresses(&[known[0], known[0]], &known);
+
+        assert_eq!(merged.len(), MAX_RECORD_DIRECT_ADDRESSES);
+        assert_eq!(merged[0], known[0]);
+        assert_eq!(
+            merged.iter().filter(|entry| **entry == known[0]).count(),
+            1,
+            "an address observed again must not be stored twice"
+        );
+    }
+
+    #[test]
+    fn a_refreshed_address_survives_a_restart_without_losing_the_last_snapshot() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = directory.path().join("machines.json");
+        let registry = RemoteMachineRegistry::load(&path).unwrap_or_else(|error| panic!("{error}"));
+        let record = record();
+        registry
+            .insert(record.clone())
+            .unwrap_or_else(|error| panic!("{error}"));
+        let mut snapshot = RemoteMachineSnapshot::offline(&record);
+        snapshot.last_seen_ms = Some(42);
+        registry
+            .update_snapshot(&record.endpoint_id, &snapshot)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        registry
+            .update_addresses(&record.endpoint_id, vec![address("127.0.0.1:49200")])
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let reloaded = RemoteMachineRegistry::load(&path).unwrap_or_else(|error| panic!("{error}"));
+        let restored = reloaded
+            .get(&record.endpoint_id)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(restored.direct_addresses, vec![address("127.0.0.1:49200")]);
+        assert_eq!(
+            restored
+                .last_snapshot
+                .and_then(|persisted| persisted.last_seen_ms),
+            Some(42),
+            "refreshing an address must not discard the last known values"
+        );
+        assert_eq!(
+            restored.endpoint_id, record.endpoint_id,
+            "a refresh reaches one already paired machine, never another"
+        );
+    }
+
+    #[test]
+    fn refreshing_an_unknown_machine_cannot_add_it() {
+        // The refresh path must not be a way to write a machine into the
+        // registry that no pairing ever authorized.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = directory.path().join("machines.json");
+        let registry = RemoteMachineRegistry::load(&path).unwrap_or_else(|error| panic!("{error}"));
+
+        let error = registry
+            .update_addresses("never-paired", vec![address("127.0.0.1:49200")])
+            .err()
+            .unwrap_or_else(|| panic!("an unpaired machine must not be created by a refresh"));
+
+        assert!(matches!(error, RemoteFleetError::UnknownMachine));
+        assert!(
+            registry
+                .list()
+                .unwrap_or_else(|error| panic!("{error}"))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn only_a_reachability_failure_suggests_a_reachability_fix() {
+        assert!(
+            unreachable_hint(&RemoteFleetError::Timeout("connect")).is_some(),
+            "an operator whose machine moved needs to be told what to do"
+        );
+        assert!(
+            unreachable_hint(&RemoteFleetError::IdentityMismatch).is_none(),
+            "an identity failure is not fixed by another address"
+        );
+        assert!(
+            unreachable_hint(&RemoteFleetError::Timeout("health")).is_none(),
+            "a reachable machine that answered slowly is not unreachable"
+        );
     }
 }

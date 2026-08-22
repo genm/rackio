@@ -1,8 +1,11 @@
-use std::{net::IpAddr, time::Duration};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    time::Duration,
+};
 
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr,
-    endpoint::{Connection, PortmapperConfig, presets},
+    endpoint::{BindOpts, Connection, PortmapperConfig, presets},
 };
 use rackio_core::ConnectionPath;
 use rackio_protocol::{
@@ -17,6 +20,12 @@ pub struct EndpointConfig {
     /// Empty means strict direct-only mode. Vendor relay/discovery defaults are
     /// never inherited.
     pub relay_urls: Vec<String>,
+    /// The UDP port this endpoint listens on. `None` takes an ephemeral port,
+    /// which changes on every restart and strands viewers that hold only the
+    /// previous direct addresses. An operator who monitors this machine over a
+    /// direct path configures a fixed port so the address survives a restart.
+    #[serde(default)]
+    pub bind_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,6 +38,13 @@ pub struct ConnectionDetails {
 pub enum TransportError {
     #[error("relay URL is invalid: {0}")]
     InvalidRelayUrl(String),
+    #[error("listen port is invalid: {0}")]
+    InvalidBindPort(u16),
+    #[error("configured listen port {port} could not be bound: {source}")]
+    BindPortUnavailable {
+        port: u16,
+        source: iroh::endpoint::BindError,
+    },
     #[error("endpoint failed: {0}")]
     Endpoint(#[from] iroh::endpoint::BindError),
     #[error("connection failed: {0}")]
@@ -68,7 +84,34 @@ pub async fn bind_endpoint(
             .collect::<Result<Vec<_>, _>>()?;
         builder.relay_mode(RelayMode::Custom(RelayMap::from_iter(urls)))
     };
-    Ok(builder.bind().await?)
+    let Some(port) = config.bind_port else {
+        return Ok(builder.bind().await?);
+    };
+    if port == 0 {
+        // Port 0 is the ephemeral request iroh already makes by default.
+        // Accepting it here would persist a configuration that promises a
+        // stable address and does not deliver one.
+        return Err(TransportError::InvalidBindPort(port));
+    }
+    let builder = builder
+        // A user-defined unspecified bind replaces iroh's own default for that
+        // address family, so each family is requested exactly once.
+        .bind_addr(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)))
+        .map_err(|_| TransportError::InvalidBindPort(port))?
+        // IPv6 stays optional because iroh's own default allows it to fail:
+        // a host without IPv6 must still listen on the configured IPv4 port.
+        .bind_addr_with_opts(
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
+            BindOpts::default().set_is_required(false),
+        )
+        .map_err(|_| TransportError::InvalidBindPort(port))?;
+    // A configured port that is already taken fails closed. Falling back to an
+    // ephemeral port would silently reintroduce the address drift the
+    // configuration exists to prevent.
+    builder
+        .bind()
+        .await
+        .map_err(|source| TransportError::BindPortUnavailable { port, source })
 }
 
 #[must_use]
@@ -93,6 +136,27 @@ pub fn classify_connection(connection: &Connection) -> ConnectionDetails {
         path,
         rtt_ms: duration_millis(selected.rtt()),
     }
+}
+
+/// The peer's direct IP addresses on an established connection.
+///
+/// Relay paths are excluded: a relay address identifies the relay, not the
+/// peer, and persisting it as a direct address would misdescribe how the peer
+/// is reached. The result is sorted and deduplicated so an unchanged address
+/// set never looks like a change.
+#[must_use]
+pub fn observed_direct_addresses(connection: &Connection) -> Vec<SocketAddr> {
+    let mut addresses: Vec<SocketAddr> = connection
+        .paths()
+        .iter()
+        .filter_map(|path| match path.remote_addr() {
+            TransportAddr::Ip(address) => Some(*address),
+            _ => None,
+        })
+        .collect();
+    addresses.sort_unstable();
+    addresses.dedup();
+    addresses
 }
 
 /// Classify a non-relayed path from the peer address it reaches.
@@ -170,6 +234,16 @@ impl ClientConnection {
         classify_connection(&self.connection)
     }
 
+    /// The peer's direct IP addresses as observed on this connection.
+    ///
+    /// These come from the authenticated QUIC session with the pinned endpoint
+    /// ID, not from any discovery service, so a caller may use them to refresh
+    /// an address set that a peer restart made stale.
+    #[must_use]
+    pub fn observed_direct_addresses(&self) -> Vec<SocketAddr> {
+        observed_direct_addresses(&self.connection)
+    }
+
     pub async fn request(&self, request: &Request) -> Result<Response, TransportError> {
         let mut responses = self.stream(request).await?;
         responses.next().await
@@ -203,10 +277,21 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        ClientConnection, ConnectionPath, EndpointConfig, TransportAddr, bind_endpoint,
-        direct_path, duration_millis, is_private_or_local,
+        ClientConnection, ConnectionPath, EndpointConfig, SocketAddr, TransportAddr,
+        TransportError, bind_endpoint, direct_path, duration_millis, is_private_or_local,
     };
     use iroh::SecretKey;
+
+    /// Ask the OS for a free UDP port and release it, so a test can request a
+    /// specific port without hard-coding one that another process may hold.
+    fn free_udp_port() -> u16 {
+        let socket = std::net::UdpSocket::bind(("127.0.0.1", 0))
+            .unwrap_or_else(|error| panic!("no free UDP port: {error}"));
+        socket
+            .local_addr()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .port()
+    }
 
     fn address(value: &str) -> std::net::IpAddr {
         value
@@ -324,6 +409,142 @@ mod tests {
             other => panic!("a deliberate close must be an application close, got {other}"),
         }
 
+        client_endpoint.close().await;
+        server.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_configured_listen_port_is_kept_across_restarts() {
+        // The whole point of the setting: a restarted daemon must reappear on
+        // the address its already paired viewers persisted.
+        let port = free_udp_port();
+        let config = EndpointConfig {
+            bind_port: Some(port),
+            ..EndpointConfig::default()
+        };
+        let secret = SecretKey::generate();
+
+        let first = bind_endpoint(secret.clone(), &config)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let before: Vec<u16> = first.addr().ip_addrs().map(SocketAddr::port).collect();
+        first.close().await;
+        // `close` stops the endpoint's protocol work, but the UDP sockets live
+        // until the endpoint itself is dropped. A restarting daemon exits the
+        // process and gets this for free; a test in one process has to be
+        // explicit or it races itself for the port.
+        drop(first);
+        let second = bind_endpoint(secret, &config)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let after: Vec<u16> = second.addr().ip_addrs().map(SocketAddr::port).collect();
+
+        assert!(!before.is_empty(), "a bound endpoint must have an address");
+        assert!(
+            before.iter().all(|bound| *bound == port),
+            "the configured port must be the advertised one, got {before:?}"
+        );
+        assert_eq!(
+            before, after,
+            "a restart must not move the endpoint to another port"
+        );
+
+        second.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_listen_port_already_in_use_fails_closed() {
+        // Falling back to an ephemeral port here would stand the daemon up on
+        // an address no viewer knows, which is exactly the failure the setting
+        // exists to prevent.
+        let port = free_udp_port();
+        let config = EndpointConfig {
+            bind_port: Some(port),
+            ..EndpointConfig::default()
+        };
+        let holder = bind_endpoint(SecretKey::generate(), &config)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let error = bind_endpoint(SecretKey::generate(), &config)
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("a taken port must not bind a second endpoint"));
+
+        match error {
+            TransportError::BindPortUnavailable { port: reported, .. } => {
+                assert_eq!(reported, port, "the error must name the configured port");
+            }
+            other => panic!("a taken port must be reported as such, got {other}"),
+        }
+
+        holder.close().await;
+    }
+
+    #[tokio::test]
+    async fn an_ephemeral_listen_port_cannot_be_configured_as_stable() {
+        let error = bind_endpoint(
+            SecretKey::generate(),
+            &EndpointConfig {
+                bind_port: Some(0),
+                ..EndpointConfig::default()
+            },
+        )
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("port 0 promises a stable address it cannot keep"));
+
+        assert!(matches!(error, TransportError::InvalidBindPort(0)));
+    }
+
+    #[tokio::test]
+    async fn an_established_connection_reports_the_peer_address_it_reached() {
+        // A viewer recovers a moved peer by learning the address of the
+        // session it already authenticated, so that address has to be readable
+        // from the connection itself.
+        let port = free_udp_port();
+        let server = bind_endpoint(
+            SecretKey::generate(),
+            &EndpointConfig {
+                bind_port: Some(port),
+                ..EndpointConfig::default()
+            },
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+        let client_endpoint = bind_endpoint(SecretKey::generate(), &EndpointConfig::default())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let server_address = server.addr();
+        let accept = tokio::spawn({
+            let server = server.clone();
+            async move {
+                server
+                    .accept()
+                    .await
+                    .unwrap_or_else(|| panic!("endpoint closed"))
+                    .await
+                    .unwrap_or_else(|error| panic!("{error}"))
+            }
+        });
+        let client = ClientConnection::connect(client_endpoint.clone(), server_address)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let incoming = accept.await.unwrap_or_else(|error| panic!("{error}"));
+
+        let observed = client.observed_direct_addresses();
+
+        assert!(
+            observed.iter().all(|address| address.port() == port),
+            "an observed direct address must be the peer's own listen address, got {observed:?}"
+        );
+        assert!(
+            !observed.is_empty(),
+            "a direct session must expose the address it reached"
+        );
+
+        client.close();
+        drop(incoming);
         client_endpoint.close().await;
         server.close().await;
     }

@@ -265,6 +265,9 @@ jobs:
       - name: Exercise two-daemon pairing and reconnect
         if: env.RUN_RUST == 'true' && runner.os == 'Linux'
         run: scripts/test-two-daemon-pairing.sh
+      - name: Exercise monitored address change and recovery
+        if: env.RUN_RUST == 'true' && runner.os == 'Linux'
+        run: scripts/test-two-daemon-address-change.sh
       - name: Exercise secured named-pipe IPC
         if: env.RUN_RUST == 'true' && runner.os == 'Windows'
         shell: pwsh
