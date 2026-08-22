@@ -81,6 +81,29 @@ struct TrayNodeSnapshot {
     temperature: Option<TrayTemperature>,
     #[serde(rename = "rttMs")]
     rtt_ms: Option<u64>,
+    /// The live trend window the daemon already ships with every snapshot for
+    /// the dashboard; the tray reuses it for the submenu sparklines instead of
+    /// issuing a second history query.
+    #[serde(default)]
+    trend: Vec<TrayTrendPoint>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrayTrendPoint {
+    #[serde(rename = "timestampMs")]
+    timestamp_ms: i64,
+    #[serde(rename = "cpuPercent")]
+    cpu_percent: Option<f64>,
+    #[serde(rename = "memoryUsedBytes")]
+    memory_used_bytes: Option<u64>,
+    #[serde(rename = "memoryTotalBytes")]
+    memory_total_bytes: Option<u64>,
+    #[serde(rename = "diskUsedBytes")]
+    disk_used_bytes: Option<u64>,
+    #[serde(rename = "diskTotalBytes")]
+    disk_total_bytes: Option<u64>,
+    #[serde(rename = "temperatureCelsius")]
+    temperature_celsius: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,24 +112,33 @@ struct TrayTemperature {
     celsius: f64,
 }
 
-/// One metric row inside a machine's hover submenu: a text label and, when the
-/// reading exists, a horizontal bar gauge rendered as the row's icon. The fill
-/// is stored in basis points (0..=10 000) so the model stays `Eq`-comparable in
-/// tests; the pixel rendering happens only at menu-build time.
+/// One metric row inside a machine's hover submenu: a text label and, when
+/// readings exist, a time-series area chart rendered as the row's icon. The
+/// chart uses a fixed 0–100 scale, so its right edge doubles as a bar gauge of
+/// the current value while the body shows the recent history. Values are
+/// modelled in basis points (0..=10 000) so the menu model stays
+/// `Eq`-comparable in tests; pixel rendering happens only at menu-build time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TrayGauge {
     text: String,
+    /// Current reading, used as a flat fallback when the trend carries fewer
+    /// than two points for this metric.
     fill_basis_points: Option<u16>,
+    /// `(timestamp_ms, basis_points)` history, chronological. Positions on the
+    /// chart's x-axis come from these timestamps — the sampling cadence is the
+    /// data's to declare, not the tray's to assume.
+    series: Vec<(i64, u16)>,
 }
 
 /// One machine's entry in the click menu: a hover submenu (`▸`) whose title
-/// carries the at-a-glance identity (`● Mac — Healthy`) and whose rows carry
-/// the bar-gauge metrics. The top-level menu therefore stays one row per
-/// machine no matter how large the fleet is.
+/// carries the minimal at-a-glance row (`● Mac — Healthy · CPU 51% · Mem 88%`)
+/// and whose rows carry the charted metrics. The top-level menu therefore
+/// stays one row per machine no matter how large the fleet is, without hiding
+/// the numbers an operator glances at most.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TraySection {
     header: String,
-    /// Gauge fills reuse the machine's state colour rather than inventing
+    /// Chart fills reuse the machine's state colour rather than inventing
     /// per-metric warning thresholds here: severity is owned by the
     /// user-configurable alert rules (rackio-core), which already drive
     /// `state`. A second, hard-coded threshold set in the tray would drift
@@ -207,27 +239,23 @@ fn tray_menu<R: Runtime, M: Manager<R>>(
     ))
 }
 
+fn empty_gauge(label: &str) -> TrayGauge {
+    TrayGauge {
+        text: format!("{label} —"),
+        fill_basis_points: None,
+        series: Vec::new(),
+    }
+}
+
 fn status_section(message: &str) -> TraySection {
     TraySection {
         header: message.to_owned(),
         color: NEUTRAL_COLOR,
         gauges: vec![
-            TrayGauge {
-                text: String::from("CPU —"),
-                fill_basis_points: None,
-            },
-            TrayGauge {
-                text: String::from("Memory —"),
-                fill_basis_points: None,
-            },
-            TrayGauge {
-                text: String::from("Disk —"),
-                fill_basis_points: None,
-            },
-            TrayGauge {
-                text: String::from("Temperature —"),
-                fill_basis_points: None,
-            },
+            empty_gauge("CPU"),
+            empty_gauge("Memory"),
+            empty_gauge("Disk"),
+            empty_gauge("Temperature"),
         ],
         link: String::from("—"),
     }
@@ -459,20 +487,25 @@ fn tray_node_status(node: &TrayNodeSnapshot) -> String {
 }
 
 fn tray_machine_menu(node: &TrayNodeSnapshot) -> TrayMachineMenu {
+    let memory_label = memory_percentage_label(node);
     TrayMachineMenu {
         title: format!(
             "{} · {} · CPU {} · Memory {}",
             node.name,
             tray_state_label(&node.state),
             percentage_label(node.cpu_percent),
-            memory_percentage_label(node)
+            memory_label
         ),
         section: TraySection {
+            // The top-level row carries the minimal glance metrics itself;
+            // hiding every number one hover away made the first level useless.
             header: format!(
-                "{} {} — {}",
+                "{} {} — {} · CPU {} · Mem {}",
                 tray_state_symbol(&node.state),
                 node.name,
-                tray_state_label(&node.state)
+                tray_state_label(&node.state),
+                percentage_label(node.cpu_percent),
+                memory_label
             ),
             // An unknown state fails closed in `upsert_tray` before this
             // section ever renders, so the fallback colour is unreachable in
@@ -482,13 +515,19 @@ fn tray_machine_menu(node: &TrayNodeSnapshot) -> TrayMachineMenu {
                 TrayGauge {
                     text: format!("CPU {}", percentage_label(node.cpu_percent)),
                     fill_basis_points: percent_basis_points(node.cpu_percent),
+                    series: metric_series(&node.trend, |point| {
+                        percent_basis_points(point.cpu_percent)
+                    }),
                 },
                 TrayGauge {
-                    text: format!("Memory {}", memory_percentage_label(node)),
+                    text: format!("Memory {memory_label}"),
                     fill_basis_points: ratio_basis_points(
                         node.memory_used_bytes,
                         node.memory_total_bytes,
                     ),
+                    series: metric_series(&node.trend, |point| {
+                        ratio_basis_points(point.memory_used_bytes, point.memory_total_bytes)
+                    }),
                 },
                 TrayGauge {
                     text: format!("Disk {}", disk_percentage_label(node)),
@@ -496,6 +535,9 @@ fn tray_machine_menu(node: &TrayNodeSnapshot) -> TrayMachineMenu {
                         node.disk_used_bytes,
                         node.disk_total_bytes,
                     ),
+                    series: metric_series(&node.trend, |point| {
+                        ratio_basis_points(point.disk_used_bytes, point.disk_total_bytes)
+                    }),
                 },
                 temperature_gauge(node),
             ],
@@ -504,16 +546,32 @@ fn tray_machine_menu(node: &TrayNodeSnapshot) -> TrayMachineMenu {
     }
 }
 
+/// Basis-point history for one metric, keeping only the trend points where the
+/// metric was actually read. A gap in readings shortens the drawn history
+/// rather than fabricating zeros.
+fn metric_series<F>(trend: &[TrayTrendPoint], value: F) -> Vec<(i64, u16)>
+where
+    F: Fn(&TrayTrendPoint) -> Option<u16>,
+{
+    trend
+        .iter()
+        .filter_map(|point| value(point).map(|basis_points| (point.timestamp_ms, basis_points)))
+        .collect()
+}
+
 /// The hottest sensor, named: an unattributed number would leave the operator
-/// unable to tell a battery reading from a CPU package one. The gauge fill
-/// maps 0–100 °C onto the bar, matching the dashboard's temperature axis; a
-/// machine with no readable sensor shows an em dash and no bar rather than a
-/// plausible zero.
+/// unable to tell a battery reading from a CPU package one. The chart maps
+/// 0–100 °C onto the fixed scale; a machine with no readable sensor shows an
+/// em dash and no chart rather than a plausible zero.
 fn temperature_gauge(node: &TrayNodeSnapshot) -> TrayGauge {
+    let series = metric_series(&node.trend, |point| {
+        point.temperature_celsius.map(scale_basis_points)
+    });
     node.temperature.as_ref().map_or_else(
         || TrayGauge {
             text: String::from("Temperature —"),
             fill_basis_points: None,
+            series: Vec::new(),
         },
         |temperature| TrayGauge {
             text: format!(
@@ -521,6 +579,7 @@ fn temperature_gauge(node: &TrayNodeSnapshot) -> TrayGauge {
                 temperature.celsius, temperature.label
             ),
             fill_basis_points: Some(scale_basis_points(temperature.celsius)),
+            series,
         },
     )
 }
@@ -699,29 +758,83 @@ fn state_icon(color: [u8; 4]) -> Image<'static> {
     Image::new_owned(rgba, SIZE_U32, SIZE_U32)
 }
 
-const GAUGE_WIDTH: usize = 56;
-const GAUGE_HEIGHT: usize = 10;
+const GAUGE_WIDTH: usize = 96;
+const GAUGE_HEIGHT: usize = 20;
 
-fn gauge_fill_width(basis_points: u16) -> usize {
-    usize::from(basis_points.min(10_000)) * GAUGE_WIDTH / 10_000
+/// Per-column chart values across the icon width, positioned by timestamp and
+/// linearly interpolated between samples. A metric with fewer than two history
+/// points falls back to a flat line at the current reading, and a metric with
+/// no reading at all yields no columns (no icon).
+// The casts convert timestamp *differences* bounded by the trend window's
+// span (well under 2^53 ms), so they are exact in an f64 mantissa.
+#[expect(clippy::cast_precision_loss)]
+fn gauge_columns(gauge: &TrayGauge) -> Vec<u16> {
+    if let (Some(first), Some(last)) = (gauge.series.first(), gauge.series.last())
+        && gauge.series.len() >= 2
+        && last.0 > first.0
+    {
+        let span = last.0 - first.0;
+        let mut columns = Vec::with_capacity(GAUGE_WIDTH);
+        let mut segment = 0_usize;
+        for x in 0..GAUGE_WIDTH {
+            // x → timestamp, then interpolate inside the surrounding segment.
+            let t = first.0
+                + span * i64::try_from(x).unwrap_or_default()
+                    / i64::try_from(GAUGE_WIDTH - 1).unwrap_or(1);
+            while segment + 2 < gauge.series.len() && gauge.series[segment + 1].0 < t {
+                segment += 1;
+            }
+            let (t0, v0) = gauge.series[segment];
+            let (t1, v1) = gauge.series[segment + 1];
+            let value = if t1 > t0 {
+                let progress = (t.clamp(t0, t1) - t0) as f64 / (t1 - t0) as f64;
+                f64::from(v0) + (f64::from(v1) - f64::from(v0)) * progress
+            } else {
+                f64::from(v1)
+            };
+            columns.push(scale_basis_points(value / 100.0));
+        }
+        return columns;
+    }
+    let flat = gauge
+        .fill_basis_points
+        .or_else(|| gauge.series.last().map(|(_, value)| *value));
+    flat.map_or_else(Vec::new, |value| vec![value; GAUGE_WIDTH])
+}
+
+fn gauge_fill_height(basis_points: u16) -> usize {
+    usize::from(basis_points.min(10_000)) * GAUGE_HEIGHT / 10_000
 }
 
 fn gauge_image(gauge: &TrayGauge, color: [u8; 4]) -> Option<Image<'static>> {
-    gauge
-        .fill_basis_points
-        .map(|basis_points| gauge_icon(basis_points, color))
+    let columns = gauge_columns(gauge);
+    if columns.is_empty() {
+        return None;
+    }
+    Some(gauge_icon(&columns, color))
 }
 
-/// A horizontal bar gauge rendered as a menu-item icon: a translucent grey
-/// track with the filled portion in the machine's state colour, so the metric
-/// magnitudes can be compared at a glance across rows and machines.
-fn gauge_icon(basis_points: u16, color: [u8; 4]) -> Image<'static> {
-    const TRACK: [u8; 4] = [127, 127, 127, 56];
-    let fill_width = gauge_fill_width(basis_points);
+/// A fixed-scale (0–100) time-series area chart rendered as a menu-item icon:
+/// a translucent grey plot area, the history filled in a translucent state
+/// colour, and a solid cap line tracing the values. The right edge is "now",
+/// so the chart also reads as a bar gauge of the current value.
+fn gauge_icon(columns: &[u16], color: [u8; 4]) -> Image<'static> {
+    const PLOT: [u8; 4] = [127, 127, 127, 40];
+    let fill = [color[0], color[1], color[2], 140];
     let mut rgba = vec![0_u8; GAUGE_WIDTH * GAUGE_HEIGHT * 4];
-    for y in 0..GAUGE_HEIGHT {
-        for x in 0..GAUGE_WIDTH {
-            let pixel = if x < fill_width { color } else { TRACK };
+    for (x, basis_points) in columns.iter().enumerate().take(GAUGE_WIDTH) {
+        let height = gauge_fill_height(*basis_points);
+        // A zero reading still draws its cap so "0%" and "no data" differ.
+        let cap_top = GAUGE_HEIGHT - height.max(1);
+        let fill_top = GAUGE_HEIGHT - height;
+        for y in 0..GAUGE_HEIGHT {
+            let pixel = if y >= cap_top && y < cap_top + 2 {
+                color
+            } else if y >= fill_top {
+                fill
+            } else {
+                PLOT
+            };
             let offset = (y * GAUGE_WIDTH + x) * 4;
             rgba[offset..offset + 4].copy_from_slice(&pixel);
         }
@@ -738,19 +851,24 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        GAUGE_WIDTH, TrayGauge, TrayMachineMenu, TrayNodeSnapshot, TraySection, TrayTemperature,
-        fleet_tray_status, gauge_fill_width, link_label, machine_tray_id, retired_tray_ids,
-        status_section, tray_machine_menu, tray_node_status, tray_state_color,
+        GAUGE_HEIGHT, GAUGE_WIDTH, TrayGauge, TrayNodeSnapshot, TrayTemperature, TrayTrendPoint,
+        fleet_tray_status, gauge_columns, gauge_fill_height, link_label, machine_tray_id,
+        retired_tray_ids, status_section, tray_machine_menu, tray_node_status, tray_state_color,
     };
 
     fn ids(values: &[&str]) -> HashSet<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
 
-    fn gauge(text: &str, fill_basis_points: Option<u16>) -> TrayGauge {
-        TrayGauge {
-            text: text.to_owned(),
-            fill_basis_points,
+    fn trend_point(timestamp_ms: i64, cpu_percent: Option<f64>) -> TrayTrendPoint {
+        TrayTrendPoint {
+            timestamp_ms,
+            cpu_percent,
+            memory_used_bytes: None,
+            memory_total_bytes: None,
+            disk_used_bytes: None,
+            disk_total_bytes: None,
+            temperature_celsius: None,
         }
     }
 
@@ -768,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn each_machine_gets_a_distinct_tray_tab_and_a_gauge_submenu() {
+    fn the_top_level_row_carries_the_minimal_glance_metrics() {
         let node = TrayNodeSnapshot {
             id: String::from("server-id"),
             name: String::from("Server"),
@@ -784,30 +902,34 @@ mod tests {
                 celsius: 72.4,
             }),
             rtt_ms: None,
+            trend: vec![
+                trend_point(1_000, Some(40.0)),
+                trend_point(2_000, Some(60.0)),
+            ],
         };
 
         assert_eq!(machine_tray_id(&node), "machine-server-id");
         assert_eq!(tray_node_status(&node), "Server ▲");
+        let machine = tray_machine_menu(&node);
+        assert_eq!(machine.title, "Server · Warning · CPU 60% · Memory 30%");
         assert_eq!(
-            tray_machine_menu(&node),
-            TrayMachineMenu {
-                title: String::from("Server · Warning · CPU 60% · Memory 30%"),
-                section: TraySection {
-                    header: String::from("▲ Server — Warning"),
-                    // The gauge colour tracks the machine's state (owned by the
-                    // user's alert rules), not a tray-local threshold set.
-                    color: [230, 189, 89, 255],
-                    gauges: vec![
-                        gauge("CPU 60%", Some(6_000)),
-                        gauge("Memory 30%", Some(3_000)),
-                        gauge("Disk 45%", Some(4_500)),
-                        gauge("Temperature 72 °C CPU die", Some(7_240)),
-                    ],
-                    link: String::from("Relayed"),
-                },
-            }
+            machine.section.header,
+            "▲ Server — Warning · CPU 60% · Mem 30%"
         );
+        // The gauge colour tracks the machine's state (owned by the user's
+        // alert rules), not a tray-local threshold set.
+        assert_eq!(machine.section.color, [230, 189, 89, 255]);
+        assert_eq!(machine.section.link, "Relayed");
+        let cpu = &machine.section.gauges[0];
+        assert_eq!(cpu.text, "CPU 60%");
+        assert_eq!(cpu.fill_basis_points, Some(6_000));
+        // The chart is fed from the snapshot's own trend window.
+        assert_eq!(cpu.series, vec![(1_000, 4_000), (2_000, 6_000)]);
+        assert_eq!(machine.section.gauges[3].text, "Temperature 72 °C CPU die");
+    }
 
+    #[test]
+    fn missing_readings_render_no_chart_and_no_plausible_zero() {
         let steamdeck = TrayNodeSnapshot {
             id: String::from("steamdeck-id"),
             name: String::from("steamdeck"),
@@ -820,45 +942,59 @@ mod tests {
             disk_total_bytes: None,
             temperature: None,
             rtt_ms: Some(8),
+            trend: Vec::new(),
         };
         assert_eq!(link_label(&steamdeck), "LAN direct · RTT 8 ms");
-        // Missing readings render an em dash and no bar, never a plausible
-        // zero-length gauge.
+        let section = tray_machine_menu(&steamdeck).section;
+        assert_eq!(section.header, "● steamdeck — Healthy · CPU — · Mem —");
+        for gauge in &section.gauges {
+            assert_eq!(gauge.fill_basis_points, None);
+            assert!(gauge.series.is_empty());
+            assert!(gauge_columns(gauge).is_empty());
+        }
+
+        let server = TrayNodeSnapshot {
+            id: String::from("server-id"),
+            name: String::from("Server"),
+            state: String::from("warning"),
+            path: String::from("relayed"),
+            cpu_percent: Some(60.0),
+            memory_used_bytes: None,
+            memory_total_bytes: None,
+            disk_used_bytes: None,
+            disk_total_bytes: None,
+            temperature: None,
+            rtt_ms: None,
+            trend: Vec::new(),
+        };
         assert_eq!(
-            tray_machine_menu(&steamdeck).section.gauges,
-            vec![
-                gauge("CPU —", None),
-                gauge("Memory —", None),
-                gauge("Disk —", None),
-                gauge("Temperature —", None),
-            ]
-        );
-        assert_eq!(
-            fleet_tray_status(&[node, steamdeck]),
+            fleet_tray_status(&[server, steamdeck]),
             "Server ▲ · steamdeck ●"
         );
     }
 
     #[test]
-    fn a_machine_with_no_connectivity_readings_keeps_a_stable_placeholder_row() {
-        // The local machine has no network path to itself; the link row must
-        // stay present (section shape stability keeps an open NSMenu alive)
-        // but collapse to a single em dash.
-        let local = TrayNodeSnapshot {
-            id: String::from("local-id"),
-            name: String::from("Mac"),
-            state: String::from("healthy"),
-            path: String::from("unknown"),
-            cpu_percent: Some(51.0),
-            memory_used_bytes: Some(88),
-            memory_total_bytes: Some(100),
-            disk_used_bytes: Some(94),
-            disk_total_bytes: Some(100),
-            temperature: None,
-            rtt_ms: None,
+    fn the_chart_interpolates_by_timestamp_and_falls_back_to_a_flat_bar() {
+        let charted = TrayGauge {
+            text: String::from("CPU 100%"),
+            fill_basis_points: Some(10_000),
+            series: vec![(0, 0), (1_000, 10_000)],
         };
-        assert_eq!(link_label(&local), "—");
-        assert_eq!(tray_machine_menu(&local).section.header, "● Mac — Healthy");
+        let columns = gauge_columns(&charted);
+        assert_eq!(columns.len(), GAUGE_WIDTH);
+        assert_eq!(columns.first(), Some(&0));
+        assert_eq!(columns.last(), Some(&10_000));
+        // Monotonic input stays monotonic across the interpolated columns.
+        assert!(columns.windows(2).all(|pair| pair[0] <= pair[1]));
+
+        // A single sample cannot span a time axis: the chart degrades to a
+        // flat bar at the current reading instead of disappearing.
+        let flat = TrayGauge {
+            text: String::from("CPU 40%"),
+            fill_basis_points: Some(4_000),
+            series: vec![(0, 4_000)],
+        };
+        assert_eq!(gauge_columns(&flat), vec![4_000; GAUGE_WIDTH]);
     }
 
     #[test]
@@ -873,18 +1009,18 @@ mod tests {
             section
                 .gauges
                 .iter()
-                .all(|gauge| gauge.fill_basis_points.is_none())
+                .all(|gauge| gauge.fill_basis_points.is_none() && gauge.series.is_empty())
         );
         assert_eq!(section.link, "—");
     }
 
     #[test]
-    fn gauge_fill_spans_the_bar_proportionally_and_saturates() {
-        assert_eq!(gauge_fill_width(0), 0);
-        assert_eq!(gauge_fill_width(5_000), GAUGE_WIDTH / 2);
-        assert_eq!(gauge_fill_width(10_000), GAUGE_WIDTH);
+    fn gauge_fill_spans_the_chart_proportionally_and_saturates() {
+        assert_eq!(gauge_fill_height(0), 0);
+        assert_eq!(gauge_fill_height(5_000), GAUGE_HEIGHT / 2);
+        assert_eq!(gauge_fill_height(10_000), GAUGE_HEIGHT);
         // An over-range reading must not overrun the icon buffer.
-        assert_eq!(gauge_fill_width(u16::MAX), GAUGE_WIDTH);
+        assert_eq!(gauge_fill_height(u16::MAX), GAUGE_HEIGHT);
     }
 
     #[test]
