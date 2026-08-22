@@ -1,7 +1,13 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+default:
+    just --list
+
 check:
     mise run check
+
+check-windows-cross:
+    mise run check:windows-cross
 
 bootstrap:
     mise run bootstrap
@@ -42,10 +48,19 @@ benchmark-agent:
     mise run benchmark:agent
 
 test-installer:
-    packaging/linux/install.test.sh
+    mise run test:installer
+
+test-pairing:
+    mise run test:pairing
 
 agent *args:
     mise exec -- cargo run -p rackio-agent -- {{args}}
 
 desktop:
     mise run desktop:dev
+
+frontend:
+    mise run frontend:dev
+
+measure-desktop-build:
+    mise run measure:desktop-build

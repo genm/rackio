@@ -87,6 +87,13 @@ pub(super) struct AgentConfig {
     /// local health threshold was crossed".
     #[serde(default)]
     pub(super) alerts: Vec<rackio_core::AlertRule>,
+    /// The fixed UDP port this machine listens on. Unset means an ephemeral
+    /// port, which moves on every restart: viewers that hold only the previous
+    /// direct addresses then cannot reach this machine again. Operators who
+    /// monitor this machine over a direct path set it, and forward it if the
+    /// machine is behind NAT.
+    #[serde(default)]
+    pub(super) bind_port: Option<u16>,
 }
 
 pub(super) fn create_directories(paths: &AppPaths) -> anyhow::Result<()> {
@@ -103,6 +110,17 @@ fn config_path(paths: &AppPaths) -> PathBuf {
 pub(super) fn validate_relay_url(relay_url: Option<&str>) -> Result<(), &'static str> {
     if relay_url.is_some_and(|value| value.parse::<iroh::RelayUrl>().is_err()) {
         Err("relay URL is invalid")
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn validate_bind_port(bind_port: Option<u16>) -> Result<(), &'static str> {
+    // Port 0 is iroh's ephemeral request. Storing it would record a promise of
+    // a stable address that the next restart breaks, so reject it here rather
+    // than letting the daemon fail to start on the following boot.
+    if bind_port == Some(0) {
+        Err("listen port 0 is ephemeral; choose a fixed port or clear the setting")
     } else {
         Ok(())
     }
@@ -160,7 +178,9 @@ pub(super) fn init_logging(paths: &AppPaths) -> anyhow::Result<()> {
 mod tests {
     use rackio_core::{AlertRule, Comparison, NodeState};
 
-    use super::{AgentConfig, AppPaths, load_config, save_config, validate_relay_url};
+    use super::{
+        AgentConfig, AppPaths, load_config, save_config, validate_bind_port, validate_relay_url,
+    };
 
     fn test_paths(root: &std::path::Path) -> AppPaths {
         AppPaths {
@@ -188,6 +208,14 @@ mod tests {
 
         assert!(config.relay_url.is_none());
         assert!(config.alerts.is_empty());
+        assert!(config.bind_port.is_none());
+    }
+
+    #[test]
+    fn an_ephemeral_listen_port_is_not_accepted_as_a_stable_one() {
+        assert!(validate_bind_port(Some(0)).is_err());
+        assert!(validate_bind_port(Some(7777)).is_ok());
+        assert!(validate_bind_port(None).is_ok());
     }
 
     #[test]
@@ -204,6 +232,7 @@ mod tests {
                 consecutive_samples: 3,
                 severity: NodeState::Warning,
             }],
+            bind_port: Some(7777),
         };
 
         save_config(&paths, &expected).unwrap_or_else(|error| panic!("{error}"));
@@ -211,6 +240,7 @@ mod tests {
 
         assert_eq!(actual.relay_url, expected.relay_url);
         assert_eq!(actual.alerts, expected.alerts);
+        assert_eq!(actual.bind_port, expected.bind_port);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;

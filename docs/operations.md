@@ -173,6 +173,37 @@ sudo systemctl restart rackio.service
 not make the relay an identity authority and does not make a relayed path
 direct.
 
+## Keep a monitored machine reachable across restarts
+
+By default an agent listens on an ephemeral UDP port, which the OS reassigns on
+every restart. Viewers hold the direct addresses they were paired on, so a
+restarted machine that moves to another port is unreachable to them until it is
+paired again. On any machine other operators monitor over a direct path,
+configure a fixed listen port:
+
+```sh
+sudo rackio listen-port set 7777
+sudo systemctl restart rackio.service
+sudo rackio status   # `bind_port` and every direct address show the fixed port
+```
+
+The setting takes effect on the next start. If the port is already in use the
+daemon fails to start and says so; it never falls back to an ephemeral port,
+because that would silently strand the viewers this setting exists to protect.
+`sudo rackio listen-port set ephemeral` returns to an OS-assigned port.
+
+Behind NAT, forward the same UDP port to this machine so the address its
+viewers hold stays reachable from outside. When a relay is configured, viewers
+also reconnect through the relay and learn the machine's current direct address
+from that authenticated session, so a direct path is restored without
+re-pairing.
+
+A viewer whose stored addresses stop answering reports the machine as `offline`
+with a message naming this command. It keeps the last known values and never
+reports the machine as healthy. Recovering means putting the machine back on an
+address the viewer knows — by restoring the port or forwarding rule — or pairing
+again; do not hand-edit `monitored-machines.json`.
+
 ## SSH-assisted Linux bootstrap
 
 The desktop’s **Pair machine → SSH** path is for a trusted operator who already
@@ -218,7 +249,7 @@ actual P2P path separately.
 | `healthy` | Fresh metrics and no active health warning | None |
 | `warning` / `critical` | A configured local health threshold was crossed | Open the machine detail and inspect the affected resource |
 | `stale` | No metric or heartbeat for 10 seconds | Check path, RTT and local agent logs; preserve last known values |
-| `offline` | No metric or heartbeat for 30 seconds | Check agent process, network reachability and relay availability if shown as relayed |
+| `offline` | No metric or heartbeat for 30 seconds | Check agent process, network reachability and relay availability if shown as relayed; if the machine restarted on a new port, give it a fixed listen port |
 | `auth_error` | The remote agent rejected this viewer | Confirm endpoint pairing and allowlist; do not retry with a reused bundle |
 | `incompatible` | Protocol major versions differ | Upgrade or roll back a machine to a compatible release |
 | `degraded` | A collector, storage, notification or local dependency failed | Read the displayed error and structured agent logs; values are not silently zeroed |

@@ -88,9 +88,10 @@ needs full symbols.
 isolated temporary root and verifies checksum rejection. It does not modify the
 host systemd configuration.
 
-`test:pairing` executes the isolated two-daemon smoke below, including viewer
-restart and reconnect. It writes daemon logs under `test-results/two-daemon/`
-only when the smoke fails.
+`test:pairing` executes the isolated two-daemon smokes below, including viewer
+restart and reconnect, and the monitored-machine address-change recovery and
+failure paths. It writes daemon logs under `test-results/two-daemon/` and
+`test-results/two-daemon-address-change/` only when a smoke fails.
 
 ## Scheduled deep verification
 
