@@ -10,7 +10,7 @@ use std::{
 use tauri::{
     AppHandle, Manager, Runtime,
     image::Image,
-    menu::{Menu, MenuBuilder, MenuItem},
+    menu::{IconMenuItem, Menu, MenuBuilder, MenuItem, Submenu},
     tray::TrayIconBuilder,
 };
 
@@ -28,14 +28,30 @@ impl<R: Runtime> Default for TrayRegistry<R> {
     }
 }
 
+struct TraySectionItems<R: Runtime> {
+    submenu: Submenu<R>,
+    gauges: Vec<IconMenuItem<R>>,
+    link: MenuItem<R>,
+}
+
+impl<R: Runtime> Clone for TraySectionItems<R> {
+    fn clone(&self) -> Self {
+        Self {
+            submenu: self.submenu.clone(),
+            gauges: self.gauges.clone(),
+            link: self.link.clone(),
+        }
+    }
+}
+
 struct TrayMenuState<R: Runtime> {
-    detail_items: Vec<MenuItem<R>>,
+    sections: Vec<TraySectionItems<R>>,
 }
 
 impl<R: Runtime> Clone for TrayMenuState<R> {
     fn clone(&self) -> Self {
         Self {
-            detail_items: self.detail_items.clone(),
+            sections: self.sections.clone(),
         }
     }
 }
@@ -73,21 +89,52 @@ struct TrayTemperature {
     celsius: f64,
 }
 
+/// One metric row inside a machine's hover submenu: a text label and, when the
+/// reading exists, a horizontal bar gauge rendered as the row's icon. The fill
+/// is stored in basis points (0..=10 000) so the model stays `Eq`-comparable in
+/// tests; the pixel rendering happens only at menu-build time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrayGauge {
+    text: String,
+    fill_basis_points: Option<u16>,
+}
+
+/// One machine's entry in the click menu: a hover submenu (`▸`) whose title
+/// carries the at-a-glance identity (`● Mac — Healthy`) and whose rows carry
+/// the bar-gauge metrics. The top-level menu therefore stays one row per
+/// machine no matter how large the fleet is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TraySection {
+    header: String,
+    /// Gauge fills reuse the machine's state colour rather than inventing
+    /// per-metric warning thresholds here: severity is owned by the
+    /// user-configurable alert rules (rackio-core), which already drive
+    /// `state`. A second, hard-coded threshold set in the tray would drift
+    /// from — and contradict — what the user configured.
+    color: [u8; 4],
+    gauges: Vec<TrayGauge>,
+    link: String,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct TrayMachineMenu {
     title: String,
-    details: Vec<String>,
+    section: TraySection,
 }
 
 fn machine_tray_id(node: &TrayNodeSnapshot) -> String {
     format!("machine-{}", node.id)
 }
 
+/// Neutral fill for sections that have no live machine behind them (daemon
+/// fallback, unknown state). Matches the `stale` grey.
+const NEUTRAL_COLOR: [u8; 4] = [164, 173, 168, 255];
+
 fn tray_state_color(state: &str) -> Result<[u8; 4], String> {
     match state {
         "healthy" => Ok([84, 217, 139, 255]),
         "warning" | "degraded" => Ok([230, 189, 89, 255]),
-        "stale" => Ok([164, 173, 168, 255]),
+        "stale" => Ok(NEUTRAL_COLOR),
         "critical" | "offline" | "auth_error" | "incompatible" | "daemon_unavailable" => {
             Ok([255, 111, 103, 255])
         }
@@ -110,57 +157,102 @@ fn tray_event_handler<R: Runtime>(app: &AppHandle<R>, event: &tauri::menu::MenuE
 
 fn tray_menu<R: Runtime, M: Manager<R>>(
     app: &M,
-    details: &[String],
+    sections: &[TraySection],
 ) -> Result<(Menu<R>, TrayMenuState<R>), tauri::Error> {
-    let detail_items = details
-        .iter()
-        .enumerate()
-        .map(|(index, text)| {
-            MenuItem::with_id(
+    let mut builder = MenuBuilder::new(app);
+    let mut section_items = Vec::with_capacity(sections.len());
+    for (section_index, section) in sections.iter().enumerate() {
+        let submenu = Submenu::with_id(
+            app,
+            format!("machine-section-{section_index}"),
+            &section.header,
+            true,
+        )?;
+        let mut gauge_items = Vec::with_capacity(section.gauges.len());
+        for (gauge_index, gauge) in section.gauges.iter().enumerate() {
+            let item = IconMenuItem::with_id(
                 app,
-                format!("machine-detail-{index}"),
-                text,
+                format!("machine-gauge-{section_index}-{gauge_index}"),
+                &gauge.text,
                 false,
+                gauge_image(gauge, section.color),
                 None::<&str>,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+            )?;
+            submenu.append(&item)?;
+            gauge_items.push(item);
+        }
+        let link = MenuItem::with_id(
+            app,
+            format!("machine-link-{section_index}"),
+            &section.link,
+            false,
+            None::<&str>,
+        )?;
+        submenu.append(&link)?;
+        builder = builder.item(&submenu);
+        section_items.push(TraySectionItems {
+            submenu,
+            gauges: gauge_items,
+            link,
+        });
+    }
     let show = MenuItem::with_id(app, "show", "Open dashboard", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let mut builder = MenuBuilder::new(app);
-    for item in &detail_items {
-        builder = builder.item(item);
-    }
     let menu = builder.separator().item(&show).item(&quit).build()?;
-    Ok((menu, TrayMenuState { detail_items }))
+    Ok((
+        menu,
+        TrayMenuState {
+            sections: section_items,
+        },
+    ))
 }
 
-fn status_details(message: &str) -> Vec<String> {
-    vec![
-        message.to_owned(),
-        String::from("State · —"),
-        String::from("CPU · —"),
-        String::from("Memory · —"),
-        String::from("Disk · —"),
-        String::from("Temperature · —"),
-        String::from("Path · — · RTT · —"),
-    ]
+fn status_section(message: &str) -> TraySection {
+    TraySection {
+        header: message.to_owned(),
+        color: NEUTRAL_COLOR,
+        gauges: vec![
+            TrayGauge {
+                text: String::from("CPU —"),
+                fill_basis_points: None,
+            },
+            TrayGauge {
+                text: String::from("Memory —"),
+                fill_basis_points: None,
+            },
+            TrayGauge {
+                text: String::from("Disk —"),
+                fill_basis_points: None,
+            },
+            TrayGauge {
+                text: String::from("Temperature —"),
+                fill_basis_points: None,
+            },
+        ],
+        link: String::from("—"),
+    }
 }
 
 /// Refresh the existing menu items in place. Returns `false` when the new
-/// details do not fit the menu that was built, so the caller rebuilds instead
-/// of silently dropping them.
-///
-/// Zipping the two slices would leave surplus items showing their pre-outage
-/// text, so an agent outage or an unpaired machine would keep advertising the
-/// last healthy CPU, memory and path values.
-fn update_tray_menu<R: Runtime>(menu: &TrayMenuState<R>, details: &[String]) -> bool {
-    if details.len() > menu.detail_items.len() {
+/// sections do not match the shape of the menu that was built, so the caller
+/// rebuilds instead of writing one machine's metrics onto another's rows.
+fn update_tray_menu<R: Runtime>(menu: &TrayMenuState<R>, sections: &[TraySection]) -> bool {
+    if menu.sections.len() != sections.len()
+        || menu
+            .sections
+            .iter()
+            .zip(sections)
+            .any(|(items, section)| items.gauges.len() != section.gauges.len())
+    {
         return false;
     }
-    for (index, item) in menu.detail_items.iter().enumerate() {
-        let text = details.get(index).map_or("—", String::as_str);
-        let _ = item.set_text(text);
+    for (items, section) in menu.sections.iter().zip(sections) {
+        let _ = items.submenu.set_text(&section.header);
+        for (item, gauge) in items.gauges.iter().zip(&section.gauges) {
+            let _ = item.set_text(&gauge.text);
+            let _ = item.set_icon(gauge_image(gauge, section.color));
+        }
+        let _ = items.link.set_text(&section.link);
     }
     true
 }
@@ -171,7 +263,7 @@ fn upsert_tray<R: Runtime, F>(
     state: &str,
     title: &str,
     tooltip: &str,
-    details: &[String],
+    sections: &[TraySection],
     menu_builder: F,
 ) -> Result<(), String>
 where
@@ -196,8 +288,8 @@ where
             .and_then(|menus| menus.get(id).cloned());
         // Updating menu items in place keeps an open macOS NSMenu alive.
         // Replacing the menu causes AppKit to dismiss it on the next poll, so
-        // only rebuild when the detail count no longer fits.
-        let updated_in_place = existing_menu.is_some_and(|menu| update_tray_menu(&menu, details));
+        // only rebuild when the section shape no longer matches.
+        let updated_in_place = existing_menu.is_some_and(|menu| update_tray_menu(&menu, sections));
         if !updated_in_place {
             let (menu, menu_state) = menu_builder()?;
             tray.set_menu(Some(menu))
@@ -236,16 +328,16 @@ fn update_status_tray(app: &AppHandle, state: &str, message: &str) {
         .map(|ids| ids.iter().cloned().collect::<Vec<_>>())
         .unwrap_or_default();
     if ids.is_empty() {
-        let details = status_details(message);
+        let sections = vec![status_section(message)];
         if upsert_tray(
             app,
             "rackio-status",
             state,
             message,
             message,
-            &details,
+            &sections,
             || {
-                tray_menu(app, &details)
+                tray_menu(app, &sections)
                     .map_err(|error| format!("Could not build tray menu: {error}"))
             },
         )
@@ -261,9 +353,9 @@ fn update_status_tray(app: &AppHandle, state: &str, message: &str) {
     // AppKit is processing a daemon transition can block the event loop, so a
     // degraded state is rendered in-place and remains observable.
     for id in ids {
-        let details = status_details(message);
-        let _ = upsert_tray(app, &id, state, message, message, &details, || {
-            tray_menu(app, &details).map_err(|error| format!("Could not build tray menu: {error}"))
+        let sections = vec![status_section(message)];
+        let _ = upsert_tray(app, &id, state, message, message, &sections, || {
+            tray_menu(app, &sections).map_err(|error| format!("Could not build tray menu: {error}"))
         });
     }
 }
@@ -278,7 +370,7 @@ fn update_machine_trays(app: &AppHandle, snapshot: &TrayFleetSnapshot) {
     let status_slot =
         registered_ids.contains("rackio-status") && app.tray_by_id("rackio-status").is_some();
     let fleet_title = fleet_tray_status(&snapshot.nodes);
-    let fleet_details = fleet_tray_details(&snapshot.nodes);
+    let fleet_sections = fleet_tray_sections(&snapshot.nodes);
     let mut active_ids = HashSet::new();
     for (index, node) in snapshot.nodes.iter().enumerate() {
         let id = if index == 0 && status_slot {
@@ -293,10 +385,10 @@ fn update_machine_trays(app: &AppHandle, snapshot: &TrayFleetSnapshot) {
         } else {
             tray_node_status(node)
         };
-        let details = if is_primary_machine {
-            fleet_details.clone()
+        let sections = if is_primary_machine {
+            fleet_sections.clone()
         } else {
-            machine.details.clone()
+            vec![machine.section.clone()]
         };
         let _ = upsert_tray(
             app,
@@ -308,9 +400,9 @@ fn update_machine_trays(app: &AppHandle, snapshot: &TrayFleetSnapshot) {
             } else {
                 &machine.title
             },
-            &details,
+            &sections,
             || {
-                tray_menu(app, &details)
+                tray_menu(app, &sections)
                     .map_err(|error| format!("Could not build tray menu: {error}"))
             },
         );
@@ -353,13 +445,10 @@ fn fleet_tray_status(nodes: &[TrayNodeSnapshot]) -> String {
         .join(" · ")
 }
 
-fn fleet_tray_details(nodes: &[TrayNodeSnapshot]) -> Vec<String> {
+fn fleet_tray_sections(nodes: &[TrayNodeSnapshot]) -> Vec<TraySection> {
     nodes
         .iter()
-        .flat_map(|node| {
-            let machine = tray_machine_menu(node);
-            std::iter::once(machine.title).chain(machine.details)
-        })
+        .map(|node| tray_machine_menu(node).section)
         .collect()
 }
 
@@ -378,54 +467,93 @@ fn tray_machine_menu(node: &TrayNodeSnapshot) -> TrayMachineMenu {
             percentage_label(node.cpu_percent),
             memory_percentage_label(node)
         ),
-        details: vec![
-            format!("State · {}", tray_state_label(&node.state)),
-            format!("CPU · {}", percentage_label(node.cpu_percent)),
-            format!("Memory · {}", memory_percentage_label(node)),
-            format!("Disk · {}", disk_percentage_label(node)),
-            format!("Temperature · {}", temperature_label(node)),
-            format!("Path · {}", tray_path_label(&node.path)),
-            format!("RTT · {}", rtt_label(node.rtt_ms)),
-        ],
-    }
-}
-
-fn disk_percentage_label(node: &TrayNodeSnapshot) -> String {
-    match (node.disk_used_bytes, node.disk_total_bytes) {
-        (Some(used), Some(total)) if total > 0 => {
-            let basis_points = used
-                .saturating_mul(10_000)
-                .checked_div(total)
-                .unwrap_or_default()
-                .min(10_000);
-            let percentage = f64::from(u32::try_from(basis_points).unwrap_or(10_000)) / 100.0;
-            format!("{percentage:.0}%")
-        }
-        _ => String::from("—"),
+        section: TraySection {
+            header: format!(
+                "{} {} — {}",
+                tray_state_symbol(&node.state),
+                node.name,
+                tray_state_label(&node.state)
+            ),
+            // An unknown state fails closed in `upsert_tray` before this
+            // section ever renders, so the fallback colour is unreachable in
+            // practice and only keeps this constructor infallible.
+            color: tray_state_color(&node.state).unwrap_or(NEUTRAL_COLOR),
+            gauges: vec![
+                TrayGauge {
+                    text: format!("CPU {}", percentage_label(node.cpu_percent)),
+                    fill_basis_points: percent_basis_points(node.cpu_percent),
+                },
+                TrayGauge {
+                    text: format!("Memory {}", memory_percentage_label(node)),
+                    fill_basis_points: ratio_basis_points(
+                        node.memory_used_bytes,
+                        node.memory_total_bytes,
+                    ),
+                },
+                TrayGauge {
+                    text: format!("Disk {}", disk_percentage_label(node)),
+                    fill_basis_points: ratio_basis_points(
+                        node.disk_used_bytes,
+                        node.disk_total_bytes,
+                    ),
+                },
+                temperature_gauge(node),
+            ],
+            link: link_label(node),
+        },
     }
 }
 
 /// The hottest sensor, named: an unattributed number would leave the operator
-/// unable to tell a battery reading from a CPU package one. A machine with no
-/// readable sensor shows an em dash rather than a plausible zero.
-fn temperature_label(node: &TrayNodeSnapshot) -> String {
+/// unable to tell a battery reading from a CPU package one. The gauge fill
+/// maps 0–100 °C onto the bar, matching the dashboard's temperature axis; a
+/// machine with no readable sensor shows an em dash and no bar rather than a
+/// plausible zero.
+fn temperature_gauge(node: &TrayNodeSnapshot) -> TrayGauge {
     node.temperature.as_ref().map_or_else(
-        || String::from("—"),
-        |temperature| format!("{:.0} °C · {}", temperature.celsius, temperature.label),
+        || TrayGauge {
+            text: String::from("Temperature —"),
+            fill_basis_points: None,
+        },
+        |temperature| TrayGauge {
+            text: format!(
+                "Temperature {:.0} °C {}",
+                temperature.celsius, temperature.label
+            ),
+            fill_basis_points: Some(scale_basis_points(temperature.celsius)),
+        },
     )
 }
 
-fn tray_path_label(path: &str) -> &str {
-    match path {
-        "lan_direct" => "LAN direct",
-        "wan_direct" => "WAN direct",
-        "relayed" => "Relayed",
-        _ => "Unknown path",
+/// Network path and RTT for the submenu's connectivity row, omitting the
+/// readings a machine simply does not have; a machine with nothing to report
+/// keeps an em-dash row so the section shape stays stable across polls (a
+/// shape change forces a menu rebuild, which dismisses an open `NSMenu`).
+fn link_label(node: &TrayNodeSnapshot) -> String {
+    let mut parts = Vec::new();
+    if let Some(path) = known_path_label(&node.path) {
+        parts.push(path.to_owned());
+    }
+    if let Some(rtt) = node.rtt_ms {
+        parts.push(format!("RTT {rtt} ms"));
+    }
+    if parts.is_empty() {
+        String::from("—")
+    } else {
+        parts.join(" · ")
     }
 }
 
-fn rtt_label(rtt_ms: Option<u64>) -> String {
-    rtt_ms.map_or_else(|| String::from("—"), |value| format!("{value} ms"))
+/// An unknown path (typically the local machine, which has no network path to
+/// itself) is omitted rather than labelled: health problems surface through
+/// `state`, not through the path field.
+fn known_path_label(path: &str) -> Option<&'static str> {
+    match path {
+        "lan_direct" => Some("LAN direct"),
+        "wan_direct" => Some("WAN direct"),
+        "relayed" => Some("Relayed"),
+        _ => None,
+    }
 }
 
 fn tray_state_symbol(state: &str) -> &str {
@@ -442,19 +570,52 @@ fn percentage_label(value: Option<f64>) -> String {
     value.map_or_else(|| String::from("—"), |value| format!("{value:.0}%"))
 }
 
+fn percent_basis_points(value: Option<f64>) -> Option<u16> {
+    value.map(scale_basis_points)
+}
+
+/// Maps a 0–100 scale reading (a percentage, or degrees Celsius for the
+/// temperature gauge) onto gauge basis points.
+// The clamp bounds the value to 0..=10 000 before the cast, so it can neither
+// truncate nor go negative; a NaN clamps to the lower bound and yields 0.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn scale_basis_points(value: f64) -> u16 {
+    (value.clamp(0.0, 100.0) * 100.0).round() as u16
+}
+
+fn disk_percentage_label(node: &TrayNodeSnapshot) -> String {
+    basis_points_label(ratio_basis_points(
+        node.disk_used_bytes,
+        node.disk_total_bytes,
+    ))
+}
+
 fn memory_percentage_label(node: &TrayNodeSnapshot) -> String {
-    match (node.memory_used_bytes, node.memory_total_bytes) {
+    basis_points_label(ratio_basis_points(
+        node.memory_used_bytes,
+        node.memory_total_bytes,
+    ))
+}
+
+fn ratio_basis_points(used: Option<u64>, total: Option<u64>) -> Option<u16> {
+    match (used, total) {
         (Some(used), Some(total)) if total > 0 => {
             let basis_points = used
                 .saturating_mul(10_000)
                 .checked_div(total)
                 .unwrap_or_default()
                 .min(10_000);
-            let percentage = f64::from(u32::try_from(basis_points).unwrap_or(10_000)) / 100.0;
-            format!("{percentage:.0}%")
+            Some(u16::try_from(basis_points).unwrap_or(10_000))
         }
-        _ => String::from("—"),
+        _ => None,
     }
+}
+
+fn basis_points_label(basis_points: Option<u16>) -> String {
+    basis_points.map_or_else(
+        || String::from("—"),
+        |basis_points| format!("{:.0}%", f64::from(basis_points) / 100.0),
+    )
 }
 
 fn tray_state_label(state: &str) -> &str {
@@ -538,17 +699,59 @@ fn state_icon(color: [u8; 4]) -> Image<'static> {
     Image::new_owned(rgba, SIZE_U32, SIZE_U32)
 }
 
+const GAUGE_WIDTH: usize = 56;
+const GAUGE_HEIGHT: usize = 10;
+
+fn gauge_fill_width(basis_points: u16) -> usize {
+    usize::from(basis_points.min(10_000)) * GAUGE_WIDTH / 10_000
+}
+
+fn gauge_image(gauge: &TrayGauge, color: [u8; 4]) -> Option<Image<'static>> {
+    gauge
+        .fill_basis_points
+        .map(|basis_points| gauge_icon(basis_points, color))
+}
+
+/// A horizontal bar gauge rendered as a menu-item icon: a translucent grey
+/// track with the filled portion in the machine's state colour, so the metric
+/// magnitudes can be compared at a glance across rows and machines.
+fn gauge_icon(basis_points: u16, color: [u8; 4]) -> Image<'static> {
+    const TRACK: [u8; 4] = [127, 127, 127, 56];
+    let fill_width = gauge_fill_width(basis_points);
+    let mut rgba = vec![0_u8; GAUGE_WIDTH * GAUGE_HEIGHT * 4];
+    for y in 0..GAUGE_HEIGHT {
+        for x in 0..GAUGE_WIDTH {
+            let pixel = if x < fill_width { color } else { TRACK };
+            let offset = (y * GAUGE_WIDTH + x) * 4;
+            rgba[offset..offset + 4].copy_from_slice(&pixel);
+        }
+    }
+    Image::new_owned(
+        rgba,
+        u32::try_from(GAUGE_WIDTH).unwrap_or_default(),
+        u32::try_from(GAUGE_HEIGHT).unwrap_or_default(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
 
     use super::{
-        TrayMachineMenu, TrayNodeSnapshot, TrayTemperature, fleet_tray_status, machine_tray_id,
-        retired_tray_ids, temperature_label, tray_machine_menu, tray_node_status, tray_state_color,
+        GAUGE_WIDTH, TrayGauge, TrayMachineMenu, TrayNodeSnapshot, TraySection, TrayTemperature,
+        fleet_tray_status, gauge_fill_width, link_label, machine_tray_id, retired_tray_ids,
+        status_section, tray_machine_menu, tray_node_status, tray_state_color,
     };
 
     fn ids(values: &[&str]) -> HashSet<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    fn gauge(text: &str, fill_basis_points: Option<u16>) -> TrayGauge {
+        TrayGauge {
+            text: text.to_owned(),
+            fill_basis_points,
+        }
     }
 
     #[test]
@@ -565,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn each_machine_gets_a_distinct_tray_tab_and_detail_menu() {
+    fn each_machine_gets_a_distinct_tray_tab_and_a_gauge_submenu() {
         let node = TrayNodeSnapshot {
             id: String::from("server-id"),
             name: String::from("Server"),
@@ -589,15 +792,19 @@ mod tests {
             tray_machine_menu(&node),
             TrayMachineMenu {
                 title: String::from("Server · Warning · CPU 60% · Memory 30%"),
-                details: vec![
-                    String::from("State · Warning"),
-                    String::from("CPU · 60%"),
-                    String::from("Memory · 30%"),
-                    String::from("Disk · 45%"),
-                    String::from("Temperature · 72 °C · CPU die"),
-                    String::from("Path · Relayed"),
-                    String::from("RTT · —"),
-                ],
+                section: TraySection {
+                    header: String::from("▲ Server — Warning"),
+                    // The gauge colour tracks the machine's state (owned by the
+                    // user's alert rules), not a tray-local threshold set.
+                    color: [230, 189, 89, 255],
+                    gauges: vec![
+                        gauge("CPU 60%", Some(6_000)),
+                        gauge("Memory 30%", Some(3_000)),
+                        gauge("Disk 45%", Some(4_500)),
+                        gauge("Temperature 72 °C CPU die", Some(7_240)),
+                    ],
+                    link: String::from("Relayed"),
+                },
             }
         );
 
@@ -611,16 +818,73 @@ mod tests {
             memory_total_bytes: None,
             disk_used_bytes: None,
             disk_total_bytes: None,
-            // A machine with no readable sensor: the menu must show an em dash
-            // rather than a plausible zero.
             temperature: None,
             rtt_ms: Some(8),
         };
-        assert_eq!(temperature_label(&steamdeck), "—");
+        assert_eq!(link_label(&steamdeck), "LAN direct · RTT 8 ms");
+        // Missing readings render an em dash and no bar, never a plausible
+        // zero-length gauge.
+        assert_eq!(
+            tray_machine_menu(&steamdeck).section.gauges,
+            vec![
+                gauge("CPU —", None),
+                gauge("Memory —", None),
+                gauge("Disk —", None),
+                gauge("Temperature —", None),
+            ]
+        );
         assert_eq!(
             fleet_tray_status(&[node, steamdeck]),
             "Server ▲ · steamdeck ●"
         );
+    }
+
+    #[test]
+    fn a_machine_with_no_connectivity_readings_keeps_a_stable_placeholder_row() {
+        // The local machine has no network path to itself; the link row must
+        // stay present (section shape stability keeps an open NSMenu alive)
+        // but collapse to a single em dash.
+        let local = TrayNodeSnapshot {
+            id: String::from("local-id"),
+            name: String::from("Mac"),
+            state: String::from("healthy"),
+            path: String::from("unknown"),
+            cpu_percent: Some(51.0),
+            memory_used_bytes: Some(88),
+            memory_total_bytes: Some(100),
+            disk_used_bytes: Some(94),
+            disk_total_bytes: Some(100),
+            temperature: None,
+            rtt_ms: None,
+        };
+        assert_eq!(link_label(&local), "—");
+        assert_eq!(tray_machine_menu(&local).section.header, "● Mac — Healthy");
+    }
+
+    #[test]
+    fn a_degraded_daemon_renders_a_status_section_with_the_same_shape() {
+        // The status fallback keeps the four-gauge shape of a machine section
+        // so a daemon outage updates the open menu in place instead of
+        // rebuilding (and dismissing) it.
+        let section = status_section("Agent unavailable");
+        assert_eq!(section.header, "Agent unavailable");
+        assert_eq!(section.gauges.len(), 4);
+        assert!(
+            section
+                .gauges
+                .iter()
+                .all(|gauge| gauge.fill_basis_points.is_none())
+        );
+        assert_eq!(section.link, "—");
+    }
+
+    #[test]
+    fn gauge_fill_spans_the_bar_proportionally_and_saturates() {
+        assert_eq!(gauge_fill_width(0), 0);
+        assert_eq!(gauge_fill_width(5_000), GAUGE_WIDTH / 2);
+        assert_eq!(gauge_fill_width(10_000), GAUGE_WIDTH);
+        // An over-range reading must not overrun the icon buffer.
+        assert_eq!(gauge_fill_width(u16::MAX), GAUGE_WIDTH);
     }
 
     #[test]
