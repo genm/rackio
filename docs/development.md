@@ -93,6 +93,28 @@ restart and reconnect, and the monitored-machine address-change recovery and
 failure paths. It writes daemon logs under `test-results/two-daemon/` and
 `test-results/two-daemon-address-change/` only when a smoke fails.
 
+## Build directory
+
+`mise.toml` sets `CARGO_TARGET_DIR` to `$XDG_CACHE_HOME/rackio/target`
+(`~/.cache/rackio/target` by default), so build output does not live under the
+checkout. A full `mise run check` leaves roughly 5 GB behind, and without this
+every additional Git worktree pays that cost again for the same dependency
+graph. The nested `fuzz/` workspace shares the directory for the same reason.
+
+Two consequences are worth knowing:
+
+- Cargo takes an exclusive lock on the directory, so a build started from a
+  second worktree waits for the first to finish rather than running beside it.
+- `cargo clean` still works, but it now clears the directory every checkout
+  shares, not just the current one.
+
+Exporting `CARGO_TARGET_DIR` yourself overrides this, which is how
+`measure:desktop-build` isolates its own build. Scripts that need a built
+binary resolve the directory from the same variable instead of assuming
+`target/`, so an override stays consistent across the repository. Builds run
+outside `mise` fall back to `target/` inside the checkout; `mise` shell
+activation or `mise exec --` keeps them together.
+
 ## Scheduled deep verification
 
 Three checks cost far more than a pull request should wait for, so they run in

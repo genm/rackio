@@ -1,7 +1,9 @@
 #!/bin/sh
 set -eu
 
-binary_path="${1:-target/release/rackio}"
+# The build directory is shared across checkouts of this repository, so it is
+# not always `./target`. Cargo's own variable is the authority.
+binary_path="${1:-${CARGO_TARGET_DIR:-target}/release/rackio}"
 report_path="${RACKIO_RELEASE_REPORT:-test-results/release-binary-cloud-independence.json}"
 diagnostic_path="${report_path%.json}.stderr"
 mkdir -p "$(dirname "$report_path")"

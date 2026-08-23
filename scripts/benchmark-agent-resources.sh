@@ -2,7 +2,10 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-binary="${1:-$repo_root/target/release/rackio}"
+# The build directory is shared across checkouts of this repository, so it is
+# not always `$repo_root/target`. Cargo's own variable is the authority.
+target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
+binary="${1:-$target_dir/release/rackio}"
 result_path="${RACKIO_BENCHMARK_RESULT:-$repo_root/test-results/resource-benchmark.json}"
 benchmark_root="$(mktemp -d "${TMPDIR:-/tmp}/rackio-resource-benchmark.XXXXXX")"
 agent_pid=""
