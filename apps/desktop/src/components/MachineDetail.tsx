@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { bytes, celsius, percent, timeOfDay, uptime } from "../format";
 import { swapDetail, temperatureDetail } from "../machine-presentation";
-import { connectionPathRegistry, nodeStateRegistry } from "../state-model";
+import { connectionPathRegistry, isLiveNodeState, nodeStateRegistry } from "../state-model";
 import { type TrendMetric, trendLines, trendMetricRegistry, trendScale } from "../trend-series";
 import type { HistoryRange, MachineDetailState } from "../types";
 import { useModalDialog } from "../useModalDialog";
@@ -56,6 +56,7 @@ function MachineDetailDialog({
 }) {
   const dialogRef = useModalDialog<HTMLElement>(onClose);
   const { node } = detail;
+  const live = isLiveNodeState(node.state);
   const [metric, setMetric] = useState<TrendMetric>("cpu");
   const series =
     detail.state === "ready"
@@ -89,7 +90,9 @@ function MachineDetailDialog({
           <span className={`badge path-${node.path}`}>
             {connectionPathRegistry[node.path].label}
           </span>
-          <span className="badge">{node.rttMs == null ? "RTT —" : `${node.rttMs} ms`}</span>
+          <span className="badge">
+            {!live || node.rttMs == null ? "RTT —" : `${node.rttMs} ms`}
+          </span>
           <div className="chart-toggle detail-range" aria-label="History range">
             {historyRanges.map((range) => (
               <button
@@ -158,21 +161,25 @@ function MachineDetailDialog({
             <dl className="detail-metrics">
               <div>
                 <dt>Latest CPU</dt>
-                <dd>{node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`}</dd>
+                <dd>
+                  {!live || node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`}
+                </dd>
               </div>
               <div>
                 <dt>Memory</dt>
-                <dd>{percent(node.memoryUsedBytes, node.memoryTotalBytes)}</dd>
+                <dd>{live ? percent(node.memoryUsedBytes, node.memoryTotalBytes) : "—"}</dd>
               </div>
               <div>
                 <dt>Memory used</dt>
-                <dd>{bytes(node.memoryUsedBytes)}</dd>
+                <dd>{live ? bytes(node.memoryUsedBytes) : "—"}</dd>
               </div>
               <div>
                 <dt>Swap</dt>
                 {/* A machine with no swap device has no percentage to show;
                     the title says which kind of "—" this is. */}
-                <dd title={swapDetail(node)}>{percent(node.swapUsedBytes, node.swapTotalBytes)}</dd>
+                <dd title={swapDetail(node)}>
+                  {live ? percent(node.swapUsedBytes, node.swapTotalBytes) : "—"}
+                </dd>
               </div>
               <div>
                 <dt>Uptime</dt>
@@ -180,12 +187,12 @@ function MachineDetailDialog({
                     fixed instant (the boot time) rather than a sampled level,
                     so the carve-out in `trend-series.ts` applies and plotting
                     it would only draw a straight ramp. */}
-                <dd>{uptime(node.uptimeSeconds)}</dd>
+                <dd>{live ? uptime(node.uptimeSeconds) : "—"}</dd>
               </div>
               <div>
                 <dt>Temperature</dt>
                 <dd title={temperatureDetail(node.temperature)}>
-                  {celsius(node.temperature?.celsius)}
+                  {live ? celsius(node.temperature?.celsius) : "—"}
                 </dd>
               </div>
               <div>

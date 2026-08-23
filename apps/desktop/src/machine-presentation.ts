@@ -47,3 +47,14 @@ export function tileValues(node: FleetNode): Record<TrendMetric, string> {
     rtt: node.rttMs == null ? "—" : `${node.rttMs} ms`,
   };
 }
+
+/** Non-live machines must not expose their last-known values as current data. */
+export const unavailableTileValues: Record<TrendMetric, string> = {
+  cpu: "—",
+  memory: "—",
+  swap: "—",
+  disk: "—",
+  temp: "—",
+  network: "—",
+  rtt: "—",
+};
