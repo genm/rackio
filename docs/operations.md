@@ -192,17 +192,52 @@ daemon fails to start and says so; it never falls back to an ephemeral port,
 because that would silently strand the viewers this setting exists to protect.
 `sudo rackio listen-port set ephemeral` returns to an OS-assigned port.
 
-Behind NAT, forward the same UDP port to this machine so the address its
-viewers hold stays reachable from outside. When a relay is configured, viewers
-also reconnect through the relay and learn the machine's current direct address
-from that authenticated session, so a direct path is restored without
-re-pairing.
-
 A viewer whose stored addresses stop answering reports the machine as `offline`
 with a message naming this command. It keeps the last known values and never
 reports the machine as healthy. Recovering means putting the machine back on an
 address the viewer knows — by restoring the port or forwarding rule — or pairing
 again; do not hand-edit `monitored-machines.json`.
+
+When a relay is configured, viewers also reconnect through the relay and learn
+the machine's current direct address from that authenticated session, so a
+direct path is restored without re-pairing.
+
+## Pair a machine behind NAT
+
+A machine behind a router only sees its own LAN addresses, so a bundle it
+creates carries `192.168.x.y:PORT` — an address no viewer outside that LAN can
+use. Rackio does not discover the router's external address: nothing is probed
+and no discovery service is contacted. Tell the agent the address you already
+know instead.
+
+On the monitored machine, fix the listen port, forward that same UDP port on the
+router to this machine, then advertise the forwarded address:
+
+```sh
+sudo rackio listen-port set 41641
+sudo systemctl restart rackio.service
+sudo rackio advertise-address add 198.51.100.7:41641   # the router's forwarded address
+sudo rackio advertise-address list
+sudo rackio pairing create
+```
+
+The bundle then carries the machine's own interface addresses *and* the
+advertised ones, so the same bundle pairs from inside the LAN and from outside
+it. Advertised addresses take effect for bundles created afterwards; already
+paired viewers keep the addresses they were given. Up to eight addresses are
+kept — adding a ninth is refused, naming the address to remove first, rather
+than dropping one silently. `sudo rackio advertise-address remove
+198.51.100.7:41641` stops advertising one.
+
+Rackio stores the address exactly as given. It never resolves a hostname,
+probes the address, or asks anything on the internet to confirm it, so a typo or
+a forwarding rule that is not in place is not corrected: it behaves as an
+ordinary unreachable candidate, and the viewer reports the machine as `offline`
+with its recovery hint. Verify the forwarding rule on the router itself.
+
+This is not NAT traversal. It works when the operator can forward a stable UDP
+port; a machine behind carrier-grade NAT or a router you do not control still
+needs a configured self-hosted relay.
 
 ## SSH-assisted Linux bootstrap
 
