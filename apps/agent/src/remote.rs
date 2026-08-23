@@ -618,10 +618,20 @@ async fn monitor_session(
         snapshot.node = node;
         snapshot.state = health.state;
         snapshot.details = health.details;
-        snapshot.path = path;
-        snapshot.rtt_ms = Some(rtt_ms);
+        apply_connection_path(snapshot, &record.endpoint_id, path, rtt_ms);
         snapshot.last_seen_ms = Some(Utc::now().timestamp_millis());
     }
+    // A reconnect that lands on the same path is not a path change, so the
+    // event above is silent for it — yet an operator reading the log still
+    // needs to see when monitoring resumed and over what. Sessions start on
+    // pairing and on recovery, not on a cadence, so this stays an event rather
+    // than becoming noise.
+    tracing::info!(
+        endpoint_id = %record.endpoint_id,
+        path = ?path,
+        rtt_ms,
+        "remote monitoring session established"
+    );
 
     let mut stream = tokio::time::timeout(
         REQUEST_TIMEOUT,
@@ -757,20 +767,37 @@ async fn refresh_remote_state(
     let snapshot = entries
         .entry(record.endpoint_id.clone())
         .or_insert_with(|| RemoteMachineSnapshot::offline(record));
+    snapshot.state = health.state;
+    snapshot.details = health.details;
+    apply_connection_path(snapshot, &record.endpoint_id, path, rtt_ms);
+    Ok(())
+}
+
+/// Record the path a session is running over, announcing it whenever it differs
+/// from the one this viewer last reported.
+///
+/// The single owner of that rule. A mid-session migration is not the only way a
+/// path changes: a machine that goes offline on `lan_direct` and comes back
+/// through a relay changes path across the reconnect, and assigning it silently
+/// there — as the session-start path once did — left the operator with a
+/// relayed connection and no record of when it stopped being direct.
+fn apply_connection_path(
+    snapshot: &mut RemoteMachineSnapshot,
+    endpoint_id: &str,
+    path: ConnectionPath,
+    rtt_ms: u64,
+) {
     if snapshot.path != path {
         tracing::info!(
-            endpoint_id = %record.endpoint_id,
+            endpoint_id = %endpoint_id,
             previous_path = ?snapshot.path,
             current_path = ?path,
             rtt_ms,
             "remote connection path changed"
         );
     }
-    snapshot.state = health.state;
-    snapshot.details = health.details;
     snapshot.path = path;
     snapshot.rtt_ms = Some(rtt_ms);
-    Ok(())
 }
 
 async fn connect_record(
@@ -820,7 +847,7 @@ async fn update_error(
         _ => snapshot.state_at(Utc::now().timestamp_millis()),
     };
     snapshot.details = vec![error.to_string()];
-    if let Some(hint) = unreachable_hint(error) {
+    if let Some(hint) = unreachable_hint(error, !record.relay_urls.is_empty()) {
         // A viewer that only says "connect timed out" leaves the operator
         // guessing. Name the recoverable cause, because a machine that rebound
         // to another port looks exactly like one that is switched off.
@@ -833,8 +860,24 @@ async fn update_error(
 /// Returns `None` for errors that a different address would not fix, so an
 /// authorization or compatibility failure is never dressed up as a reachability
 /// problem.
-fn unreachable_hint(error: &RemoteFleetError) -> Option<&'static str> {
+///
+/// A machine with a configured relay has a second way to become unreachable,
+/// and naming only the listen port sends its operator to inspect a setting that
+/// was never the cause. The relay is named first there because a relay outage
+/// takes every relay-dependent machine down at once, which a port change cannot
+/// do.
+fn unreachable_hint(error: &RemoteFleetError, relay_configured: bool) -> Option<&'static str> {
     match error {
+        RemoteFleetError::Timeout("connect")
+        | RemoteFleetError::Transport(TransportError::Connect(_))
+            if relay_configured =>
+        {
+            Some(
+                "no known address answered and the configured relay did not carry the session; \
+             check that the relay is running and reachable, or if this machine restarted on a \
+             new port, give it a fixed one with `rackio listen-port set <PORT>` and restart it",
+            )
+        }
         RemoteFleetError::Timeout("connect")
         | RemoteFleetError::Transport(TransportError::Connect(_)) => Some(
             "no known address answered; if this machine restarted on a new port, \
@@ -1022,9 +1065,9 @@ mod tests {
     use super::{
         MAX_RECORD_DIRECT_ADDRESSES, OFFLINE_AFTER_MS, RemoteFleetError, RemoteMachineRecord,
         RemoteMachineRegistry, RemoteMachineSnapshot, STALE_AFTER_MS, SocketAddr,
-        merged_direct_addresses, unreachable_hint, validate_bundle,
+        apply_connection_path, merged_direct_addresses, unreachable_hint, validate_bundle,
     };
-    use rackio_core::{NodeInfo, NodeState, ProtocolVersion};
+    use rackio_core::{ConnectionPath, NodeInfo, NodeState, ProtocolVersion};
     use rackio_iroh::PairingBundle;
     use uuid::Uuid;
 
@@ -1049,6 +1092,103 @@ mod tests {
             paired_at_ms: 1,
             last_snapshot: None,
         }
+    }
+
+    /// Collect the tracing output of one call, so a test can assert on the
+    /// event an operator actually reads rather than only on the field it left
+    /// behind in memory.
+    fn captured_logs(body: impl FnOnce()) -> String {
+        #[derive(Clone, Default)]
+        struct Buffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+        impl std::io::Write for Buffer {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                let mut buffer = self
+                    .0
+                    .lock()
+                    .map_err(|_| std::io::Error::other("log buffer was poisoned"))?;
+                buffer.extend_from_slice(data);
+                Ok(data.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Buffer {
+            type Writer = Self;
+
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buffer = Buffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buffer.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, body);
+        let bytes = buffer
+            .0
+            .lock()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .clone();
+        String::from_utf8(bytes).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    #[test]
+    fn a_path_that_changed_while_the_machine_was_away_is_announced() {
+        // The reconnect case, not a mid-session migration: a machine that was
+        // last seen on a direct path and comes back through a relay must say
+        // so. Assigning the new path silently would leave the operator with a
+        // relayed connection and no record of when it stopped being direct.
+        let record = record();
+        let mut snapshot = RemoteMachineSnapshot::offline(&record);
+        snapshot.path = ConnectionPath::LanDirect;
+
+        let logs = captured_logs(|| {
+            apply_connection_path(
+                &mut snapshot,
+                &record.endpoint_id,
+                ConnectionPath::Relayed,
+                42,
+            );
+        });
+
+        assert!(
+            logs.contains("remote connection path changed"),
+            "a path change must be announced, got: {logs}"
+        );
+        assert!(logs.contains("previous_path=LanDirect"), "got: {logs}");
+        assert!(logs.contains("current_path=Relayed"), "got: {logs}");
+        assert_eq!(snapshot.path, ConnectionPath::Relayed);
+        assert_eq!(snapshot.rtt_ms, Some(42));
+    }
+
+    #[test]
+    fn an_unchanged_path_is_not_announced_again() {
+        // A refresh every few seconds must not narrate a connection that has
+        // not moved, or the events that do matter are lost in the repetition.
+        let record = record();
+        let mut snapshot = RemoteMachineSnapshot::offline(&record);
+        snapshot.path = ConnectionPath::WanDirect;
+
+        let logs = captured_logs(|| {
+            apply_connection_path(
+                &mut snapshot,
+                &record.endpoint_id,
+                ConnectionPath::WanDirect,
+                7,
+            );
+        });
+
+        assert!(
+            !logs.contains("remote connection path changed"),
+            "an unchanged path must stay quiet, got: {logs}"
+        );
+        assert_eq!(snapshot.rtt_ms, Some(7));
     }
 
     #[test]
@@ -1249,16 +1389,41 @@ mod tests {
     #[test]
     fn only_a_reachability_failure_suggests_a_reachability_fix() {
         assert!(
-            unreachable_hint(&RemoteFleetError::Timeout("connect")).is_some(),
+            unreachable_hint(&RemoteFleetError::Timeout("connect"), false).is_some(),
             "an operator whose machine moved needs to be told what to do"
         );
         assert!(
-            unreachable_hint(&RemoteFleetError::IdentityMismatch).is_none(),
+            unreachable_hint(&RemoteFleetError::IdentityMismatch, false).is_none(),
             "an identity failure is not fixed by another address"
         );
         assert!(
-            unreachable_hint(&RemoteFleetError::Timeout("health")).is_none(),
+            unreachable_hint(&RemoteFleetError::Timeout("health"), false).is_none(),
             "a reachable machine that answered slowly is not unreachable"
+        );
+    }
+
+    #[test]
+    fn a_relay_machine_is_not_told_to_go_and_check_its_listen_port() {
+        // A relay outage and a moved listen port look identical from here, but
+        // they are not fixed in the same place — and an outage takes every
+        // relay-dependent machine down at once, so pointing its operator at a
+        // per-machine port setting sends them to the wrong screen entirely.
+        let with_relay = unreachable_hint(&RemoteFleetError::Timeout("connect"), true)
+            .unwrap_or_else(|| panic!("a relay machine still needs a recovery step"));
+        assert!(
+            with_relay.contains("relay"),
+            "the relay must be named as a cause, got: {with_relay}"
+        );
+        assert!(
+            with_relay.contains("listen-port"),
+            "the address-change cause does not stop applying, got: {with_relay}"
+        );
+
+        let without_relay = unreachable_hint(&RemoteFleetError::Timeout("connect"), false)
+            .unwrap_or_else(|| panic!("a direct machine still needs a recovery step"));
+        assert!(
+            !without_relay.contains("relay"),
+            "a direct-only machine has no relay to check, got: {without_relay}"
         );
     }
 }

@@ -2,7 +2,7 @@
 
 #[cfg(unix)]
 use std::{fs, path::PathBuf, time::Instant};
-use std::{sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 #[cfg(windows)]
 use anyhow::Context as _;
@@ -15,7 +15,10 @@ use tokio::sync::watch;
 
 use crate::remote::{RemoteFleet, RemoteHistoryResolution, RemoteMachineSnapshot};
 
-use super::config::{AppPaths, load_config, save_config, validate_bind_port, validate_relay_url};
+use super::config::{
+    AppPaths, add_advertise_address, load_config, parse_advertise_address,
+    remove_advertise_address, save_config, validate_bind_port, validate_relay_url,
+};
 
 // The Windows local IPC listener has its own connect loop, so these bound the
 // Unix accept loop only.
@@ -59,6 +62,13 @@ pub enum LocalCommand {
         #[serde(flatten)]
         alert: AlertCommand,
     },
+    AdvertiseAddressAdd {
+        address: String,
+    },
+    AdvertiseAddressRemove {
+        address: String,
+    },
+    AdvertiseAddressList,
     Doctor,
 }
 
@@ -459,6 +469,18 @@ async fn handle_local(context: &LocalContext, command: LocalCommand) -> LocalRes
                 Err(error) => LocalResponse::failure(error),
             }
         }
+        LocalCommand::AdvertiseAddressAdd { address } => {
+            update_advertise_addresses(paths, &address, add_advertise_address)
+        }
+        LocalCommand::AdvertiseAddressRemove { address } => {
+            update_advertise_addresses(paths, &address, remove_advertise_address)
+        }
+        LocalCommand::AdvertiseAddressList => match load_config(paths) {
+            Ok(config) => LocalResponse::success(serde_json::json!({
+                "advertise_addresses": config.advertise_addresses
+            })),
+            Err(error) => LocalResponse::failure(error),
+        },
         LocalCommand::RelaySet { relay_url } => {
             if let Err(error) = validate_relay_url(relay_url.as_deref()) {
                 return LocalResponse::failure(error);
@@ -599,6 +621,55 @@ fn handle_alerts(
     }
 }
 
+/// Apply one operator change to the advertised addresses and persist it.
+///
+/// The address is parsed and the change applied entirely locally: nothing is
+/// resolved, probed or connected to. An address that turns out to be wrong is
+/// an ordinary unreachable candidate and surfaces as the existing
+/// unreachable-machine state, never as a silent correction.
+fn update_advertise_addresses(
+    paths: &AppPaths,
+    address: &str,
+    update: fn(&mut Vec<SocketAddr>, SocketAddr) -> Result<(), String>,
+) -> LocalResponse {
+    let address = match parse_advertise_address(address) {
+        Ok(address) => address,
+        Err(error) => return LocalResponse::failure(error),
+    };
+    // Preserve every other configured value, for the same reason the relay and
+    // listen-port commands do.
+    let mut config = match load_config(paths) {
+        Ok(config) => config,
+        Err(error) => return LocalResponse::failure(error),
+    };
+    if let Err(error) = update(&mut config.advertise_addresses, address) {
+        return LocalResponse::failure(error);
+    }
+    match save_config(paths, &config) {
+        Ok(()) => LocalResponse::success(serde_json::json!({
+            "saved": true,
+            "advertise_addresses": config.advertise_addresses
+        })),
+        Err(error) => LocalResponse::failure(error),
+    }
+}
+
+/// The direct candidates a pairing bundle carries: the addresses this machine
+/// observes on its own interfaces, then the operator-configured ones it cannot
+/// observe, such as a router's forwarded address.
+///
+/// Order is stable and duplicates are dropped, so a machine whose forwarded
+/// address happens to match an interface address is offered once.
+fn bundle_direct_addresses(observed: &[SocketAddr], advertised: &[SocketAddr]) -> Vec<SocketAddr> {
+    let mut addresses: Vec<SocketAddr> = Vec::with_capacity(observed.len() + advertised.len());
+    for address in observed.iter().chain(advertised.iter()) {
+        if !addresses.contains(address) {
+            addresses.push(*address);
+        }
+    }
+    addresses
+}
+
 async fn local_status(
     paths: &AppPaths,
     endpoint: &iroh::Endpoint,
@@ -630,11 +701,13 @@ async fn create_pairing_bundle(
     endpoint: &iroh::Endpoint,
     runtime: &Arc<NodeRuntime>,
 ) -> LocalResponse {
-    let addresses = endpoint.addr().ip_addrs().copied().collect();
-    let relay_urls = match load_config(paths) {
-        Ok(config) => config.relay_url.into_iter().collect(),
+    let config = match load_config(paths) {
+        Ok(config) => config,
         Err(error) => return LocalResponse::failure(error),
     };
+    let observed: Vec<SocketAddr> = endpoint.addr().ip_addrs().copied().collect();
+    let addresses = bundle_direct_addresses(&observed, &config.advertise_addresses);
+    let relay_urls = config.relay_url.into_iter().collect();
     let encoded = match runtime.pairing.lock() {
         Ok(mut pairing) => {
             let bundle = pairing.open(runtime.info.node_id, endpoint.id(), addresses, relay_urls);
@@ -788,7 +861,45 @@ mod tests {
     #[cfg(unix)]
     use std::path::PathBuf;
 
-    use super::{MAX_LOCAL_REQUEST_BYTES, read_local_request};
+    use std::net::SocketAddr;
+
+    use super::{MAX_LOCAL_REQUEST_BYTES, bundle_direct_addresses, read_local_request};
+
+    fn address(value: &str) -> SocketAddr {
+        value.parse().unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    #[test]
+    fn a_bundle_offers_interface_and_advertised_addresses_once_each() {
+        let observed = [address("192.168.102.10:41641"), address("10.0.0.4:41641")];
+        // The operator configured the router's forwarded address and, by
+        // mistake, one address the machine already observes.
+        let advertised = [
+            address("198.51.100.7:41641"),
+            address("192.168.102.10:41641"),
+        ];
+
+        let addresses = bundle_direct_addresses(&observed, &advertised);
+
+        assert_eq!(
+            addresses,
+            vec![
+                address("192.168.102.10:41641"),
+                address("10.0.0.4:41641"),
+                address("198.51.100.7:41641"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bundle_without_advertised_addresses_is_unchanged() {
+        let observed = [address("192.168.102.10:41641")];
+
+        assert_eq!(
+            bundle_direct_addresses(&observed, &[]),
+            vec![address("192.168.102.10:41641")]
+        );
+    }
 
     async fn read_request(payload: &[u8]) -> Result<super::LocalCommand, super::LocalResponse> {
         let mut reader = tokio::io::BufReader::new(tokio::io::AsyncReadExt::take(

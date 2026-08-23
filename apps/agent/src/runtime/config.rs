@@ -3,6 +3,7 @@
 use std::{
     fs,
     io::Write as _,
+    net::SocketAddr,
     path::{Path, PathBuf},
 };
 
@@ -108,6 +109,78 @@ pub(super) struct AgentConfig {
     /// machine is behind NAT.
     #[serde(default)]
     pub(super) bind_port: Option<u16>,
+    /// Addresses this machine is reachable on but cannot observe on any of its
+    /// own interfaces — typically the `IP:PORT` a router forwards to it. They
+    /// are carried in the pairing bundle as ordinary direct candidates.
+    ///
+    /// Rackio never probes, resolves or otherwise contacts them: this is an
+    /// operator-known fact, exactly like the fixed listen port, and a wrong
+    /// entry simply behaves as an unreachable candidate.
+    #[serde(default)]
+    pub(super) advertise_addresses: Vec<SocketAddr>,
+}
+
+/// How many advertised addresses one machine may configure.
+///
+/// A viewer keeps at most `MAX_RECORD_DIRECT_ADDRESSES` candidates per paired
+/// machine, so a bundle that carried more would hand over addresses the viewer
+/// drops. The same bound here keeps the configured set inside what a pairing
+/// can actually deliver while still covering a machine forwarded on several
+/// paths. Exceeding it is refused rather than truncated: silently dropping an
+/// address the operator asked for would strand the viewers it was meant to
+/// reach.
+pub(super) const MAX_ADVERTISE_ADDRESSES: usize = 8;
+
+/// Parse an operator-supplied advertised address, failing closed with the
+/// correction to make. No lookup happens here — a hostname is rejected rather
+/// than resolved, because resolving it would contact a name server that
+/// direct-only mode promises not to.
+pub(super) fn parse_advertise_address(value: &str) -> Result<SocketAddr, String> {
+    let address = value.parse::<SocketAddr>().map_err(|_| {
+        format!(
+            "`{value}` is not an IP address with a port; write it as `198.51.100.7:41641`, \
+             or `[2001:db8::1]:41641` for IPv6"
+        )
+    })?;
+    // Port 0 is the OS "choose one for me" request. Advertising it would tell
+    // viewers to connect to a port nothing listens on.
+    if address.port() == 0 {
+        return Err(String::from(
+            "port 0 is ephemeral and cannot be advertised; use the UDP port forwarded to this machine",
+        ));
+    }
+    Ok(address)
+}
+
+pub(super) fn add_advertise_address(
+    addresses: &mut Vec<SocketAddr>,
+    address: SocketAddr,
+) -> Result<(), String> {
+    if addresses.contains(&address) {
+        return Err(format!("{address} is already advertised"));
+    }
+    if addresses.len() >= MAX_ADVERTISE_ADDRESSES {
+        return Err(format!(
+            "at most {MAX_ADVERTISE_ADDRESSES} advertised addresses are kept; \
+             remove one with `rackio advertise-address remove <IP:PORT>` first"
+        ));
+    }
+    addresses.push(address);
+    Ok(())
+}
+
+pub(super) fn remove_advertise_address(
+    addresses: &mut Vec<SocketAddr>,
+    address: SocketAddr,
+) -> Result<(), String> {
+    let before = addresses.len();
+    addresses.retain(|kept| *kept != address);
+    if addresses.len() == before {
+        // Reporting success for an address that was never configured would let
+        // an operator believe a stale advertisement is gone when it is not.
+        return Err(format!("{address} is not advertised"));
+    }
+    Ok(())
 }
 
 impl Default for AgentConfig {
@@ -117,6 +190,7 @@ impl Default for AgentConfig {
             alerts_enabled: true,
             alerts: Vec::new(),
             bind_port: None,
+            advertise_addresses: Vec::new(),
         }
     }
 }
@@ -234,9 +308,17 @@ pub(super) fn init_logging(paths: &AppPaths) -> anyhow::Result<()> {
 mod tests {
     use rackio_core::{AlertRuleConfig, Comparison, NodeState};
 
+    use std::net::SocketAddr;
+
     use super::{
-        AgentConfig, AppPaths, load_config, save_config, validate_bind_port, validate_relay_url,
+        AgentConfig, AppPaths, MAX_ADVERTISE_ADDRESSES, add_advertise_address, load_config,
+        parse_advertise_address, remove_advertise_address, save_config, validate_bind_port,
+        validate_relay_url,
     };
+
+    fn address(value: &str) -> SocketAddr {
+        value.parse().unwrap_or_else(|error| panic!("{error}"))
+    }
 
     fn test_paths(root: &std::path::Path) -> AppPaths {
         AppPaths {
@@ -280,6 +362,7 @@ mod tests {
         // reports a filling disk, memory pressure and a saturated processor.
         assert!(config.alerts.is_empty());
         assert!(config.alerts_enabled);
+        assert!(config.advertise_addresses.is_empty());
         assert_eq!(rules(&config), rackio_core::default_alert_rules());
     }
 
@@ -375,6 +458,94 @@ mod tests {
     }
 
     #[test]
+    fn an_advertised_address_must_be_a_usable_socket_address() {
+        assert!(parse_advertise_address("198.51.100.7:41641").is_ok());
+        assert!(parse_advertise_address("[2001:db8::1]:41641").is_ok());
+        // A hostname is refused rather than resolved: direct-only mode does not
+        // contact a name server, and the operator knows the address already.
+        assert!(parse_advertise_address("gateway.example.test:41641").is_err());
+        assert!(parse_advertise_address("198.51.100.7").is_err());
+        assert!(parse_advertise_address("not an address").is_err());
+        assert!(parse_advertise_address("").is_err());
+        let Err(error) = parse_advertise_address("198.51.100.7:0") else {
+            panic!("an ephemeral port must not be advertised");
+        };
+        assert!(error.contains("ephemeral"), "{error}");
+    }
+
+    #[test]
+    fn advertised_addresses_are_unique_and_bounded() {
+        let mut addresses = Vec::new();
+        add_advertise_address(&mut addresses, address("198.51.100.7:41641"))
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let Err(error) = add_advertise_address(&mut addresses, address("198.51.100.7:41641"))
+        else {
+            panic!("the same address must not be advertised twice");
+        };
+        assert!(error.contains("already advertised"), "{error}");
+
+        for index in 1..MAX_ADVERTISE_ADDRESSES {
+            add_advertise_address(
+                &mut addresses,
+                address(&format!("198.51.100.7:{}", 41641 + index)),
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+        }
+        assert_eq!(addresses.len(), MAX_ADVERTISE_ADDRESSES);
+
+        let Err(error) = add_advertise_address(&mut addresses, address("203.0.113.9:41641")) else {
+            panic!("the configured set must be bounded");
+        };
+        assert!(error.contains("remove one"), "{error}");
+        // Rejected, never silently truncated: the operator's existing
+        // advertisements stay exactly as they were.
+        assert_eq!(addresses.len(), MAX_ADVERTISE_ADDRESSES);
+        assert!(!addresses.contains(&address("203.0.113.9:41641")));
+    }
+
+    #[test]
+    fn removing_an_address_that_is_not_advertised_fails_closed() {
+        let mut addresses = vec![address("198.51.100.7:41641")];
+
+        let Err(error) = remove_advertise_address(&mut addresses, address("203.0.113.9:41641"))
+        else {
+            panic!("removing an unconfigured address must report that it was not configured");
+        };
+        assert!(error.contains("not advertised"), "{error}");
+        assert_eq!(addresses, vec![address("198.51.100.7:41641")]);
+
+        remove_advertise_address(&mut addresses, address("198.51.100.7:41641"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(addresses.is_empty());
+    }
+
+    #[test]
+    fn configuring_an_advertised_address_contacts_nothing() {
+        // The address is an unroutable documentation address that no probe
+        // could confirm. Accepting it immediately is the evidence that nothing
+        // was contacted: a reachability check would block on the connect
+        // timeout instead of returning within this bound.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = test_paths(directory.path());
+        let started = std::time::Instant::now();
+        let parsed =
+            parse_advertise_address("198.51.100.7:41641").unwrap_or_else(|error| panic!("{error}"));
+        let mut config = load_config(&paths).unwrap_or_else(|error| panic!("{error}"));
+        add_advertise_address(&mut config.advertise_addresses, parsed)
+            .unwrap_or_else(|error| panic!("{error}"));
+        save_config(&paths, &config).unwrap_or_else(|error| panic!("{error}"));
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "configuring an advertised address took {elapsed:?}; it must not touch the network"
+        );
+        let reloaded = load_config(&paths).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(reloaded.advertise_addresses, vec![parsed]);
+    }
+
+    #[test]
     fn an_ephemeral_listen_port_is_not_accepted_as_a_stable_one() {
         assert!(validate_bind_port(Some(0)).is_err());
         assert!(validate_bind_port(Some(7777)).is_ok());
@@ -422,6 +593,7 @@ mod tests {
                 ..AlertRuleConfig::new("cpu-warning")
             }],
             bind_port: Some(7777),
+            advertise_addresses: vec![address("198.51.100.7:7777"), address("[2001:db8::1]:7777")],
         };
 
         save_config(&paths, &expected).unwrap_or_else(|error| panic!("{error}"));
@@ -431,6 +603,9 @@ mod tests {
         assert_eq!(actual.alerts, expected.alerts);
         assert_eq!(actual.alerts_enabled, expected.alerts_enabled);
         assert_eq!(actual.bind_port, expected.bind_port);
+        // Order is stable across a restart so the bundle offers the candidates
+        // in the order the operator configured them.
+        assert_eq!(actual.advertise_addresses, expected.advertise_addresses);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;

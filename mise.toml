@@ -76,6 +76,13 @@ run = "pnpm --filter @rackio/desktop dev"
 description = "Measure a clean desktop debug build and enforce its disk budget"
 run = "node scripts/measure-desktop-build.mjs"
 
+[tasks."test:nat-lab"]
+description = "Run the container NAT matrix and write per-scenario evidence to test-results/nat-matrix"
+# Deliberately absent from `tasks.check`: this builds a container image and runs
+# real daemons for minutes. It is opt-in release evidence, not a per-change gate.
+# Needs Docker with the compose plugin. Pass scenario ids to run a subset.
+run = "scripts/nat-lab/run.sh"
+
 [tasks."test:installer"]
 description = "Verify Linux release packaging, install, and checksum rejection"
 run = "packaging/linux/install.test.sh"

@@ -45,6 +45,12 @@ enum Command {
         #[command(subcommand)]
         command: ListenPortCommand,
     },
+    /// Manage addresses this machine cannot observe itself, such as a
+    /// router's forwarded address.
+    AdvertiseAddress {
+        #[command(subcommand)]
+        command: AdvertiseAddressCommand,
+    },
     Doctor,
 }
 
@@ -103,6 +109,22 @@ enum ListenPortCommand {
     /// A fixed port keeps this machine's direct addresses stable across
     /// restarts, so already paired viewers reconnect without re-pairing.
     Set { port: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum AdvertiseAddressCommand {
+    /// Advertise `IP:PORT` to viewers paired from now on.
+    ///
+    /// Use it for an address this machine cannot see on its own interfaces,
+    /// such as the address a router forwards to it. Rackio stores the value as
+    /// given: it never probes, resolves or corrects it, so an address that is
+    /// wrong is simply an unreachable candidate.
+    Add { address: String },
+    /// Stop advertising `IP:PORT`. Already paired viewers keep the addresses
+    /// they were given.
+    Remove { address: String },
+    /// List the advertised addresses this machine is configured with.
+    List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -171,38 +193,51 @@ async fn main() -> anyhow::Result<()> {
             print_response(request_local(&paths, LocalCommand::BindPortSet { bind_port }).await?)?;
         }
         Command::Alerts { command } => {
-            let alerts = match command {
-                AlertCommand::List => runtime::AlertCommand::List,
-                AlertCommand::Set {
-                    id,
-                    threshold,
-                    samples,
-                    severity,
-                    metric,
-                    comparison,
-                } => runtime::AlertCommand::Set {
-                    id,
-                    metric,
-                    comparison: comparison.as_deref().map(comparison_from),
-                    threshold,
-                    consecutive_samples: samples,
-                    severity: severity.as_deref().map(severity_from),
-                },
-                AlertCommand::Disable { id } => {
-                    runtime::AlertCommand::RuleEnabled { id, enabled: false }
+            let alert = alert_request(command);
+            print_response(request_local(&paths, LocalCommand::Alerts { alert }).await?)?;
+        }
+        Command::AdvertiseAddress { command } => {
+            let command = match command {
+                AdvertiseAddressCommand::Add { address } => {
+                    LocalCommand::AdvertiseAddressAdd { address }
                 }
-                AlertCommand::Enable { id } => {
-                    runtime::AlertCommand::RuleEnabled { id, enabled: true }
+                AdvertiseAddressCommand::Remove { address } => {
+                    LocalCommand::AdvertiseAddressRemove { address }
                 }
-                AlertCommand::Reset { id } => runtime::AlertCommand::Reset { id },
-                AlertCommand::Off => runtime::AlertCommand::Enabled { enabled: false },
-                AlertCommand::On => runtime::AlertCommand::Enabled { enabled: true },
+                AdvertiseAddressCommand::List => LocalCommand::AdvertiseAddressList,
             };
-            print_response(request_local(&paths, LocalCommand::Alerts { alert: alerts }).await?)?;
+            print_response(request_local(&paths, command).await?)?;
         }
         Command::Doctor => print_response(request_local(&paths, LocalCommand::Doctor).await?)?,
     }
     Ok(())
+}
+
+/// Translate the operator's wording into the daemon's threshold command.
+fn alert_request(command: AlertCommand) -> runtime::AlertCommand {
+    match command {
+        AlertCommand::List => runtime::AlertCommand::List,
+        AlertCommand::Set {
+            id,
+            threshold,
+            samples,
+            severity,
+            metric,
+            comparison,
+        } => runtime::AlertCommand::Set {
+            id,
+            metric,
+            comparison: comparison.as_deref().map(comparison_from),
+            threshold,
+            consecutive_samples: samples,
+            severity: severity.as_deref().map(severity_from),
+        },
+        AlertCommand::Disable { id } => runtime::AlertCommand::RuleEnabled { id, enabled: false },
+        AlertCommand::Enable { id } => runtime::AlertCommand::RuleEnabled { id, enabled: true },
+        AlertCommand::Reset { id } => runtime::AlertCommand::Reset { id },
+        AlertCommand::Off => runtime::AlertCommand::Enabled { enabled: false },
+        AlertCommand::On => runtime::AlertCommand::Enabled { enabled: true },
+    }
 }
 
 /// Reject `nan` and `inf` here, at the boundary that can still explain itself.
