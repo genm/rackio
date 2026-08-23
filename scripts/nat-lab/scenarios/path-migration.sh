@@ -98,15 +98,17 @@ sequence_before_restore="$(lab_remote_field_of "$viewer" "$endpoint_id" 'latest.
 # Two questions, measured separately, because they have different answers.
 #
 # First: does the running session climb back onto the direct path by itself?
-# That is recorded rather than required, because the answer here is no and the
-# reason is a product gap rather than a lab artefact — see `in_session_upgrade`
-# in the report and the findings section of README.md. Failing the scenario on
-# it would hide the second question.
+# Since #158 it does, within seconds, because the operator-declared address is
+# now a traversal candidate on the endpoint rather than only a pairing-bundle
+# entry. It stays recorded rather than required: the reconnect branch below is
+# the honest fallback if a future change loses the promotion again, and failing
+# here would hide the second question.
 #
-# Second: does the direct path come back at all? It does, on the next connect,
-# because the viewer still holds the operator-declared address from the pairing
-# bundle. That is the relay-to-direct migration this scenario asserts, and it
-# carries the structured event with `previous_path` `Relayed`.
+# Second: does the direct path come back at all — by promotion or, failing
+# that, on the next connect, because the viewer still holds the
+# operator-declared address? That is the relay-to-direct migration this
+# scenario asserts, and it carries the structured event with `previous_path`
+# `Relayed`.
 lab_unblock_udp "router-b"
 to_direct_started_ms="$(lab_now_ms)"
 in_session_upgrade=false
@@ -162,7 +164,7 @@ lab_observe in_session_upgrade "$(jq -n \
     elapsed_ms: $elapsed_ms,
     waited_seconds: 240,
     finding: (if $happened then null else
-      "The relayed session did not climb back onto the direct path on its own within 240 seconds, which is four of iroh sixty-second upgrade intervals. The operator-declared address set by `rackio advertise-address` reaches a peer only inside a pairing bundle: it is not passed to the iroh endpoint as an external address, so it is not a NAT-traversal candidate for a running session and does not appear in `rackio status`.`direct_addresses`. The direct path therefore returns on the next connect and not before." end),
+      "The relayed session did not climb back onto the direct path on its own within 240 seconds, which is four of iroh sixty-second upgrade intervals, so the direct path returned only on the next connect. This is a regression: since #158 the operator-declared address is passed to the iroh endpoint as an external address and is a traversal candidate for a running session, and the promotion was measured here at a few seconds. Check that `rackio status`.`direct_addresses` still contains the declared address." end),
     note: "recorded as a measurement, not asserted; the relay-to-direct migration this scenario asserts is the one that follows"}')"
 lab_observe transient_unknown_path "$(jq -n --argjson events "$events" \
   '{events_reporting_unknown: [$events[] | select(.current_path == "Unknown")],

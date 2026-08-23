@@ -58,6 +58,24 @@ fi
 iptables -t nat -F
 iptables -F FORWARD
 iptables -P FORWARD ACCEPT
+iptables -F INPUT
+
+# A NAT router does not hand unsolicited inbound UDP to its own host stack, and
+# this container must not either. Left accepting, the router answers a hole
+# punch probe aimed at its WAN address itself: conntrack confirms an entry for
+# (peer:port -> wan:port), and the internal machine that then wants to send out
+# from that same port finds the reply tuple already taken, so nf_nat gives it a
+# different external port. The peer's own NAT drops the answer because it came
+# from a port it never wrote down, and a punch that both sides attempted
+# correctly fails on the router's host stack rather than on any NAT property.
+#
+# Observed directly while building `cone_nat_hole_punch`: the monitored machine
+# left its router as 192.0.2.5:19522 despite listening on 41641, and the
+# viewer's router discarded every reply. ICMP is deliberately left alone so the
+# scenarios' packet-loss probes still reach the router, and DNAT'd traffic is
+# unaffected because a port forward is translated in PREROUTING and traverses
+# FORWARD, never INPUT.
+iptables -A INPUT -i "$wan_interface" -p udp -m conntrack --ctstate NEW -j DROP
 
 case "$mode" in
 endpoint_independent)
@@ -68,8 +86,9 @@ endpoint_independent)
   ;;
 symmetric)
   # `--random-fully` picks a fresh external port per flow, so an external
-  # address learned from one peer is useless to another. Reserved for the
-  # symmetric-NAT relay-fallback scenario; no scenario selects it yet.
+  # address learned from one peer is useless to another. `router-f` selects it
+  # for `symmetric_nat_relay_fallback`, which is otherwise configured exactly
+  # like the hole-punching pair.
   masquerade_options=(--random-fully)
   ;;
 *)
@@ -102,6 +121,7 @@ iptables -t nat -A POSTROUTING -s "$lan_subnet" -o "$wan_interface" \
 
 echo "router ready: mode=$mode lan=$lan_interface($lan_subnet) wan=$wan_interface($wan_address) forwards=[${forwards}]"
 iptables -t nat -S
+iptables -S INPUT
 
 # The runner drives the lab with `docker exec`; the container only has to stay
 # up and keep forwarding.
