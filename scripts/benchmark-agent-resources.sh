@@ -40,17 +40,25 @@ mkdir -p \
   "$benchmark_root/state" \
   "$benchmark_root/log"
 
+agent_env=(
+  env
+  RACKIO_CONFIG_DIR="$benchmark_root/config"
+  RACKIO_DATA_DIR="$benchmark_root/data"
+  RACKIO_STATE_DIR="$benchmark_root/state"
+  RACKIO_LOG_DIR="$benchmark_root/log"
+  RACKIO_SOCKET="$benchmark_root/agent.sock"
+)
+
 rackio() {
-  env \
-    RACKIO_CONFIG_DIR="$benchmark_root/config" \
-    RACKIO_DATA_DIR="$benchmark_root/data" \
-    RACKIO_STATE_DIR="$benchmark_root/state" \
-    RACKIO_LOG_DIR="$benchmark_root/log" \
-    RACKIO_SOCKET="$benchmark_root/agent.sock" \
-    "$binary" "$@"
+  "${agent_env[@]}" "$binary" "$@"
 }
 
-rackio daemon >"$benchmark_root/agent.log" 2>&1 &
+# Started as a simple command rather than through the `rackio` helper on
+# purpose. Backgrounding a shell *function* makes `$!` the subshell that wraps
+# it, and sampling that subshell measures bash — an idle wrapper that reports
+# roughly 1.5 MiB and no CPU whatever the daemon is doing, which is a passing
+# number for the wrong process. `env` execs in place, so this `$!` is the agent.
+"${agent_env[@]}" "$binary" daemon >"$benchmark_root/agent.log" 2>&1 &
 agent_pid=$!
 
 ready=false
@@ -68,6 +76,17 @@ done
 
 if [[ "$ready" != true ]]; then
   printf '{"check":"agent_resources","status":"failed","reason":"daemon_startup_timeout"}\n' >&2
+  exit 1
+fi
+
+# A budget measured against the wrong process is worse than no budget: it
+# passes for reasons that have nothing to do with the agent. Refuse to sample
+# anything that is not the binary under test.
+expected_command="$(basename "$binary")"
+sampled_command="$(basename "$(ps -p "$agent_pid" -o comm= | awk 'NR == 1 { print $1 }')")"
+if [[ "$sampled_command" != "$expected_command" ]]; then
+  printf '{"check":"agent_resources","status":"failed","reason":"sampled_process_is_not_the_agent","expected":"%s","actual":"%s"}\n' \
+    "$expected_command" "$sampled_command" >&2
   exit 1
 fi
 
