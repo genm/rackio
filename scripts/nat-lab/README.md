@@ -86,16 +86,12 @@ capture is taken on the router's WAN interface.
 Verified while building the lab: from `lan_c`, `192.0.2.2` answers and
 `192.168.102.10` does not. The NAT really is in the way.
 
-**This scenario performs one substitution, recorded in its report.**
-`rackio pairing create` fills a bundle's `direct_addresses` from the machine's
-own interfaces, so a NATed machine advertises only its LAN address. In
-direct-only mode nothing discovers the router's public address, and no CLI
-accepts one. The lab rewrites the bundle's `direct_addresses` to the forwarded
-address the operator would hand over, so the scenario tests the transport rather
-than the missing UX. The report carries
-`bundle_addresses.substitution_performed: true` with both address sets. **This
-is a lab affordance standing in for a product gap, not a supported workflow** —
-see "Findings" below.
+The machine cannot observe the address its router forwards, so the operator
+supplies it with `rackio advertise-address add 192.0.2.2:41641` and
+`pairing create` carries it in the bundle alongside the interface addresses.
+The scenario asserts that the bundle contains it and imports the bundle exactly
+as produced — `bundle_addresses.substitution_performed` is `false`, and the lab
+has no bundle-rewriting code left.
 
 ### `address_change`
 
@@ -158,14 +154,17 @@ Two product gaps were found by running this, and neither was worked around.
    not change here — a count of path changes alone would be zero even when
    recovery worked.
 
-2. **A machine behind NAT has no supported way to advertise its forwarded
-   address.** See `port_forwarded_direct` above: the transport carries the
-   forwarded path correctly once the viewer holds the right address, but
-   `pairing create` can only advertise the machine's own interfaces, and no CLI
-   accepts an external one. Tracked in
-   [#152](https://github.com/genm/rackio/issues/152). Until that lands, this
-   scenario rewrites the bundle and says so in its report; the checklist's
-   port-forwarded row is not satisfiable by documented operator steps yet.
+2. **A machine behind NAT had no supported way to advertise its forwarded
+   address.** `pairing create` could only advertise the machine's own
+   interfaces, and in direct-only mode nothing discovers the router's external
+   address, so the first version of `port_forwarded_direct` had to rewrite the
+   bundle — a lab affordance standing in for missing product behaviour.
+
+   **Fixed** in [#153](https://github.com/genm/rackio/pull/153) for
+   [#152](https://github.com/genm/rackio/issues/152): `rackio advertise-address`
+   stores the operator-known address as configuration and pairing bundles carry
+   it. The scenario now imports what the product produced, and the rewrite
+   helper was deleted rather than kept for the next gap.
 
 ## What a container lab does **not** prove
 
