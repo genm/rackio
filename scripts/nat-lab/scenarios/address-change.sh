@@ -198,13 +198,20 @@ lab_assert_true "recovered_without_repairing" \
 lab_assert_equal "registry_still_single_entry" \
   "recovery did not duplicate or drop the registry entry" \
   "$(lab_registry "$viewer" 'length')" "1"
-# Unlike the steady-state scenarios, this one genuinely changes path state:
-# the session is lost and re-established three times. If the agent emits no
-# structured event even here, the checklist's path-transition evidence does not
-# exist at all, which the report must fail on rather than note in passing.
+# Unlike the steady-state scenarios, this one genuinely changes connection
+# state: the session is lost and re-established three times. If the agent emits
+# no structured event even here, the checklist's path-transition evidence does
+# not exist at all, which the report must fail on rather than note in passing.
 lab_assert_true "path_transition_events_emitted" \
-  "the agent emitted structured path-transition events across the changes" \
+  "the agent emitted structured connection events across the changes" \
   "$([[ "$(jq 'length' <<<"$events")" != "0" ]] && echo true || echo false)"
+# Every recovery must be legible on its own. The path here stays `lan_direct`
+# throughout, so a count of *path changes* would be zero even when recovery
+# worked — the resumptions are what carry the evidence, one per recovery, and
+# the initial pairing session may add one more.
+lab_assert_true "each_recovery_announced_a_resumed_session" \
+  "three recoveries produced at least three session-established events" \
+  "$([[ "$(jq '[.[] | select(.event == "remote monitoring session established")] | length' <<<"$events")" -ge 3 ]] && echo true || echo false)"
 lab_assert_relayed_never_reported_as_direct \
   "$restarted_path" "$relay_url" "$relay_mode" "$capture" "$events"
 

@@ -140,27 +140,32 @@ survives a viewer restart. Reconnect duration is measured for each.
 
 ## Findings from the first full run
 
-Two gaps were found by running this, and neither is worked around:
+Two product gaps were found by running this, and neither was worked around.
 
-1. **The agent emits no structured path-transition events.** In
-   `apps/agent/src/remote.rs` the session-start path is assigned to the snapshot
-   silently; only the five-second refresh compares before assigning, and only it
-   logs `"remote connection path changed"`. So establishing a session emits
-   nothing, and a _reconnect_ emits nothing either, because the reconnect path is
-   written by the silent session-start assignment. An event can fire only if the
-   path changes while a single session stays alive — a mid-session migration,
-   which direct-only mode cannot produce. Across three full disconnect/address-
-   change/recovery cycles the viewer's log contained only lifecycle messages.
+1. **The agent emitted no usable path-transition events.** Session start
+   assigned the path to the snapshot silently; only the five-second refresh
+   compared before assigning. Since a reconnect goes through session start, an
+   event could fire only during a mid-session migration — which direct-only
+   mode cannot produce. Across three full disconnect/address-change/recovery
+   cycles the viewer's log held nothing but lifecycle messages, so
+   `address_change` was left failing on that assertion rather than having it
+   downgraded.
 
-   `docs/release-checklist.md` requires structured path-transition events for
-   every NAT-matrix scenario, so **`address_change` fails on this assertion**
-   while every behavioural assertion in it passes. That failure is the finding;
-   it is left red rather than downgraded.
+   **Fixed** in [#151](https://github.com/genm/rackio/pull/151): both call sites
+   now share one owner of the rule, and a session start or resumption is logged
+   as `remote monitoring session established` with the path it runs over. The
+   scenario asserts one resumption per recovery, because the path itself does
+   not change here — a count of path changes alone would be zero even when
+   recovery worked.
 
 2. **A machine behind NAT has no supported way to advertise its forwarded
-   address.** See `port_forwarded_direct` above. The transport handles the
-   forwarded path correctly once the viewer is given the right address; the gap
-   is that the product offers no way to give it one.
+   address.** See `port_forwarded_direct` above: the transport carries the
+   forwarded path correctly once the viewer holds the right address, but
+   `pairing create` can only advertise the machine's own interfaces, and no CLI
+   accepts an external one. Tracked in
+   [#152](https://github.com/genm/rackio/issues/152). Until that lands, this
+   scenario rewrites the bundle and says so in its report; the checklist's
+   port-forwarded row is not satisfiable by documented operator steps yet.
 
 ## What a container lab does **not** prove
 

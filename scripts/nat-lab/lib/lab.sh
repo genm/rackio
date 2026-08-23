@@ -181,18 +181,28 @@ lab_wait_for_state() {
 
 # --- structured path-transition events -------------------------------------
 
-# The agent logs path changes as JSON lines under RACKIO_LOG_DIR with the
-# message "remote connection path changed" (apps/agent/src/remote.rs). They are
-# the only structured path-transition record the product emits, so the report
-# carries them verbatim rather than a re-derived summary.
+# The agent logs two structured connection events as JSON lines under
+# RACKIO_LOG_DIR (apps/agent/src/remote.rs):
+#
+#   * "remote connection path changed" — the path differs from the one this
+#     viewer last reported, whether that happened mid-session or across a
+#     reconnect;
+#   * "remote monitoring session established" — a session started or resumed,
+#     carrying the path it runs over. A reconnect that lands on the same path
+#     is not a path change, so this is what records recovery.
+#
+# Both are carried verbatim rather than re-derived, and each keeps its own
+# `event` name so a reader can tell a transition from a resumption.
 lab_path_transition_events() {
   local viewer="$1"
   lab_exec "$viewer" sh -c 'cat /var/lib/rackio/log/agent.jsonl* 2>/dev/null || true' |
     jq -c 'select(type == "object")' 2>/dev/null |
-    jq -s '[.[] | select(.fields.message == "remote connection path changed")
-            | {timestamp, endpoint_id: .fields.endpoint_id,
+    jq -s '[.[] | select(.fields.message == "remote connection path changed"
+                      or .fields.message == "remote monitoring session established")
+            | {timestamp, event: .fields.message,
+               endpoint_id: .fields.endpoint_id,
                previous_path: .fields.previous_path,
-               current_path: .fields.current_path,
+               current_path: (.fields.current_path // .fields.path),
                rtt_ms: .fields.rtt_ms}]' 2>/dev/null || echo '[]'
 }
 
@@ -204,38 +214,23 @@ lab_settle_path_events() {
   sleep 7
 }
 
-# What the agent emits, plus what it does not.
+# What the agent emitted, counted by kind.
 #
-# Measured, not assumed. In apps/agent/src/remote.rs the session-start path is
-# written straight into the snapshot (`snapshot.path = path`, in the function
-# that opens the metric stream) with no logging. Only `refresh_remote_state`
-# compares before assigning, and it logs "remote connection path changed" just
-# when the newly classified path differs from the snapshot it already holds.
-#
-# Two consequences the lab observed directly:
-#   * establishing a session emits nothing, so a stable path records no event;
-#   * a reconnect emits nothing either, because the reconnect path is written
-#     by the silent session-start assignment, not by the comparing refresh.
-#
-# So an event can only ever fire when the path changes while one session stays
-# alive — a mid-session migration, which direct-only mode cannot produce. In
-# practice the agent emits no path-transition events at all today.
-#
-# docs/release-checklist.md requires structured path-transition events for every
-# NAT-matrix scenario. Reporting the empty list with the reason is the honest
-# outcome; synthesising an "initial path" event here would manufacture evidence
-# the product does not produce.
+# Measured, not assumed: the counts come from the viewer's own log. A scenario
+# asserts on them rather than on a re-derived summary, and an empty list is
+# reported as empty — nothing here synthesises an event the product did not
+# produce.
 lab_observe_path_events() {
   local viewer="$1" events
   events="$(lab_path_transition_events "$viewer")"
   lab_observe path_transition_events "$events"
   lab_observe path_transition_event_coverage "$(jq -n \
-    --argjson count "$(jq 'length' <<<"$events")" \
-    '{events_recorded: $count,
-      initial_path_selection_logged: false,
-      reconnect_path_selection_logged: false,
-      source: "RACKIO_LOG_DIR/agent.jsonl*, message \"remote connection path changed\"",
-      gap: "apps/agent/src/remote.rs assigns the session-start path to the snapshot silently, and only the five-second refresh compares before assigning. Establishing or re-establishing a session therefore emits no structured event; one can fire only if the path changes while a single session stays alive, which direct-only mode cannot produce. docs/release-checklist.md requires structured path-transition events for every NAT-matrix scenario, so this is an open product gap, not a limitation of the container lab."}')"
+    --argjson events "$events" \
+    '{events_recorded: ($events | length),
+      path_changes: [$events[] | select(.event == "remote connection path changed")] | length,
+      sessions_established: [$events[] | select(.event == "remote monitoring session established")] | length,
+      source: "RACKIO_LOG_DIR/agent.jsonl*, messages \"remote connection path changed\" and \"remote monitoring session established\"",
+      note: "A reconnect that lands on the same path is a resumption, not a transition, and is recorded as a session-established event. Both kinds are required: a scenario whose path never changes must still show that monitoring resumed."}')"
   printf '%s' "$events"
 }
 
