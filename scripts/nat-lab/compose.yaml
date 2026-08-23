@@ -8,7 +8,10 @@
 #   lan_a         192.168.101.0/24  flat LAN, no router      (same-LAN direct)
 #   lan_b         192.168.102.0/24  behind router-b          (monitored side)
 #   lan_c         192.168.103.0/24  behind router-c          (viewer side)
-#   net_internet  192.0.2.0/24      shared "internet" segment
+#   lan_d         192.168.104.0/24  behind router-d          (cone, no forward)
+#   lan_e         192.168.105.0/24  behind router-e          (cone, no forward)
+#   lan_f         192.168.106.0/24  behind router-f          (symmetric)
+#   net_internet  192.0.2.0/24      shared "internet" segment, and the relay
 #
 # 192.0.2.0/24 is RFC 5737 TEST-NET-1. It is deliberately *not* an RFC 1918
 # range, so a path across it is classified `wan_direct` by the agent rather
@@ -16,7 +19,16 @@
 #
 # Every network is `internal`, so a lab machine physically cannot reach
 # anything outside the topology. Direct-only mode is then proven by the
-# topology, not only by configuration.
+# topology, not only by configuration. The relay at 192.0.2.4 is the single
+# exception to "no third party on the wire", and only the relay scenarios
+# configure a machine to use it.
+#
+# The relay's configuration is rendered by the runner into
+# test-results/nat-matrix/relay/config.toml rather than checked in, because the
+# fail-closed `access.allowlist` the production package documents can only be
+# written once the lab machines' endpoint IDs exist. Every relay report embeds
+# the exact rendered file, so a relay run stays reproducible from the report
+# plus this topology.
 
 name: rackio-nat-lab
 
@@ -118,6 +130,127 @@ services:
       lan_c:
         ipv4_address: 192.168.103.10
 
+  # --- Self-hosted relay -----------------------------------------------------
+  #
+  # The image is `relay-package/` built unchanged: upstream `iroh-relay` pinned
+  # to 1.0.3. Only its configuration differs from the production package, and
+  # the difference is recorded in every relay report and in README.md.
+  relay:
+    image: rackio-nat-lab-relay:local
+    container_name: rackio-nat-lab-relay
+    hostname: relay.lab.test
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # The relay runs as 65532 and still serves the documented port 80.
+      - NET_BIND_SERVICE
+    volumes:
+      - "../../test-results/nat-matrix/relay:/etc/iroh-relay:ro"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9090/metrics"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    networks:
+      net_internet:
+        ipv4_address: 192.0.2.4
+
+  # --- Cone NAT on both sides, no port forward anywhere ----------------------
+  #
+  # This is the pair the hole-punching, UDP-blocked and path-migration
+  # scenarios use. Neither router has a DNAT rule, so a direct path between
+  # these two machines can only exist because both sides punched one open.
+  router-d:
+    <<: *router
+    container_name: rackio-nat-lab-router-d
+    hostname: router-d.lab.test
+    environment:
+      NAT_MODE: endpoint_independent
+      NAT_LAN_SUBNET: 192.168.104.0/24
+      NAT_WAN_SUBNET: 192.0.2.0/24
+    networks:
+      lan_d:
+        ipv4_address: 192.168.104.2
+      net_internet:
+        ipv4_address: 192.0.2.5
+
+  router-e:
+    <<: *router
+    container_name: rackio-nat-lab-router-e
+    hostname: router-e.lab.test
+    environment:
+      NAT_MODE: endpoint_independent
+      NAT_LAN_SUBNET: 192.168.105.0/24
+      NAT_WAN_SUBNET: 192.0.2.0/24
+    networks:
+      lan_e:
+        ipv4_address: 192.168.105.2
+      net_internet:
+        ipv4_address: 192.0.2.6
+
+  # --- Symmetric NAT on the monitored side -----------------------------------
+  #
+  # Identical to router-d apart from `NAT_MODE`, so the relay-fallback scenario
+  # differs from the hole-punching scenario in the NAT's mapping behaviour and
+  # in nothing else.
+  router-f:
+    <<: *router
+    container_name: rackio-nat-lab-router-f
+    hostname: router-f.lab.test
+    environment:
+      NAT_MODE: symmetric
+      NAT_LAN_SUBNET: 192.168.106.0/24
+      NAT_WAN_SUBNET: 192.0.2.0/24
+    networks:
+      lan_f:
+        ipv4_address: 192.168.106.2
+      net_internet:
+        ipv4_address: 192.0.2.7
+
+  lan-d-monitored:
+    <<: *machine
+    container_name: rackio-nat-lab-lan-d-monitored
+    hostname: monitored-d.lab.test
+    environment:
+      RUST_LOG: info
+      LAB_DEFAULT_GATEWAY: 192.168.104.2
+    depends_on:
+      - router-d
+    networks:
+      lan_d:
+        ipv4_address: 192.168.104.10
+
+  lan-e-viewer:
+    <<: *machine
+    container_name: rackio-nat-lab-lan-e-viewer
+    hostname: viewer-e.lab.test
+    environment:
+      RUST_LOG: info
+      LAB_DEFAULT_GATEWAY: 192.168.105.2
+    depends_on:
+      - router-e
+    networks:
+      lan_e:
+        ipv4_address: 192.168.105.10
+
+  lan-f-monitored:
+    <<: *machine
+    container_name: rackio-nat-lab-lan-f-monitored
+    hostname: monitored-f.lab.test
+    environment:
+      RUST_LOG: info
+      LAB_DEFAULT_GATEWAY: 192.168.106.2
+    depends_on:
+      - router-f
+    networks:
+      lan_f:
+        ipv4_address: 192.168.106.10
+
 networks:
   lan_a:
     internal: true
@@ -134,6 +267,21 @@ networks:
     ipam:
       config:
         - subnet: 192.168.103.0/24
+  lan_d:
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.104.0/24
+  lan_e:
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.105.0/24
+  lan_f:
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.106.0/24
   net_internet:
     internal: true
     ipam:
