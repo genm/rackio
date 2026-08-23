@@ -434,9 +434,30 @@ mod tests {
         // process and gets this for free; a test in one process has to be
         // explicit or it races itself for the port.
         drop(first);
-        let second = bind_endpoint(secret, &config)
-            .await
-            .unwrap_or_else(|error| panic!("{error}"));
+        // Dropping releases the sockets, but the runtime tasks holding them are
+        // torn down asynchronously, so the port can still be occupied for a few
+        // milliseconds afterwards. A real restart never sees this — the kernel
+        // reclaims everything when the process exits — so retry briefly rather
+        // than let an in-process teardown race report a product failure. The
+        // bound is short and the last error is still surfaced, so a port that
+        // genuinely cannot be reclaimed fails the test instead of hanging it.
+        let mut second = None;
+        for attempt in 0..40 {
+            match bind_endpoint(secret.clone(), &config).await {
+                Ok(endpoint) => {
+                    second = Some(endpoint);
+                    break;
+                }
+                Err(error) => {
+                    assert!(
+                        attempt < 39,
+                        "configured port never became bindable: {error}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+        let second = second.unwrap_or_else(|| panic!("configured port never became bindable"));
         let after: Vec<u16> = second.addr().ip_addrs().map(SocketAddr::port).collect();
 
         assert!(!before.is_empty(), "a bound endpoint must have an address");
