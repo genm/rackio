@@ -25,7 +25,11 @@ public relay configuration.
 - an empty relay list maps to `RelayMode::Disabled`
 - a non-empty list maps only to `RelayMode::custom(user_urls)`
 - UPnP, PCP and NAT-PMP gateway probing are explicitly disabled
-- direct addresses are carried in the pairing bundle
+- direct addresses are carried in the pairing bundle: the machine's own
+  interface addresses, plus any address an operator advertised with
+  `rackio advertise-address` because the machine cannot observe it, such as a
+  router's forwarded address. Advertised addresses are stored verbatim and
+  never probed or resolved
 - the selected iroh path, not the attempted address, determines whether the UI
   reports LAN direct, WAN direct or relayed
 - an endpoint takes an ephemeral UDP port unless the operator configures a fixed

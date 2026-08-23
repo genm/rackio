@@ -40,6 +40,12 @@ enum Command {
         #[command(subcommand)]
         command: ListenPortCommand,
     },
+    /// Manage addresses this machine cannot observe itself, such as a
+    /// router's forwarded address.
+    AdvertiseAddress {
+        #[command(subcommand)]
+        command: AdvertiseAddressCommand,
+    },
     Doctor,
 }
 
@@ -62,6 +68,22 @@ enum ListenPortCommand {
     /// A fixed port keeps this machine's direct addresses stable across
     /// restarts, so already paired viewers reconnect without re-pairing.
     Set { port: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum AdvertiseAddressCommand {
+    /// Advertise `IP:PORT` to viewers paired from now on.
+    ///
+    /// Use it for an address this machine cannot see on its own interfaces,
+    /// such as the address a router forwards to it. Rackio stores the value as
+    /// given: it never probes, resolves or corrects it, so an address that is
+    /// wrong is simply an unreachable candidate.
+    Add { address: String },
+    /// Stop advertising `IP:PORT`. Already paired viewers keep the addresses
+    /// they were given.
+    Remove { address: String },
+    /// List the advertised addresses this machine is configured with.
+    List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -128,6 +150,18 @@ async fn main() -> anyhow::Result<()> {
                 })?)
             };
             print_response(request_local(&paths, LocalCommand::BindPortSet { bind_port }).await?)?;
+        }
+        Command::AdvertiseAddress { command } => {
+            let command = match command {
+                AdvertiseAddressCommand::Add { address } => {
+                    LocalCommand::AdvertiseAddressAdd { address }
+                }
+                AdvertiseAddressCommand::Remove { address } => {
+                    LocalCommand::AdvertiseAddressRemove { address }
+                }
+                AdvertiseAddressCommand::List => LocalCommand::AdvertiseAddressList,
+            };
+            print_response(request_local(&paths, command).await?)?;
         }
         Command::Doctor => print_response(request_local(&paths, LocalCommand::Doctor).await?)?,
     }
