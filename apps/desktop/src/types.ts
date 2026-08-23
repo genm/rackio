@@ -78,7 +78,8 @@ export interface FleetNode {
   uptimeSeconds?: number | null;
   lastSeenMs?: number;
   trend: TrendPoint[];
-  detail?: string;
+  /** The reporting machine's own explanation; absent or null when it has none. */
+  detail?: string | null;
 }
 
 export type HistoryPoint = TrendPoint;

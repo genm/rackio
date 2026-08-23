@@ -98,10 +98,21 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     );
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    // Logged because "why did this machine never warn me?" is answerable only
+    // if the rules the daemon actually runs are on the record.
+    let alert_rules = config.alert_rules();
+    tracing::info!(
+        rules = ?alert_rules
+            .iter()
+            .map(|rule| rule.id.as_str())
+            .collect::<Vec<_>>(),
+        source = if config.alerts.is_some() { "configured" } else { "built_in_defaults" },
+        "local health thresholds loaded"
+    );
     let mut sampler = tokio::spawn(sample_loop(
         Arc::clone(&runtime),
         collector,
-        config.alerts.clone(),
+        alert_rules,
         latest_tx,
         shutdown_rx,
     ));

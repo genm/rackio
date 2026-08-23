@@ -247,34 +247,69 @@ actual P2P path separately.
 | UI state | Meaning | First operator action |
 | --- | --- | --- |
 | `healthy` | Fresh metrics and no active health warning | None |
-| `warning` / `critical` | A configured local health threshold was crossed | Open the machine detail and inspect the affected resource |
+| `warning` / `critical` | A local health threshold was crossed — by default a filesystem at 90 % or 95 % | Read the detail line on the card, which names the resource, its value and the threshold |
 | `stale` | No metric or heartbeat for 10 seconds | Check path, RTT and local agent logs; preserve last known values |
 | `offline` | No metric or heartbeat for 30 seconds | Check agent process, network reachability and relay availability if shown as relayed; if the machine restarted on a new port, give it a fixed listen port |
 | `auth_error` | The remote agent rejected this viewer | Confirm endpoint pairing and allowlist; do not retry with a reused bundle |
 | `incompatible` | Protocol major versions differ | Upgrade or roll back a machine to a compatible release |
 | `degraded` | A collector, storage, notification or local dependency failed | Read the displayed error and structured agent logs; values are not silently zeroed |
 
-### Configuring local health thresholds
+### Local health thresholds
 
-`warning` and `critical` are only reachable when an operator defines a
-threshold. Rackio ships none: it has no basis for deciding what CPU or disk
-level matters on a machine it knows nothing about. Add rules to the `alerts`
-array in the daemon's `config.json`:
+Rackio ships two rules and no more:
+
+| Rule id | Metric | Threshold | Severity |
+| --- | --- | --- | --- |
+| `disk-capacity-warning` | `disk_percent` | at or above 90 % | `warning` |
+| `disk-capacity-critical` | `disk_percent` | at or above 95 % | `critical` |
+
+Both need three consecutive samples (six seconds) before the machine changes
+state, so a build or backup spike does not raise an alert. `disk_percent` is
+the fullest mounted filesystem, and the published detail names it — for example
+`Disk /data 93% is at or above the warning threshold of 90%` — which is what
+the desktop shows on the card and sends in the OS notification.
+
+Disk capacity is the only level Rackio decides for you. Free space is finite
+and non-renewable, and a filesystem that reaches 100 % takes down logs,
+databases and Rackio's own metric history whatever the machine is for. A
+machine pinned at 100 % CPU, by contrast, may be doing exactly its job, and
+safe sensor temperatures differ per board, so CPU, memory and temperature stay
+unset until you define them.
+
+To change or switch off the defaults, set the `alerts` array in the daemon's
+`config.json`. An explicit array replaces the shipped rules entirely, and
+`"alerts": []` turns local alerting off:
 
 ```json
 {
   "alerts": [
     {
-      "id": "disk-critical",
+      "id": "disk-capacity-critical",
       "metric": "disk_percent",
       "comparison": "greater_than_or_equal",
-      "threshold": 90.0,
+      "threshold": 80.0,
       "consecutive_samples": 3,
       "severity": "critical"
+    },
+    {
+      "id": "memory-warning",
+      "metric": "memory_percent",
+      "comparison": "greater_than_or_equal",
+      "threshold": 95.0,
+      "consecutive_samples": 5,
+      "severity": "warning"
     }
   ]
 }
 ```
+
+Because the array replaces the defaults, restate the disk rules you still want
+— the example above keeps a single, tighter disk rule and adds a memory rule
+for a machine whose expected memory profile the operator knows.
+
+Removing the `alerts` key again restores the shipped defaults; other
+configuration changes such as `rackio relay set` leave the key absent rather
+than freezing today's defaults into your file.
 
 `metric` accepts `cpu_percent`, `memory_percent`, `disk_percent` and
 `temperature_celsius` (`disk_percent` uses the fullest mounted filesystem, and

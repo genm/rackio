@@ -4,7 +4,10 @@ mod collector;
 mod model;
 mod storage;
 
-pub use alert::{AlertEvaluator, AlertRule, AlertSignal, Comparison};
+pub use alert::{
+    AlertEvaluator, AlertRule, AlertSignal, Comparison, DEFAULT_DISK_CRITICAL_PERCENT,
+    DEFAULT_DISK_WARNING_PERCENT, default_alert_rules,
+};
 pub use clock::Clock;
 pub use collector::SystemCollector;
 pub use model::{

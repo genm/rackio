@@ -81,12 +81,16 @@ pub fn app_paths() -> anyhow::Result<AppPaths> {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(super) struct AgentConfig {
     pub(super) relay_url: Option<String>,
-    /// Operator-defined local health thresholds. Empty by default: Rackio does
-    /// not invent thresholds for a machine it knows nothing about, and
-    /// `docs/operations.md` documents `warning`/`critical` as "a *configured*
-    /// local health threshold was crossed".
-    #[serde(default)]
-    pub(super) alerts: Vec<rackio_core::AlertRule>,
+    /// Operator-defined local health thresholds.
+    ///
+    /// Absent means "whatever Rackio ships", which is disk capacity only —
+    /// see `rackio_core::default_alert_rules`. Rackio still invents no CPU,
+    /// memory or temperature level for a machine it knows nothing about. An
+    /// explicit list replaces the defaults entirely, and an explicit empty
+    /// list turns local alerting off, so the difference between "not
+    /// configured" and "deliberately none" has to survive the round trip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) alerts: Option<Vec<rackio_core::AlertRule>>,
     /// The fixed UDP port this machine listens on. Unset means an ephemeral
     /// port, which moves on every restart: viewers that hold only the previous
     /// direct addresses then cannot reach this machine again. Operators who
@@ -94,6 +98,16 @@ pub(super) struct AgentConfig {
     /// machine is behind NAT.
     #[serde(default)]
     pub(super) bind_port: Option<u16>,
+}
+
+impl AgentConfig {
+    /// The rules the sampler runs: the operator's own, or the shipped disk
+    /// capacity defaults when they have configured none.
+    pub(super) fn alert_rules(&self) -> Vec<rackio_core::AlertRule> {
+        self.alerts
+            .clone()
+            .unwrap_or_else(rackio_core::default_alert_rules)
+    }
 }
 
 pub(super) fn create_directories(paths: &AppPaths) -> anyhow::Result<()> {
@@ -201,14 +215,62 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_config_is_direct_only_without_invented_alerts() {
+    fn a_missing_config_is_direct_only_with_the_shipped_disk_defaults() {
         let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let config =
             load_config(&test_paths(directory.path())).unwrap_or_else(|error| panic!("{error}"));
 
         assert!(config.relay_url.is_none());
-        assert!(config.alerts.is_empty());
         assert!(config.bind_port.is_none());
+        // Unconfigured is not unmonitored: a machine nobody has tuned still
+        // reports a filling disk.
+        assert!(config.alerts.is_none());
+        assert_eq!(config.alert_rules(), rackio_core::default_alert_rules());
+        assert!(
+            !config.alert_rules().is_empty(),
+            "the shipped defaults must actually contain a rule"
+        );
+    }
+
+    #[test]
+    fn an_explicit_empty_list_turns_local_alerting_off() {
+        // "Deliberately none" and "not configured" must not collapse into the
+        // same value, or an operator who switched alerting off would silently
+        // get the defaults back on the next release.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = test_paths(directory.path());
+        std::fs::create_dir_all(&paths.config).unwrap_or_else(|error| panic!("{error}"));
+        std::fs::write(paths.config.join("config.json"), br#"{"alerts": []}"#)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let config = load_config(&paths).unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(config.alerts, Some(Vec::new()));
+        assert!(config.alert_rules().is_empty());
+    }
+
+    #[test]
+    fn saving_an_unconfigured_alert_list_does_not_freeze_the_defaults_into_the_file() {
+        // Setting a relay must not write today's default thresholds into the
+        // operator's configuration as if they had chosen them.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = test_paths(directory.path());
+        let config = AgentConfig {
+            relay_url: Some(String::from("https://relay.example.test")),
+            ..AgentConfig::default()
+        };
+
+        save_config(&paths, &config).unwrap_or_else(|error| panic!("{error}"));
+
+        let written = std::fs::read_to_string(paths.config.join("config.json"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(!written.contains("alerts"), "{written}");
+        assert!(
+            load_config(&paths)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .alerts
+                .is_none()
+        );
     }
 
     #[test]
@@ -224,14 +286,14 @@ mod tests {
         let paths = test_paths(directory.path());
         let expected = AgentConfig {
             relay_url: Some(String::from("https://relay.example.test")),
-            alerts: vec![AlertRule {
+            alerts: Some(vec![AlertRule {
                 id: String::from("cpu-warning"),
                 metric: String::from("cpu_percent"),
                 comparison: Comparison::GreaterThanOrEqual,
                 threshold: 80.0,
                 consecutive_samples: 3,
                 severity: NodeState::Warning,
-            }],
+            }]),
             bind_port: Some(7777),
         };
 

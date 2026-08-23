@@ -39,6 +39,8 @@ are defined in [`SUPPORT.md`](SUPPORT.md) and [`GOVERNANCE.md`](GOVERNANCE.md).
 
 - CPU, memory, swap, disk, network rate, hottest-sensor temperature, uptime,
   OS and architecture collection
+- built-in disk capacity alerts at 90 % and 95 %, replaceable per machine, with
+  OS notifications that name the filesystem that crossed
 - 2-second live sampling, 10-second SQLite WAL batches, 24-hour raw and 7-day
   minute history, capped at 64 MiB
 - iroh QUIC/TLS 1.3 transport with pinned endpoint identities
