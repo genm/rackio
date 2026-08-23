@@ -268,6 +268,14 @@ jobs:
       - name: Exercise monitored address change and recovery
         if: env.RUN_RUST == 'true' && runner.os == 'Linux'
         run: scripts/test-two-daemon-address-change.sh
+      - name: Verify the rootless Linux installer contract
+        # The installer ships to Linux but this test only ever ran on a
+        # developer's macOS host through `mise run check`, which is how a
+        # `shasum`-only call survived in it. The Linux leg owns `install.sh` and
+        # `packaging/linux/**` already, so the platform it targets is also the
+        # platform that proves it.
+        if: env.RUN_RUST == 'true' && runner.os == 'Linux'
+        run: packaging/linux/install.test.sh
       - name: Exercise secured named-pipe IPC
         if: env.RUN_RUST == 'true' && runner.os == 'Windows'
         shell: pwsh

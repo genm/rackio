@@ -105,7 +105,17 @@ mkdir "$missing_notice_dir"
 tar -xzf "$asset" -C "$missing_notice_dir"
 rm -f "$missing_notice_dir/THIRDPARTY.html"
 tar -C "$missing_notice_dir" -czf "$missing_notice_asset" .
-missing_notice_digest="$(shasum -a 256 "$missing_notice_asset" | awk '{ print $1 }')"
+# Same fallback as `install.sh` and `package-release.sh`: a Debian-family host
+# ships `sha256sum` and no `shasum`, and hardcoding either one is what kept this
+# test from running anywhere but a macOS development machine.
+if command -v sha256sum >/dev/null 2>&1; then
+  missing_notice_digest="$(sha256sum "$missing_notice_asset" | awk '{ print $1 }')"
+elif command -v shasum >/dev/null 2>&1; then
+  missing_notice_digest="$(shasum -a 256 "$missing_notice_asset" | awk '{ print $1 }')"
+else
+  echo 'rackio install test: sha256sum or shasum is required' >&2
+  exit 1
+fi
 printf '%s  %s\n' "$missing_notice_digest" "$(basename "$missing_notice_asset")" \
   >"$missing_notice_asset.sha256"
 if RACKIO_INSTALL_ROOT="$test_root/missing-notice-root" \
