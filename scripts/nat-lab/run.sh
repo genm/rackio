@@ -19,12 +19,24 @@ source "$repo_root/scripts/nat-lab/lib/lab.sh"
 
 # Scenario id -> script. Adding the relay and symmetric-NAT scenarios means
 # adding a row here and a script beside the others; nothing else changes.
-scenario_ids=(same_lan_direct port_forwarded_direct address_change)
+scenario_ids=(
+  same_lan_direct
+  port_forwarded_direct
+  address_change
+  symmetric_nat_relay_fallback
+  relay_outage
+  udp_blocked
+  path_migration
+)
 scenario_script() {
   case "$1" in
   same_lan_direct) echo "$lab_dir/scenarios/same-lan-direct.sh" ;;
   port_forwarded_direct) echo "$lab_dir/scenarios/port-forwarded-direct.sh" ;;
   address_change) echo "$lab_dir/scenarios/address-change.sh" ;;
+  symmetric_nat_relay_fallback) echo "$lab_dir/scenarios/symmetric-nat-relay-fallback.sh" ;;
+  relay_outage) echo "$lab_dir/scenarios/relay-outage.sh" ;;
+  udp_blocked) echo "$lab_dir/scenarios/udp-blocked.sh" ;;
+  path_migration) echo "$lab_dir/scenarios/path-migration.sh" ;;
   *) return 1 ;;
   esac
 }
@@ -78,6 +90,10 @@ for id in "${requested[@]}"; do
   # reproducible one at a time from the checked-in compose file, which they are
   # not if they inherit another scenario's pairing state or NAT conntrack.
   lab_down
+  # The relay starts with an empty allowlist, which denies everyone. A relay
+  # scenario authorises exactly its own machines once their endpoint IDs exist;
+  # a direct-only scenario leaves the relay serving nobody.
+  lab_relay_render_config
   lab_up
   if bash "$(scenario_script "$id")"; then
     passed+=("$id")
