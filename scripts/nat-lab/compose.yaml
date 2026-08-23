@@ -1,0 +1,141 @@
+# Rackio NAT laboratory topology.
+#
+# This file is the evidence artefact the release checklist asks for: every
+# address, route and NAT rule a scenario depends on is declared here, so a
+# report under test-results/nat-matrix/ can be reproduced from the checked-in
+# topology alone.
+#
+#   lan_a         192.168.101.0/24  flat LAN, no router      (same-LAN direct)
+#   lan_b         192.168.102.0/24  behind router-b          (monitored side)
+#   lan_c         192.168.103.0/24  behind router-c          (viewer side)
+#   net_internet  192.0.2.0/24      shared "internet" segment
+#
+# 192.0.2.0/24 is RFC 5737 TEST-NET-1. It is deliberately *not* an RFC 1918
+# range, so a path across it is classified `wan_direct` by the agent rather
+# than `lan_direct`, which is what a real WAN path must report.
+#
+# Every network is `internal`, so a lab machine physically cannot reach
+# anything outside the topology. Direct-only mode is then proven by the
+# topology, not only by configuration.
+
+name: rackio-nat-lab
+
+x-machine: &machine
+  image: rackio-nat-lab-agent:local
+  init: true
+  # NET_ADMIN installs the route to the NAT router; NET_RAW lets tcpdump
+  # capture on the LAN interface.
+  cap_add:
+    - NET_ADMIN
+    - NET_RAW
+  security_opt:
+    - no-new-privileges:true
+  environment:
+    RUST_LOG: info
+
+x-router: &router
+  image: rackio-nat-lab-router:local
+  init: true
+  cap_add:
+    - NET_ADMIN
+    - NET_RAW
+  sysctls:
+    net.ipv4.ip_forward: "1"
+
+services:
+  # --- Flat LAN: same-LAN direct and address change -------------------------
+  lan-a-viewer:
+    <<: *machine
+    container_name: rackio-nat-lab-lan-a-viewer
+    hostname: viewer-a.lab.test
+    networks:
+      lan_a:
+        ipv4_address: 192.168.101.10
+
+  lan-a-monitored:
+    <<: *machine
+    container_name: rackio-nat-lab-lan-a-monitored
+    hostname: monitored-a.lab.test
+    networks:
+      lan_a:
+        ipv4_address: 192.168.101.11
+
+  # --- Two NATed LANs: port-forwarded direct --------------------------------
+  router-b:
+    <<: *router
+    container_name: rackio-nat-lab-router-b
+    hostname: router-b.lab.test
+    environment:
+      NAT_MODE: endpoint_independent
+      NAT_LAN_SUBNET: 192.168.102.0/24
+      NAT_WAN_SUBNET: 192.0.2.0/24
+      # The operator's port forward: the monitored machine's fixed listen port
+      # (`rackio listen-port set 41641`) published on the router's WAN address.
+      NAT_PORT_FORWARDS: udp:41641:192.168.102.10:41641
+    networks:
+      lan_b:
+        ipv4_address: 192.168.102.2
+      net_internet:
+        ipv4_address: 192.0.2.2
+
+  router-c:
+    <<: *router
+    container_name: rackio-nat-lab-router-c
+    hostname: router-c.lab.test
+    environment:
+      NAT_MODE: endpoint_independent
+      NAT_LAN_SUBNET: 192.168.103.0/24
+      NAT_WAN_SUBNET: 192.0.2.0/24
+    networks:
+      lan_c:
+        ipv4_address: 192.168.103.2
+      net_internet:
+        ipv4_address: 192.0.2.3
+
+  lan-b-monitored:
+    <<: *machine
+    container_name: rackio-nat-lab-lan-b-monitored
+    hostname: monitored-b.lab.test
+    environment:
+      RUST_LOG: info
+      LAB_DEFAULT_GATEWAY: 192.168.102.2
+    depends_on:
+      - router-b
+    networks:
+      lan_b:
+        ipv4_address: 192.168.102.10
+
+  lan-c-viewer:
+    <<: *machine
+    container_name: rackio-nat-lab-lan-c-viewer
+    hostname: viewer-c.lab.test
+    environment:
+      RUST_LOG: info
+      LAB_DEFAULT_GATEWAY: 192.168.103.2
+    depends_on:
+      - router-c
+    networks:
+      lan_c:
+        ipv4_address: 192.168.103.10
+
+networks:
+  lan_a:
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.101.0/24
+  lan_b:
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.102.0/24
+  lan_c:
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.103.0/24
+  net_internet:
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.0.2.0/24
