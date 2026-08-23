@@ -1,17 +1,20 @@
 import { ago, bytes, shortDuration, timeOfDay, uptime } from "../format";
-import { swapDetail, temperatureDetail, tileValues } from "../machine-presentation";
-import { connectionPathRegistry, nodeStateRegistry } from "../state-model";
+import {
+  swapDetail,
+  temperatureDetail,
+  tileValues,
+  unavailableTileValues,
+} from "../machine-presentation";
+import { connectionPathRegistry, isLiveNodeState, nodeStateRegistry } from "../state-model";
 import { type TrendMetric, trendLines, trendMetricRegistry, trendScale } from "../trend-series";
 import type { FleetNode } from "../types";
 import { TrendChart } from "./TrendChart";
 
 /**
- * States in which the metric stream is still delivering: everything shown is
- * current. Stale/offline/auth/incompatible machines keep their last numbers on
- * screen, but those must read as "as of last contact", not as live.
+ * States in which the metric stream is still delivering: values shown on the
+ * card are current only in these states. Last-known samples remain available
+ * to the muted trend for diagnosis, but are not rendered as current numbers.
  */
-const liveStates = new Set(["healthy", "warning", "degraded", "critical"]);
-
 export function NodeCard({
   node,
   metric,
@@ -25,14 +28,14 @@ export function NodeCard({
 }) {
   const state = nodeStateRegistry[node.state];
   const path = connectionPathRegistry[node.path];
-  const live = liveStates.has(node.state);
+  const live = isLiveNodeState(node.state);
   const spec = trendMetricRegistry[metric];
   const series = trendLines(node.trend, metric);
   const spanSeconds =
     series.firstMs !== undefined && series.lastMs !== undefined
       ? (series.lastMs - series.firstMs) / 1000
       : 0;
-  const values = tileValues(node);
+  const values = live ? tileValues(node) : unavailableTileValues;
   const currentValue = values[metric] === "—" ? "" : values[metric];
   // A machine that streams samples but never reports this metric (a sensorless
   // host, the local machine's RTT) must say so instead of promising data.
@@ -109,7 +112,9 @@ export function NodeCard({
       </div>
       <footer>
         <span>
-          Memory {bytes(node.memoryUsedBytes)} / {bytes(node.memoryTotalBytes)}
+          {live
+            ? `Memory ${bytes(node.memoryUsedBytes)} / ${bytes(node.memoryTotalBytes)}`
+            : "Current memory unavailable"}
         </span>
         {/* Uptime is a card field rather than a trend tile, and that is not the
             trend rule being broken: the rule in `trend-series.ts` covers
@@ -117,7 +122,9 @@ export function NodeCard({
             rendering of a single fixed instant — the boot time — so a chart of
             it could only draw a straight ramp. What an operator reads from it
             (did this machine restart?) is in the one number. */}
-        <span title="Time since this machine last booted">Uptime {uptime(node.uptimeSeconds)}</span>
+        <span title="Time since this machine last booted">
+          {live ? `Uptime ${uptime(node.uptimeSeconds)}` : "Current uptime unavailable"}
+        </span>
         {/* The daemon derives stale/offline from age without attaching a
             detail string, so an unconditional "operational" fallback would
             claim a healthy collector for an unreachable machine. */}
@@ -126,8 +133,8 @@ export function NodeCard({
             (node.state === "healthy"
               ? "Collectors operational"
               : `No detail reported · ${state.label}`)}
-          {/* The failure detail must stay visible; the age is appended so the
-              frozen numbers above are datable without hiding the cause. */}
+          {/* Keep the failure detail and contact age visible while current
+              metric values remain deliberately unavailable. */}
           {!live && node.lastSeenMs !== undefined
             ? ` · last contact ${ago(node.lastSeenMs, Date.now())}`
             : null}

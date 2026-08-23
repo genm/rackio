@@ -1,4 +1,5 @@
 import { shortDuration, timeOfDay } from "../format";
+import { isLiveNodeState } from "../state-model";
 import {
   type TrendLine,
   type TrendMetric,
@@ -26,11 +27,15 @@ export function FleetCompare({
   onMetricChange: (metric: TrendMetric) => void;
 }) {
   const spec = trendMetricRegistry[metric];
+  // Comparing a frozen sample with live samples makes an outage look like a
+  // current outlier. Keep the comparison truthful by plotting live streams
+  // only; the per-machine card retains the muted last-contact trend.
+  const liveNodes = nodes.filter((node) => isLiveNodeState(node.state));
   const lines: TrendLine[] = [];
   const values: number[] = [];
   let firstMs: number | undefined;
   let lastMs: number | undefined;
-  for (const node of nodes) {
+  for (const node of liveNodes) {
     const series = trendLines(node.trend, metric);
     // Each machine contributes one line, so a two-line metric is flattened
     // with the series name kept alongside the machine it belongs to.
@@ -76,7 +81,7 @@ export function FleetCompare({
         label={`${spec.chartTitle} across every machine over the last ${shortDuration(spanSeconds)}`}
         startLabel={values.length >= 2 ? `${shortDuration(spanSeconds)} ago` : undefined}
         endLabel="now"
-        emptyText={`No machine reports ${spec.label} yet`}
+        emptyText={`No live machine reports ${spec.label} yet`}
         formatTime={timeOfDay}
       />
     </section>

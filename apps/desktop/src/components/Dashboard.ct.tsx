@@ -127,7 +127,9 @@ test("every metric tile switches the trend chart", async ({ mount }) => {
   await studio.screenshot({ path: "../../output/playwright/node-card-rtt.png" });
 });
 
-test("dates an offline machine's numbers instead of presenting them as live", async ({ mount }) => {
+test("hides an offline machine's current numbers while preserving last-contact context", async ({
+  mount,
+}) => {
   const offline: FleetSnapshot = {
     daemon: "connected",
     nodes: [
@@ -150,13 +152,43 @@ test("dates an offline machine's numbers instead of presenting them as live", as
   };
   const component = await mount(<Dashboard snapshot={offline} />);
   const card = component.locator("article").filter({ hasText: "Steam Deck" });
-  // The frozen trend must not claim to end "now", and the stale numbers must
-  // be datable without hiding the failure cause.
+  // Frozen samples remain in the muted diagnostic trend, but current metric
+  // surfaces must not imply that an offline machine is still reporting.
+  await expect(card.locator(".metric-value")).toHaveText(["—", "—", "—", "—", "—", "—", "—"]);
+  await expect(card.locator(".trend-now")).toHaveText("");
+  await expect(card.getByText("Current memory unavailable", { exact: true })).toBeVisible();
+  await expect(card.getByText("Current uptime unavailable", { exact: true })).toBeVisible();
   await expect(card.getByText("last contact", { exact: true })).toBeVisible();
   await expect(
     card.getByText(/remote operation timed out: connect · last contact 5 min ago/),
   ).toBeVisible();
   await card.screenshot({ path: "../../output/playwright/node-card-offline.png" });
+});
+
+test("excludes offline machines from the live comparison", async ({ mount }) => {
+  const component = await mount(
+    <Dashboard
+      snapshot={{
+        daemon: "connected",
+        nodes: [
+          ...snapshot.nodes,
+          {
+            id: "node-3",
+            name: "Steam Deck",
+            os: "Linux · x86_64",
+            state: "offline",
+            path: "lan_direct",
+            cpuPercent: 2,
+            trend: trendFixture([2, 3, 2, 4, 2, 3], 4_000_000_000, 15_500_000_000),
+          },
+        ],
+      }}
+    />,
+  );
+  await component.getByRole("button", { name: "Compare machines" }).click();
+  const chart = component.getByRole("img", { name: /across every machine/ });
+  await expect(chart).toBeVisible();
+  await expect(component.locator(".trend-legend")).not.toContainText("Steam Deck");
 });
 
 test("puts the worst machine first so it needs no scrolling", async ({ mount }) => {

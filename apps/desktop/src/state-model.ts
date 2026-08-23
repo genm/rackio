@@ -34,6 +34,13 @@ export const connectionPathRegistry: Record<
   unknown: { label: "Unknown path", description: "Path has not been verified" },
 };
 
+const liveNodeStates = new Set<NodeState>(["healthy", "warning", "degraded", "critical"]);
+
+/** A metric is current only while the agent is still receiving the stream. */
+export function isLiveNodeState(state: NodeState): boolean {
+  return liveNodeStates.has(state);
+}
+
 // Keep production defaults in one fixture-free module. Components may use
 // these values directly without pulling the component-test state space into
 // the shipped application bundle.
