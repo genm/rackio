@@ -17,6 +17,11 @@ pub(crate) fn history_point_from_sample(sample: &serde_json::Value) -> serde_jso
         "cpuPercent": sample.get("cpu_percent"),
         "memoryUsedBytes": sample.get("memory_used_bytes"),
         "memoryTotalBytes": sample.get("memory_total_bytes"),
+        // The peer's minute buckets aggregate swap alongside memory and disk,
+        // so history offers it on the same terms; a bucket written before swap
+        // was aggregated reports it absent rather than as a stale spot value.
+        "swapUsedBytes": sample.get("swap_used_bytes"),
+        "swapTotalBytes": sample.get("swap_total_bytes"),
         "diskUsedBytes": worst_disk.and_then(|disk| disk.get("used_bytes")),
         "diskTotalBytes": worst_disk.and_then(|disk| disk.get("total_bytes")),
         "temperatureCelsius": sample
@@ -39,6 +44,8 @@ fn trend_point_json(sample: &serde_json::Value) -> serde_json::Value {
         "cpuPercent": sample.get("cpu_percent"),
         "memoryUsedBytes": sample.get("memory_used_bytes"),
         "memoryTotalBytes": sample.get("memory_total_bytes"),
+        "swapUsedBytes": sample.get("swap_used_bytes"),
+        "swapTotalBytes": sample.get("swap_total_bytes"),
         "diskUsedBytes": sample.get("disk_used_bytes"),
         "diskTotalBytes": sample.get("disk_total_bytes"),
         "temperatureCelsius": sample.get("temperature_celsius"),
@@ -106,6 +113,15 @@ pub(crate) fn machine_json(
                 "sensorCount": temperature.get("sensor_count"),
             })
         });
+    // `uptime_seconds` is a non-optional wire field, so "the peer did not
+    // report an uptime" and "the peer booted this instant" arrive as the same
+    // zero. The collector samples every two seconds, so a genuine zero is not
+    // observable; reading it as unknown is the honest half of that ambiguity,
+    // and the card then shows "—" rather than claiming a just-booted machine.
+    let uptime_seconds = latest
+        .get("uptime_seconds")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|seconds| *seconds > 0);
     Ok(serde_json::json!({
         "id": node_id,
         "endpointId": source.get("endpoint_id"),
@@ -120,6 +136,11 @@ pub(crate) fn machine_json(
         "cpuPercent": cpu,
         "memoryUsedBytes": latest.get("memory_used_bytes"),
         "memoryTotalBytes": latest.get("memory_total_bytes"),
+        // A machine with swap disabled reports a genuine zero total. It is
+        // carried through unchanged: the viewer reads a zero-capacity device as
+        // "no swap", which is not the same claim as "swap is 0 % used".
+        "swapUsedBytes": latest.get("swap_used_bytes"),
+        "swapTotalBytes": latest.get("swap_total_bytes"),
         "diskUsedBytes": disk_used,
         "diskTotalBytes": disk_total,
         "temperature": temperature,
@@ -130,6 +151,7 @@ pub(crate) fn machine_json(
             .get("network")
             .and_then(|network| network.get("sent_bytes_per_second")),
         "rttMs": rtt_ms,
+        "uptimeSeconds": uptime_seconds,
         "lastSeenMs": last_seen_ms,
         "trend": trend.iter().map(trend_point_json).collect::<Vec<_>>(),
         "detail": detail,
@@ -196,6 +218,8 @@ mod tests {
             "cpu_percent": 12.5,
             "memory_used_bytes": 3_000,
             "memory_total_bytes": 4_000,
+            "swap_used_bytes": 512,
+            "swap_total_bytes": 2_048,
             "disk_used_bytes": 90,
             "disk_total_bytes": 100,
             "temperature_celsius": 61.5,
@@ -213,6 +237,8 @@ mod tests {
                 "cpuPercent": 12.5,
                 "memoryUsedBytes": 3_000,
                 "memoryTotalBytes": 4_000,
+                "swapUsedBytes": 512,
+                "swapTotalBytes": 2_048,
                 "diskUsedBytes": 90,
                 "diskTotalBytes": 100,
                 "temperatureCelsius": 61.5,
@@ -224,12 +250,60 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_carries_its_swap_and_uptime_or_says_it_has_neither() {
+        let source = serde_json::json!({
+            "node": { "node_id": "id", "display_name": "Server" },
+            "latest": {
+                "cpu_percent": 12.0,
+                "swap_used_bytes": 1_024,
+                "swap_total_bytes": 4_096,
+                "uptime_seconds": 93_784,
+            },
+        });
+        let machine = machine_json(&source, "healthy", "lan_direct", None, None, &[], None)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(machine["swapUsedBytes"], 1_024);
+        assert_eq!(machine["swapTotalBytes"], 4_096);
+        assert_eq!(machine["uptimeSeconds"], 93_784);
+
+        // A machine that reports no swap device keeps its real zero capacity:
+        // the viewer distinguishes "no swap" from "swap at 0 %". Its uptime
+        // arrives as the wire's non-optional zero, which is indistinguishable
+        // from an unreported one and must therefore read as unknown.
+        let swapless = serde_json::json!({
+            "node": { "node_id": "id", "display_name": "Server" },
+            "latest": {
+                "cpu_percent": 12.0,
+                "swap_used_bytes": 0,
+                "swap_total_bytes": 0,
+                "uptime_seconds": 0,
+            },
+        });
+        let machine = machine_json(&swapless, "healthy", "lan_direct", None, None, &[], None)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(machine["swapTotalBytes"], 0);
+        assert!(machine["uptimeSeconds"].is_null());
+
+        // A machine that has never delivered a sample invents neither.
+        let unsampled = serde_json::json!({
+            "node": { "node_id": "id", "display_name": "Server" },
+        });
+        let machine = machine_json(&unsampled, "offline", "unknown", None, None, &[], None)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(machine["swapUsedBytes"].is_null());
+        assert!(machine["swapTotalBytes"].is_null());
+        assert!(machine["uptimeSeconds"].is_null());
+    }
+
+    #[test]
     fn history_point_carries_the_minute_averaged_disk_and_temperature() {
         let sample = serde_json::json!({
             "timestamp_ms": 60_000,
             "cpu_percent": 20.0,
             "memory_used_bytes": 100,
             "memory_total_bytes": 200,
+            "swap_used_bytes": 512,
+            "swap_total_bytes": 2_048,
             "disks": [{"mount": "(minute average)", "used_bytes": 25, "total_bytes": 100}],
             "temperature": {"label": "(minute average)", "celsius": 50.0, "sensor_count": 0},
             "network": {"received_bytes_per_second": 10, "sent_bytes_per_second": 20},
@@ -240,11 +314,13 @@ mod tests {
         assert_eq!(point["diskUsedBytes"], 25);
         assert_eq!(point["diskTotalBytes"], 100);
         assert_eq!(point["temperatureCelsius"], 50.0);
+        assert_eq!(point["swapUsedBytes"], 512);
+        assert_eq!(point["swapTotalBytes"], 2_048);
         assert_eq!(point["networkReceivedBytesPerSecond"], 10);
     }
 
     #[test]
-    fn history_point_reports_no_disk_or_temperature_when_the_minute_had_neither() {
+    fn history_point_reports_no_disk_temperature_or_swap_when_the_minute_had_none() {
         let sample = serde_json::json!({
             "timestamp_ms": 60_000,
             "cpu_percent": 20.0,
@@ -257,5 +333,7 @@ mod tests {
         assert!(point["diskUsedBytes"].is_null());
         assert!(point["diskTotalBytes"].is_null());
         assert!(point["temperatureCelsius"].is_null());
+        assert!(point["swapUsedBytes"].is_null());
+        assert!(point["swapTotalBytes"].is_null());
     }
 }

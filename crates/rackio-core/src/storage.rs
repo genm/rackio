@@ -80,6 +80,9 @@ impl MetricStore {
                 disk_total_sum INTEGER,
                 temp_count INTEGER NOT NULL DEFAULT 0,
                 temp_sum REAL,
+                swap_count INTEGER NOT NULL DEFAULT 0,
+                swap_used_sum INTEGER,
+                swap_total_sum INTEGER,
                 last_sample_json TEXT NOT NULL
             );
             ",
@@ -144,6 +147,20 @@ impl MetricStore {
                 .temperature
                 .as_ref()
                 .map(|temperature| f64::from(temperature.celsius));
+            // Used and total are gated on one column pair for the same reason
+            // as disk: a used fraction averaged against a different minute's
+            // total would misstate the ratio. A machine with swap disabled
+            // reports a real `Some(0)` total and is aggregated like any other
+            // reading — the viewer, not the store, decides that a zero-capacity
+            // device has no percentage to show.
+            let swap = sample
+                .swap_used_bytes
+                .zip(sample.swap_total_bytes)
+                .and_then(|(used, total)| {
+                    Some((i64::try_from(used).ok()?, i64::try_from(total).ok()?))
+                });
+            let swap_used = swap.map(|(used, _)| used);
+            let swap_total = swap.map(|(_, total)| total);
             let json = serde_json::to_string(sample)?;
 
             transaction.execute(
@@ -152,14 +169,16 @@ impl MetricStore {
                     minute_ms, sample_count, cpu_count, cpu_sum,
                     memory_used_count, memory_used_sum, rx_count, rx_sum,
                     tx_count, tx_sum, disk_count, disk_used_sum, disk_total_sum,
-                    temp_count, temp_sum, last_sample_json
+                    temp_count, temp_sum, swap_count, swap_used_sum, swap_total_sum,
+                    last_sample_json
                 ) VALUES (
                     ?1, 1, CASE WHEN ?2 IS NULL THEN 0 ELSE 1 END, ?2,
                     CASE WHEN ?3 IS NULL THEN 0 ELSE 1 END, ?3,
                     CASE WHEN ?4 IS NULL THEN 0 ELSE 1 END, ?4,
                     CASE WHEN ?5 IS NULL THEN 0 ELSE 1 END, ?5,
                     CASE WHEN ?6 IS NULL THEN 0 ELSE 1 END, ?6, ?7,
-                    CASE WHEN ?8 IS NULL THEN 0 ELSE 1 END, ?8, ?9
+                    CASE WHEN ?8 IS NULL THEN 0 ELSE 1 END, ?8,
+                    CASE WHEN ?9 IS NULL THEN 0 ELSE 1 END, ?9, ?10, ?11
                 )
                 ON CONFLICT(minute_ms) DO UPDATE SET
                     sample_count = sample_count + 1,
@@ -176,10 +195,14 @@ impl MetricStore {
                     disk_total_sum = COALESCE(disk_total_sum, 0) + COALESCE(excluded.disk_total_sum, 0),
                     temp_count = temp_count + excluded.temp_count,
                     temp_sum = COALESCE(temp_sum, 0) + COALESCE(excluded.temp_sum, 0),
+                    swap_count = swap_count + excluded.swap_count,
+                    swap_used_sum = COALESCE(swap_used_sum, 0) + COALESCE(excluded.swap_used_sum, 0),
+                    swap_total_sum = COALESCE(swap_total_sum, 0) + COALESCE(excluded.swap_total_sum, 0),
                     last_sample_json = excluded.last_sample_json
                 ",
                 params![
-                    minute_ms, cpu, memory, rx, tx, disk_used, disk_total, temp, json
+                    minute_ms, cpu, memory, rx, tx, disk_used, disk_total, temp, swap_used,
+                    swap_total, json
                 ],
             )?;
         }
@@ -243,6 +266,7 @@ impl MetricStore {
             SELECT minute_ms, cpu_count, cpu_sum, memory_used_count, memory_used_sum,
                    rx_count, rx_sum, tx_count, tx_sum,
                    disk_count, disk_used_sum, disk_total_sum, temp_count, temp_sum,
+                   swap_count, swap_used_sum, swap_total_sum,
                    last_sample_json
             FROM minute_metrics
             WHERE minute_ms BETWEEN ?1 AND ?2 ORDER BY minute_ms LIMIT ?3
@@ -265,7 +289,10 @@ impl MetricStore {
                 row.get::<_, Option<i64>>(11)?,
                 row.get::<_, i64>(12)?,
                 row.get::<_, Option<f64>>(13)?,
-                row.get::<_, String>(14)?,
+                row.get::<_, i64>(14)?,
+                row.get::<_, Option<i64>>(15)?,
+                row.get::<_, Option<i64>>(16)?,
+                row.get::<_, String>(17)?,
             ))
         })?;
 
@@ -285,6 +312,9 @@ impl MetricStore {
                 disk_total,
                 temp_count,
                 temp,
+                swap_count,
+                swap_used,
+                swap_total,
                 json,
             ) = row?;
             let mut sample: MetricSample = serde_json::from_str(&json)?;
@@ -311,6 +341,13 @@ impl MetricStore {
             } else {
                 Vec::new()
             };
+            // Read from the minute aggregate, never left at whatever the last
+            // sample of the minute happened to hold: a bucket written before
+            // swap was aggregated has `swap_count == 0` and must report an
+            // absent reading rather than a stale spot value dressed as a
+            // minute average.
+            sample.swap_used_bytes = average_i64(swap_used, swap_count);
+            sample.swap_total_bytes = average_i64(swap_total, swap_count);
             sample.temperature = average_f64(temp, temp_count).map(|celsius| TemperatureMetric {
                 label: String::from("(minute average)"),
                 celsius: f64_to_f32(celsius),
@@ -417,8 +454,8 @@ impl MetricStore {
     }
 }
 
-/// Add the disk/temperature aggregate columns to a `minute_metrics` table
-/// created before they existed.
+/// Add the later aggregate columns (disk, temperature, swap) to a
+/// `minute_metrics` table created before they existed.
 ///
 /// `CREATE TABLE IF NOT EXISTS` only runs the full DDL for a brand-new file,
 /// so a store opened against an older on-disk schema would otherwise never
@@ -427,12 +464,15 @@ impl MetricStore {
 /// has a column (the common case, once every store has been migrated once)
 /// is left untouched.
 fn migrate_minute_metrics_columns(connection: &Connection) -> Result<(), StoreError> {
-    const REQUIRED_COLUMNS: [(&str, &str); 5] = [
+    const REQUIRED_COLUMNS: [(&str, &str); 8] = [
         ("disk_count", "INTEGER NOT NULL DEFAULT 0"),
         ("disk_used_sum", "INTEGER"),
         ("disk_total_sum", "INTEGER"),
         ("temp_count", "INTEGER NOT NULL DEFAULT 0"),
         ("temp_sum", "REAL"),
+        ("swap_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("swap_used_sum", "INTEGER"),
+        ("swap_total_sum", "INTEGER"),
     ];
 
     let mut statement = connection.prepare("PRAGMA table_info(minute_metrics)")?;
@@ -840,6 +880,15 @@ mod tests {
             "a minute captured before this schema change has no disk average"
         );
         assert!(pre_existing[0].temperature.is_none());
+        assert_eq!(
+            (
+                pre_existing[0].swap_used_bytes,
+                pre_existing[0].swap_total_bytes
+            ),
+            (None, None),
+            "a minute captured before swap aggregation reports no swap rather \
+             than the last sample's spot reading dressed as a minute average"
+        );
 
         let mut with_disk = sample(120_000, 50.0);
         with_disk.disks = vec![DiskMetric {
@@ -861,6 +910,54 @@ mod tests {
 
         drop(store);
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn minute_history_averages_swap_and_keeps_an_unread_minute_absent() {
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        let mut first = sample(1_000, 10.0);
+        first.swap_used_bytes = Some(1_000);
+        first.swap_total_bytes = Some(4_000);
+        let mut second = sample(3_000, 10.0);
+        second.swap_used_bytes = Some(3_000);
+        second.swap_total_bytes = Some(4_000);
+        // A minute in which swap was never readable must stay absent: a zero
+        // would read as a machine with idle swap rather than an unknown one.
+        let mut unread = sample(120_000, 10.0);
+        unread.swap_used_bytes = None;
+        unread.swap_total_bytes = None;
+
+        store
+            .insert_batch(&[first, second, unread])
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let minute = store
+            .query(0, 180_000, HistoryResolution::Minute)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(minute[0].swap_used_bytes, Some(2_000));
+        assert_eq!(minute[0].swap_total_bytes, Some(4_000));
+        assert_eq!(
+            (minute[1].swap_used_bytes, minute[1].swap_total_bytes),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn minute_history_keeps_a_swapless_machine_at_a_real_zero_capacity() {
+        // Swap disabled is a reading, not a gap: the store carries the zero
+        // total through so the viewer can say "no swap device". Dropping it to
+        // `None` here would make a swapless machine indistinguishable from one
+        // whose swap could not be read at all.
+        let mut store = MetricStore::in_memory().unwrap_or_else(|error| panic!("{error}"));
+        store
+            .insert_batch(&[sample(1_000, 10.0)])
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let minute = store
+            .query(0, 60_000, HistoryResolution::Minute)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(minute[0].swap_used_bytes, Some(0));
+        assert_eq!(minute[0].swap_total_bytes, Some(0));
     }
 
     #[test]

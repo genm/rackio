@@ -50,6 +50,9 @@ const detailFixtureNode = {
   cpuPercent: 42,
   memoryUsedBytes: 12_000_000_000,
   memoryTotalBytes: 32_000_000_000,
+  swapUsedBytes: 1_073_741_824,
+  swapTotalBytes: 4_294_967_296,
+  uptimeSeconds: 12 * 86_400 + 4 * 3_600,
   temperature: {
     label: "Package id 0",
     celsius: 61.5,
@@ -80,47 +83,58 @@ const detailFixtureNode = {
   ],
 };
 
+const detailHistoryPoints = [
+  {
+    timestampMs: 1_750_000_000_000,
+    cpuPercent: 32,
+    memoryUsedBytes: 11_500_000_000,
+    memoryTotalBytes: 32_000_000_000,
+    swapUsedBytes: 1_000_000_000,
+    swapTotalBytes: 4_000_000_000,
+    diskUsedBytes: 180_000_000_000,
+    diskTotalBytes: 500_000_000_000,
+    temperatureCelsius: 58,
+  },
+  {
+    timestampMs: 1_750_000_060_000,
+    cpuPercent: 42,
+    memoryUsedBytes: 12_000_000_000,
+    memoryTotalBytes: 32_000_000_000,
+    swapUsedBytes: 2_000_000_000,
+    swapTotalBytes: 4_000_000_000,
+    diskUsedBytes: 185_000_000_000,
+    diskTotalBytes: 500_000_000_000,
+    temperatureCelsius: 61,
+  },
+  // A gap far wider than the one-minute spacing: the chart must break the
+  // line here rather than draw across an outage the machine never reported.
+  {
+    timestampMs: 1_750_003_600_000,
+    cpuPercent: 51,
+    memoryUsedBytes: 13_000_000_000,
+    memoryTotalBytes: 32_000_000_000,
+  },
+  {
+    timestampMs: 1_750_003_660_000,
+    cpuPercent: 47,
+    memoryUsedBytes: 12_800_000_000,
+    memoryTotalBytes: 32_000_000_000,
+  },
+];
+
 export const machineDetailStateRegistry: Record<string, MachineDetailState> = {
   closed: initialDesktopState.machineDetail,
   loading: { state: "loading", node: detailFixtureNode, hours: 24 },
-  ready: {
+  ready: { state: "ready", node: detailFixtureNode, hours: 24, points: detailHistoryPoints },
+  // A machine with swap disabled and no readable uptime. Both are genuine
+  // states of a real host — a container reports no swap device, and a peer that
+  // never delivered a sample has no boot time — and both must render as
+  // unavailable rather than as an idle machine that just booted.
+  swapless: {
     state: "ready",
-    node: detailFixtureNode,
+    node: { ...detailFixtureNode, swapUsedBytes: 0, swapTotalBytes: 0, uptimeSeconds: undefined },
     hours: 24,
-    points: [
-      {
-        timestampMs: 1_750_000_000_000,
-        cpuPercent: 32,
-        memoryUsedBytes: 11_500_000_000,
-        memoryTotalBytes: 32_000_000_000,
-        diskUsedBytes: 180_000_000_000,
-        diskTotalBytes: 500_000_000_000,
-        temperatureCelsius: 58,
-      },
-      {
-        timestampMs: 1_750_000_060_000,
-        cpuPercent: 42,
-        memoryUsedBytes: 12_000_000_000,
-        memoryTotalBytes: 32_000_000_000,
-        diskUsedBytes: 185_000_000_000,
-        diskTotalBytes: 500_000_000_000,
-        temperatureCelsius: 61,
-      },
-      // A gap far wider than the one-minute spacing: the chart must break the
-      // line here rather than draw across an outage the machine never reported.
-      {
-        timestampMs: 1_750_003_600_000,
-        cpuPercent: 51,
-        memoryUsedBytes: 13_000_000_000,
-        memoryTotalBytes: 32_000_000_000,
-      },
-      {
-        timestampMs: 1_750_003_660_000,
-        cpuPercent: 47,
-        memoryUsedBytes: 12_800_000_000,
-        memoryTotalBytes: 32_000_000_000,
-      },
-    ],
+    points: detailHistoryPoints,
   },
   empty: { state: "ready", node: detailFixtureNode, hours: 24, points: [] },
   error: {

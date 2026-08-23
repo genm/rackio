@@ -18,11 +18,26 @@ export function temperatureDetail(temperature?: TemperatureReading | null): stri
   return `${temperature.label}${sensors}${critical}`;
 }
 
+/**
+ * Say which kind of "—" a swap tile is showing. A machine with swap disabled
+ * and a machine whose swap could not be read both have no percentage, but they
+ * are different facts and an operator acts differently on each.
+ */
+export function swapDetail(node: FleetNode): string {
+  if (node.swapTotalBytes == null) return "No swap reading from this machine";
+  if (node.swapTotalBytes === 0) return "No swap device on this machine";
+  return `${bytes(node.swapUsedBytes)} of ${bytes(node.swapTotalBytes)} swap in use`;
+}
+
 /** The latest value each tile reports, in the tile's own unit. */
 export function tileValues(node: FleetNode): Record<TrendMetric, string> {
   return {
     cpu: node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`,
     memory: percent(node.memoryUsedBytes, node.memoryTotalBytes),
+    // `percent` already reads a zero total as unavailable, which is exactly
+    // right here: a machine with swap disabled has no percentage to report,
+    // and "0%" would claim idle swap on a machine that has none.
+    swap: percent(node.swapUsedBytes, node.swapTotalBytes),
     disk: percent(node.diskUsedBytes, node.diskTotalBytes),
     temp: celsius(node.temperature?.celsius),
     network:

@@ -9,6 +9,9 @@ function trendFixture(
   cpuValues: number[],
   memoryUsedBytes: number,
   memoryTotalBytes: number,
+  // Zero is what a machine with swap disabled genuinely reports, so the
+  // swapless fixtures carry it rather than omitting the field.
+  swapTotalBytes = 8_589_934_592,
 ): TrendPoint[] {
   const base = 1_750_000_000_000;
   return cpuValues.map((cpuPercent, index) => ({
@@ -16,6 +19,8 @@ function trendFixture(
     cpuPercent,
     memoryUsedBytes,
     memoryTotalBytes,
+    swapUsedBytes: swapTotalBytes === 0 ? 0 : 1_073_741_824 * (1 + (index % 2)),
+    swapTotalBytes,
     diskUsedBytes: 320_000_000_000,
     diskTotalBytes: 1_000_000_000_000,
     temperatureCelsius: 55 + cpuPercent / 10,
@@ -37,6 +42,9 @@ const snapshot: FleetSnapshot = {
       cpuPercent: 28,
       memoryUsedBytes: 12_800_000_000,
       memoryTotalBytes: 32_000_000_000,
+      swapUsedBytes: 2_147_483_648,
+      swapTotalBytes: 8_589_934_592,
+      uptimeSeconds: 12 * 86_400 + 4 * 3_600,
       diskUsedBytes: 320_000_000_000,
       diskTotalBytes: 1_000_000_000_000,
       temperature: {
@@ -62,10 +70,14 @@ const snapshot: FleetSnapshot = {
       memoryTotalBytes: 64_000_000_000,
       diskUsedBytes: 3_200_000_000_000,
       diskTotalBytes: 4_000_000_000_000,
-      // A machine with no readable sensor — a container or cloud VM.
+      // A machine with no readable sensor — a container or cloud VM. The same
+      // host has swap disabled and reports no uptime, so neither may be
+      // rendered as a healthy-looking zero.
       temperature: null,
+      swapUsedBytes: 0,
+      swapTotalBytes: 0,
       rttMs: 43,
-      trend: trendFixture([42, 54, 66, 71, 64, 61], 24_000_000_000, 64_000_000_000),
+      trend: trendFixture([42, 54, 66, 71, 64, 61], 24_000_000_000, 64_000_000_000, 0),
       detail: "Storage degraded",
     },
   ],
@@ -100,6 +112,7 @@ test("every metric tile switches the trend chart", async ({ mount }) => {
   const component = await mount(<Dashboard snapshot={snapshot} />);
   const studio = component.locator("article").filter({ hasText: "Studio Mac" });
   const expectations = [
+    { tile: /^Swap/, chart: "Studio Mac Swap usage over the last 10 s" },
     { tile: /^Disk/, chart: "Studio Mac Disk usage over the last 10 s" },
     { tile: /^Temp/, chart: "Studio Mac Temperature over the last 10 s" },
     { tile: /^RTT/, chart: "Studio Mac RTT over the last 10 s" },
@@ -249,6 +262,37 @@ test("shows a machine temperature without inventing one for a sensorless host", 
   const server = component.locator("article").filter({ hasText: "Home Server" });
   await expect(server.getByText("0 °C")).toHaveCount(0);
   await expect(server.locator(".metric-value").filter({ hasText: /^—$/ }).first()).toBeVisible();
+});
+
+test("plots swap and dates uptime without inventing either", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const studio = component.locator("article").filter({ hasText: "Studio Mac" });
+
+  // Swap is a sampled level, so it is a plottable tile like CPU and memory
+  // rather than a static number.
+  const swapTile = studio.getByRole("button", { name: /^Swap/ });
+  await expect(swapTile.locator(".metric-value")).toHaveText("25%");
+  await swapTile.click();
+  await expect(swapTile).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    studio.getByRole("img", { name: "Studio Mac Swap usage over the last 10 s" }),
+  ).toBeVisible();
+  // Uptime is a card field, not a series: it renders one fixed instant.
+  await expect(studio.getByText("Uptime 12d 4h")).toBeVisible();
+  await studio.screenshot({ path: "../../output/playwright/node-card-swap.png" });
+
+  // The swapless machine has no percentage to show and no uptime to date, and
+  // must say so on both instead of reading as idle swap since boot.
+  const server = component.locator("article").filter({ hasText: "Home Server" });
+  const serverSwap = server.getByRole("button", { name: /^Swap/ });
+  await expect(serverSwap.locator(".metric-value")).toHaveText("—");
+  await expect(serverSwap.locator(".metric-value")).toHaveAttribute(
+    "title",
+    "No swap device on this machine",
+  );
+  await serverSwap.click();
+  await expect(server.getByText("No Swap readings on this machine")).toBeVisible();
+  await expect(server.getByText("Uptime —")).toBeVisible();
 });
 
 test("imports a one-time pairing bundle from the desktop", async ({ mount }) => {
