@@ -61,6 +61,11 @@ test("also offers disk and temperature on the history chart", async ({ mount }) 
   await toggle.getByRole("button", { name: "Temp" }).click();
   await expect(component.getByRole("img", { name: /24h Temp history/ })).toBeVisible();
 
+  // Swap is offered because the peer's minute buckets aggregate it, on the
+  // same terms as memory and disk.
+  await toggle.getByRole("button", { name: "Swap" }).click();
+  await expect(component.getByRole("img", { name: /24h Swap history/ })).toBeVisible();
+
   // RTT never appears: the peer's storage never captures it, so widening the
   // schema for CPU/memory/disk/temp still cannot offer it here.
   await expect(toggle.getByRole("button", { name: "RTT" })).toHaveCount(0);
@@ -95,6 +100,28 @@ test("names the sensor behind the temperature it reports", async ({ mount }) => 
   );
   await expect(component.getByText("62 °C")).toBeVisible();
   await expect(component.getByText("Package id 0")).toBeVisible();
+});
+
+test("reports swap and uptime as machine fields", async ({ mount }) => {
+  const component = await mount(
+    <MachineDetail detail={machineDetailStateRegistry.ready} onClose={() => undefined} />,
+  );
+  const fields = component.locator(".detail-metrics");
+  await expect(fields.getByText("25%")).toBeVisible();
+  // Uptime is a field rather than a chart: it renders one fixed instant.
+  await expect(fields.getByText("12d 4h")).toBeVisible();
+});
+
+test("says a machine has no swap device and no uptime instead of showing zeroes", async ({
+  mount,
+}) => {
+  const component = await mount(
+    <MachineDetail detail={machineDetailStateRegistry.swapless} onClose={() => undefined} />,
+  );
+  const fields = component.locator(".detail-metrics");
+  await expect(fields.getByText("0%")).toHaveCount(0);
+  await expect(fields.getByText("0s")).toHaveCount(0);
+  await expect(fields.locator("dd").filter({ hasText: /^—$/ })).toHaveCount(2);
 });
 
 test("distinguishes empty history from a zero metric", async ({ mount }) => {

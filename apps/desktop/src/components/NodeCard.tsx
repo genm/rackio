@@ -1,5 +1,5 @@
-import { ago, bytes, shortDuration, timeOfDay } from "../format";
-import { temperatureDetail, tileValues } from "../machine-presentation";
+import { ago, bytes, shortDuration, timeOfDay, uptime } from "../format";
+import { swapDetail, temperatureDetail, tileValues } from "../machine-presentation";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-model";
 import { type TrendMetric, trendLines, trendMetricRegistry, trendScale } from "../trend-series";
 import type { FleetNode } from "../types";
@@ -40,6 +40,14 @@ export function NodeCard({
     node.trend.length >= 2
       ? `No ${spec.label} readings on this machine`
       : `Collecting ${spec.label} samples…`;
+  // Tiles whose "—" has more than one cause explain which one it is, so an
+  // unavailable reading is never mistaken for an idle machine.
+  const tileDetail = (tileMetric: TrendMetric) =>
+    tileMetric === "temp"
+      ? temperatureDetail(node.temperature)
+      : tileMetric === "swap"
+        ? swapDetail(node)
+        : undefined;
   const metricTile = (tileMetric: TrendMetric) => (
     <button
       key={tileMetric}
@@ -52,7 +60,7 @@ export function NodeCard({
       <span className="metric-label">{trendMetricRegistry[tileMetric].label}</span>
       <span
         className={`metric-value${tileMetric === "network" ? " metric-value-compact" : ""}`}
-        title={tileMetric === "temp" ? temperatureDetail(node.temperature) : undefined}
+        title={tileDetail(tileMetric)}
       >
         {values[tileMetric]}
       </span>
@@ -103,6 +111,13 @@ export function NodeCard({
         <span>
           Memory {bytes(node.memoryUsedBytes)} / {bytes(node.memoryTotalBytes)}
         </span>
+        {/* Uptime is a card field rather than a trend tile, and that is not the
+            trend rule being broken: the rule in `trend-series.ts` covers
+            periodically sampled quantities, and uptime is not one. It is a
+            rendering of a single fixed instant — the boot time — so a chart of
+            it could only draw a straight ramp. What an operator reads from it
+            (did this machine restart?) is in the one number. */}
+        <span title="Time since this machine last booted">Uptime {uptime(node.uptimeSeconds)}</span>
         {/* The daemon derives stale/offline from age without attaching a
             detail string, so an unconditional "operational" fallback would
             claim a healthy collector for an unreachable machine. */}

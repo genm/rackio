@@ -1,7 +1,7 @@
 import { useState } from "react";
 
-import { bytes, celsius, percent, timeOfDay } from "../format";
-import { temperatureDetail } from "../machine-presentation";
+import { bytes, celsius, percent, timeOfDay, uptime } from "../format";
+import { swapDetail, temperatureDetail } from "../machine-presentation";
 import { connectionPathRegistry, nodeStateRegistry } from "../state-model";
 import { type TrendMetric, trendLines, trendMetricRegistry, trendScale } from "../trend-series";
 import type { HistoryRange, MachineDetailState } from "../types";
@@ -10,12 +10,16 @@ import { TrendChart } from "./TrendChart";
 
 /**
  * The history query reads the peer's one-minute buckets, which aggregate CPU,
- * memory, disk and temperature. Network stays out until the schema aggregates
- * it; RTT stays out for good, being the viewer's own connection measurement
- * and never written to the peer's storage. The card's live trend covers the
- * full metric registry either way.
+ * memory, swap, disk and temperature. Network stays out until the schema
+ * aggregates it; RTT stays out for good, being the viewer's own connection
+ * measurement and never written to the peer's storage. The card's live trend
+ * covers the full metric registry either way.
+ *
+ * A metric belongs here only once the buckets actually carry it: offering one
+ * the peer cannot aggregate would draw an empty chart, or worse, a stale spot
+ * reading presented as a minute average.
  */
-const historyMetrics: TrendMetric[] = ["cpu", "memory", "disk", "temp"];
+const historyMetrics: TrendMetric[] = ["cpu", "memory", "swap", "disk", "temp"];
 
 const historyRanges: { hours: HistoryRange; label: string }[] = [
   { hours: 1, label: "1h" },
@@ -163,6 +167,20 @@ function MachineDetailDialog({
               <div>
                 <dt>Memory used</dt>
                 <dd>{bytes(node.memoryUsedBytes)}</dd>
+              </div>
+              <div>
+                <dt>Swap</dt>
+                {/* A machine with no swap device has no percentage to show;
+                    the title says which kind of "—" this is. */}
+                <dd title={swapDetail(node)}>{percent(node.swapUsedBytes, node.swapTotalBytes)}</dd>
+              </div>
+              <div>
+                <dt>Uptime</dt>
+                {/* Not a trend line, deliberately: uptime is a rendering of one
+                    fixed instant (the boot time) rather than a sampled level,
+                    so the carve-out in `trend-series.ts` applies and plotting
+                    it would only draw a straight ramp. */}
+                <dd>{uptime(node.uptimeSeconds)}</dd>
               </div>
               <div>
                 <dt>Temperature</dt>
