@@ -66,23 +66,31 @@ lab_assert_equal "direct_addresses_use_the_fixed_port" \
   "$(jq -r --arg port "$forwarded_port" \
     '[.data.direct_addresses[] | endswith(":" + $port)] | all' <<<"$status")" "true"
 
+# The machine can only see its own LAN interfaces, so the operator supplies the
+# address the router forwards. Nothing is probed: the address is configuration,
+# exactly like the fixed listen port above.
+advertise="$(lab_rackio "$monitored" advertise-address add \
+  "$monitored_wan_address:$forwarded_port")"
+lab_assert_true "advertised_address_saved" \
+  "the forwarded address was accepted as configuration" \
+  "$(jq -r '.ok' <<<"$advertise")"
+
 bundle="$(lab_rackio "$monitored" pairing create | jq -r '.data')"
-advertised="$(node "$lab_dir/lib/rewrite-bundle-addresses.mjs" --read "$bundle")"
-# The bundle advertises the machine's own interface addresses, which are behind
-# the NAT and unreachable from lan_c. Substitute the forwarded address the
-# operator would hand over. See the README: this stands in for a product gap.
-forwarded_bundle="$(node "$lab_dir/lib/rewrite-bundle-addresses.mjs" \
-  "$bundle" "$monitored_wan_address:$forwarded_port")"
+advertised="$(node "$lab_dir/lib/read-bundle-addresses.mjs" "$bundle")"
+lab_assert_true "bundle_carries_the_forwarded_address" \
+  "pairing create advertises the operator-configured address, so no bundle editing is needed" \
+  "$(jq -r --arg wanted "$monitored_wan_address:$forwarded_port" \
+    '[.[] | . == $wanted] | any' <<<"$advertised")"
 
 lab_observe bundle_addresses "$(jq -n \
   --argjson advertised "$advertised" \
-  --arg substituted "$monitored_wan_address:$forwarded_port" \
+  --arg configured "$monitored_wan_address:$forwarded_port" \
   '{advertised_by_pairing_create: $advertised,
-    substituted_for_the_viewer: [$substituted],
-    substitution_performed: true,
-    reason: "rackio fills direct_addresses from local interfaces only; in direct-only mode nothing discovers the router WAN address, and no CLI accepts one. The lab substitutes the forwarded address so this scenario tests the transport, not the missing UX."}')"
+    operator_configured: [$configured],
+    substitution_performed: false,
+    reason: "rackio advertise-address puts the forwarded address in the bundle, so the viewer imports exactly what the operator would hand over. The lab no longer rewrites bundles."}')"
 
-imported="$(lab_rackio "$viewer" pairing import "$forwarded_bundle")"
+imported="$(lab_rackio "$viewer" pairing import "$bundle")"
 lab_assert_true "pairing_accepted" \
   "the viewer paired across two NATs using the forwarded address" \
   "$(jq -r '.ok' <<<"$imported")"
