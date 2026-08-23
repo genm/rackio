@@ -59,6 +59,11 @@ impl SystemCollector {
     ///
     /// A component whose temperature is absent or non-finite is skipped rather
     /// than ranked as 0 °C, which would read as a frozen machine.
+    ///
+    /// This method is only the sysinfo adapter; the ranking it delegates to is
+    /// tested directly on the free function below. Mutating it away is
+    /// indistinguishable on a host with no sensor, so it is excluded in
+    /// `.cargo/mutants.toml` rather than left as a recurring finding.
     fn hottest_temperature(&self) -> Option<TemperatureMetric> {
         hottest_temperature(self.components.list().iter().map(|component| {
             (

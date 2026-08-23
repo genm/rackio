@@ -269,12 +269,18 @@ impl TrendWindow {
     /// enough to see a spike develop, small enough to ship in every snapshot.
     pub const CAPACITY: usize = 120;
 
+    /// Append one sample and restore the capacity bound, however far the
+    /// window started beyond it.
+    ///
+    /// The trim is unconditional rather than guarded by a length comparison: a
+    /// guard that only differs from this at exactly `CAPACITY`, where the trim
+    /// is already a no-op, is a branch no test can distinguish. Draining a
+    /// saturating overshoot says the same thing with one behaviour instead of
+    /// two.
     pub fn push(&mut self, sample: TrendSample) {
         self.samples.push(sample);
-        if self.samples.len() > Self::CAPACITY {
-            let excess = self.samples.len() - Self::CAPACITY;
-            self.samples.drain(..excess);
-        }
+        let excess = self.samples.len().saturating_sub(Self::CAPACITY);
+        self.samples.drain(..excess);
     }
 
     #[must_use]

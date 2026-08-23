@@ -1,0 +1,13 @@
+# cargo-mutants policy. Everything not listed here must be caught by a test:
+# an exclusion is a claim that no test *at that boundary* can distinguish the
+# mutant, and it needs the reason to live next to the code as well.
+
+exclude_re = [
+    # `SystemCollector::hottest_temperature` only adapts sysinfo's component
+    # list into the free `hottest_temperature` function, whose ranking and
+    # skip-non-finite rules are covered directly. Returning `None` instead is
+    # indistinguishable on any host that exposes no sensor, which a CI runner
+    # legitimately may not, so a hermetic test cannot pin the wrapper without
+    # asserting hardware the runner is not required to have.
+    "SystemCollector::hottest_temperature",
+]
