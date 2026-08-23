@@ -621,6 +621,17 @@ async fn monitor_session(
         apply_connection_path(snapshot, &record.endpoint_id, path, rtt_ms);
         snapshot.last_seen_ms = Some(Utc::now().timestamp_millis());
     }
+    // A reconnect that lands on the same path is not a path change, so the
+    // event above is silent for it — yet an operator reading the log still
+    // needs to see when monitoring resumed and over what. Sessions start on
+    // pairing and on recovery, not on a cadence, so this stays an event rather
+    // than becoming noise.
+    tracing::info!(
+        endpoint_id = %record.endpoint_id,
+        path = ?path,
+        rtt_ms,
+        "remote monitoring session established"
+    );
 
     let mut stream = tokio::time::timeout(
         REQUEST_TIMEOUT,
