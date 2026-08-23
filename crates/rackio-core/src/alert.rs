@@ -4,12 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{MetricSample, NodeState};
 
-/// The share of a filesystem at which an operator still has time to act.
-pub const DEFAULT_DISK_WARNING_PERCENT: f64 = 90.0;
-/// The share at which the usual reserve margin is gone and writes start failing.
-pub const DEFAULT_DISK_CRITICAL_PERCENT: f64 = 95.0;
-/// Two-second samples in a row required before a default rule changes state.
-const DEFAULT_CONSECUTIVE_SAMPLES: u32 = 3;
+/// Samples per minute at the two-second sampling cadence.
+const SAMPLES_PER_MINUTE: u32 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,44 +24,279 @@ pub struct AlertRule {
     pub severity: NodeState,
 }
 
-/// The capacity rules a machine runs when its operator has configured none.
+/// The levels Rackio treats as "generally worth acting on" when an operator has
+/// said nothing about a machine.
 ///
-/// Rackio still invents no CPU, memory or temperature level: a machine pinned
-/// at 100 % CPU may be doing exactly the job it was bought for, and safe
-/// sensor limits differ per board. Disk capacity is the exception that carries
-/// its own authority — free space is finite and non-renewable, and a
-/// filesystem that reaches 100 % takes down logs, databases and Rackio's own
-/// metric history regardless of what the machine is for. Rackio would
-/// otherwise stay silent through the one failure it can always see coming.
+/// Each one is chosen so that a machine which is merely busy stays quiet and a
+/// machine heading for a failure does not:
 ///
-/// The levels are the conventional capacity-planning pair: 90 % while there is
-/// still headroom to act, 95 % once the usual reserve is spent. Three samples
-/// in a row (six seconds) keep a transient build or backup spike from raising
-/// an alert.
+/// - **Disk** at 90 % still leaves headroom to act, 95 % spends the usual
+///   reserve. Free space is finite and non-renewable, so six seconds is enough
+///   confirmation.
+/// - **Memory** at 90 % for a full minute means the working set no longer fits
+///   and the machine is about to trade throughput for swap; 97 % is OOM-killer
+///   territory. The minute is what separates it from a large transient job.
+/// - **CPU** at 90 % for five minutes is saturation rather than work: a burst
+///   is normal, a sustained pin means requests are queueing. It is a warning
+///   only — a busy processor is not an outage — and it is the rule build and
+///   render machines most often turn off.
+/// - **Temperature** is measured against the limit the hardware itself
+///   publishes, never a number Rackio picked: within 5 °C of that limit is the
+///   warning, reaching it is critical. A machine whose OS publishes no limit
+///   resolves neither rule instead of being judged against a guess.
 ///
-/// These are defaults, not limits. An operator who sets `alerts` in the daemon
-/// configuration replaces them entirely, and an explicit empty list turns them
-/// off.
+/// Every level is a default, not a limit. `rackio alerts` changes a threshold,
+/// switches one rule off, or turns local alerting off entirely.
 #[must_use]
 pub fn default_alert_rules() -> Vec<AlertRule> {
+    let rule = |id: &str, metric: &str, comparison, threshold, samples, severity| AlertRule {
+        id: String::from(id),
+        metric: String::from(metric),
+        comparison,
+        threshold,
+        consecutive_samples: samples,
+        severity,
+    };
     vec![
-        AlertRule {
-            id: String::from("disk-capacity-warning"),
-            metric: String::from("disk_percent"),
-            comparison: Comparison::GreaterThanOrEqual,
-            threshold: DEFAULT_DISK_WARNING_PERCENT,
-            consecutive_samples: DEFAULT_CONSECUTIVE_SAMPLES,
-            severity: NodeState::Warning,
-        },
-        AlertRule {
-            id: String::from("disk-capacity-critical"),
-            metric: String::from("disk_percent"),
-            comparison: Comparison::GreaterThanOrEqual,
-            threshold: DEFAULT_DISK_CRITICAL_PERCENT,
-            consecutive_samples: DEFAULT_CONSECUTIVE_SAMPLES,
-            severity: NodeState::Critical,
-        },
+        rule(
+            "disk-capacity-warning",
+            "disk_percent",
+            Comparison::GreaterThanOrEqual,
+            90.0,
+            3,
+            NodeState::Warning,
+        ),
+        rule(
+            "disk-capacity-critical",
+            "disk_percent",
+            Comparison::GreaterThanOrEqual,
+            95.0,
+            3,
+            NodeState::Critical,
+        ),
+        rule(
+            "memory-pressure-warning",
+            "memory_percent",
+            Comparison::GreaterThanOrEqual,
+            90.0,
+            SAMPLES_PER_MINUTE,
+            NodeState::Warning,
+        ),
+        rule(
+            "memory-pressure-critical",
+            "memory_percent",
+            Comparison::GreaterThanOrEqual,
+            97.0,
+            SAMPLES_PER_MINUTE,
+            NodeState::Critical,
+        ),
+        rule(
+            "cpu-saturation-warning",
+            "cpu_percent",
+            Comparison::GreaterThanOrEqual,
+            90.0,
+            SAMPLES_PER_MINUTE * 5,
+            NodeState::Warning,
+        ),
+        rule(
+            "temperature-headroom-warning",
+            "temperature_headroom_celsius",
+            Comparison::LessThanOrEqual,
+            5.0,
+            15,
+            NodeState::Warning,
+        ),
+        rule(
+            "temperature-critical",
+            "temperature_headroom_celsius",
+            Comparison::LessThanOrEqual,
+            0.0,
+            15,
+            NodeState::Critical,
+        ),
     ]
+}
+
+/// Where an effective rule came from, so `rackio alerts list` can say whether a
+/// level is Rackio's or the operator's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertRuleSource {
+    BuiltIn,
+    Configured,
+}
+
+/// An operator's change to the shipped rules.
+///
+/// Only the fields an operator actually wants to change are present, so raising
+/// one disk threshold does not require restating every other level — and a
+/// later release that adds or retunes a default still reaches a machine whose
+/// operator only ever touched one rule. A configuration entry naming an unknown
+/// rule has to describe it in full; a half-described one is rejected rather
+/// than quietly ignored, because a rule that silently never fires is
+/// indistinguishable from a healthy machine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AlertRuleConfig {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<Comparison>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consecutive_samples: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity: Option<NodeState>,
+    /// `false` switches the rule off while keeping it visible and restorable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+impl AlertRuleConfig {
+    #[must_use]
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            metric: None,
+            comparison: None,
+            threshold: None,
+            consecutive_samples: None,
+            severity: None,
+            enabled: None,
+        }
+    }
+}
+
+/// One effective rule, including the ones an operator switched off: a disabled
+/// rule an operator cannot see is a rule they cannot turn back on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedAlertRule {
+    pub rule: AlertRule,
+    pub enabled: bool,
+    pub source: AlertRuleSource,
+}
+
+/// The metrics a rule may name. A typo here would produce a rule that can never
+/// fire, so resolution rejects anything else.
+pub const ALERT_METRICS: [&str; 5] = [
+    "cpu_percent",
+    "memory_percent",
+    "swap_percent",
+    "disk_percent",
+    "temperature_headroom_celsius",
+];
+
+/// Merge operator changes over the shipped rules.
+///
+/// Fails closed on anything that would produce a rule which cannot fire — an
+/// unknown metric, an undescribed new rule, a non-finite threshold, a severity
+/// that is not a health level — because such a rule is silent in exactly the
+/// same way a healthy machine is.
+///
+/// # Errors
+/// Returns the operator-facing reason the configuration cannot be applied.
+pub fn resolve_alert_rules(
+    overrides: &[AlertRuleConfig],
+) -> Result<Vec<ResolvedAlertRule>, String> {
+    let mut resolved: Vec<ResolvedAlertRule> = default_alert_rules()
+        .into_iter()
+        .map(|rule| ResolvedAlertRule {
+            rule,
+            enabled: true,
+            source: AlertRuleSource::BuiltIn,
+        })
+        .collect();
+    for change in overrides {
+        if let Some(known) = resolved.iter_mut().find(|known| known.rule.id == change.id) {
+            apply_override(&mut known.rule, change);
+            known.enabled = change.enabled.unwrap_or(known.enabled);
+            if changes_a_level(change) {
+                known.source = AlertRuleSource::Configured;
+            }
+        } else {
+            resolved.push(ResolvedAlertRule {
+                rule: new_rule(change)?,
+                enabled: change.enabled.unwrap_or(true),
+                source: AlertRuleSource::Configured,
+            });
+        }
+    }
+    for entry in &resolved {
+        validate(&entry.rule)?;
+    }
+    Ok(resolved)
+}
+
+/// A duplicate id would otherwise let a later entry silently win.
+fn new_rule(change: &AlertRuleConfig) -> Result<AlertRule, String> {
+    let missing = |field: &str| {
+        format!(
+            "alert rule `{}` is not one Rackio ships, so it must define `{field}`",
+            change.id
+        )
+    };
+    Ok(AlertRule {
+        id: change.id.clone(),
+        metric: change.metric.clone().ok_or_else(|| missing("metric"))?,
+        comparison: change.comparison.ok_or_else(|| missing("comparison"))?,
+        threshold: change.threshold.ok_or_else(|| missing("threshold"))?,
+        consecutive_samples: change.consecutive_samples.unwrap_or(1),
+        severity: change.severity.ok_or_else(|| missing("severity"))?,
+    })
+}
+
+fn apply_override(rule: &mut AlertRule, change: &AlertRuleConfig) {
+    if let Some(metric) = change.metric.clone() {
+        rule.metric = metric;
+    }
+    if let Some(comparison) = change.comparison {
+        rule.comparison = comparison;
+    }
+    if let Some(threshold) = change.threshold {
+        rule.threshold = threshold;
+    }
+    if let Some(samples) = change.consecutive_samples {
+        rule.consecutive_samples = samples;
+    }
+    if let Some(severity) = change.severity {
+        rule.severity = severity;
+    }
+}
+
+/// Switching a shipped rule off is not the same as retuning it: a rule an
+/// operator only disabled should still follow the shipped level if they turn it
+/// back on after an upgrade.
+const fn changes_a_level(change: &AlertRuleConfig) -> bool {
+    change.metric.is_some()
+        || change.comparison.is_some()
+        || change.threshold.is_some()
+        || change.consecutive_samples.is_some()
+        || change.severity.is_some()
+}
+
+fn validate(rule: &AlertRule) -> Result<(), String> {
+    if !ALERT_METRICS.contains(&rule.metric.as_str()) {
+        return Err(format!(
+            "alert rule `{}` names the unknown metric `{}`; known metrics are {}",
+            rule.id,
+            rule.metric,
+            ALERT_METRICS.join(", ")
+        ));
+    }
+    if !rule.threshold.is_finite() {
+        return Err(format!(
+            "alert rule `{}` has a threshold that is not a finite number",
+            rule.id
+        ));
+    }
+    if !matches!(rule.severity, NodeState::Warning | NodeState::Critical) {
+        return Err(format!(
+            "alert rule `{}` must report `warning` or `critical`; `{:?}` is not a level a threshold can reach",
+            rule.id, rule.severity
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +429,13 @@ fn metric_reading(sample: &MetricSample, metric: &str) -> Option<Reading> {
             let total = sample.memory_total_bytes?;
             (total > 0).then(|| unscoped(percentage(used, total)))
         }
+        // A machine with swap disabled reports a zero total, which is not a
+        // machine whose swap is empty; it has no swap percentage at all.
+        "swap_percent" => {
+            let used = sample.swap_used_bytes?;
+            let total = sample.swap_total_bytes?;
+            (total > 0).then(|| unscoped(percentage(used, total)))
+        }
         "disk_percent" => sample
             .disks
             .iter()
@@ -214,6 +452,18 @@ fn metric_reading(sample: &MetricSample, metric: &str) -> Option<Reading> {
             value: f64::from(temperature.celsius),
             scope: Some(temperature.label.clone()),
         }),
+        // How far the hottest sensor still is from the limit the hardware
+        // itself declares. This is the only temperature level Rackio can state
+        // without inventing one, and a machine whose OS publishes no limit
+        // resolves to `None` rather than being judged against a guess.
+        "temperature_headroom_celsius" => {
+            let temperature = sample.temperature.as_ref()?;
+            let critical = temperature.critical_celsius?;
+            Some(Reading {
+                value: f64::from(critical - temperature.celsius),
+                scope: Some(temperature.label.clone()),
+            })
+        }
         _ => None,
     }
 }
@@ -222,14 +472,18 @@ fn metric_subject(metric: &str) -> &str {
     match metric {
         "cpu_percent" => "CPU",
         "memory_percent" => "Memory",
+        "swap_percent" => "Swap",
         "disk_percent" => "Disk",
         "temperature_celsius" => "Temperature",
+        // Named for what the number is. "Temperature 3 °C" would read as a cold
+        // machine when it means three degrees from the hardware's own limit.
+        "temperature_headroom_celsius" => "Temperature headroom",
         other => other,
     }
 }
 
 fn metric_unit(metric: &str) -> &'static str {
-    if metric == "temperature_celsius" {
+    if metric.ends_with("_celsius") {
         " °C"
     } else {
         "%"
@@ -590,28 +844,69 @@ mod tests {
     }
 
     #[test]
-    fn the_default_rules_warn_and_then_escalate_on_disk_capacity_alone() {
-        // The shipped defaults are the reason an operator hears about a filling
-        // disk at all. If one of them stopped covering disk capacity, or a rule
-        // for a metric Rackio has no universal level for crept in, the product
-        // would either go silent or start crying wolf.
-        let rules = super::default_alert_rules();
+    fn every_shipped_rule_is_a_level_the_evaluator_can_actually_reach() {
+        // The defaults are the product's only voice on an untouched machine. A
+        // rule naming a metric the evaluator does not resolve, or a severity a
+        // node badge cannot show, would be silent in exactly the way a healthy
+        // machine is.
+        let resolved = super::resolve_alert_rules(&[]).unwrap_or_else(|error| panic!("{error}"));
 
-        assert!(
-            rules.iter().all(|rule| rule.metric == "disk_percent"),
-            "only disk capacity carries a defensible built-in threshold"
-        );
+        assert_eq!(resolved.len(), super::default_alert_rules().len());
+        for entry in &resolved {
+            assert!(entry.enabled, "{} ships disabled", entry.rule.id);
+            assert_eq!(entry.source, super::AlertRuleSource::BuiltIn);
+            assert!(
+                super::ALERT_METRICS.contains(&entry.rule.metric.as_str()),
+                "{} names {}",
+                entry.rule.id,
+                entry.rule.metric
+            );
+            assert!(
+                matches!(
+                    entry.rule.severity,
+                    NodeState::Warning | NodeState::Critical
+                ),
+                "{} reports {:?}",
+                entry.rule.id,
+                entry.rule.severity
+            );
+        }
+    }
+
+    #[test]
+    fn a_busy_machine_is_not_alerted_on_before_the_condition_is_sustained() {
+        // The line between "busy" and "in trouble" is time. If these windows
+        // collapse, every compile and every backup becomes an alert and the
+        // operator learns to ignore the product.
+        let by_id = |id: &str| {
+            super::default_alert_rules()
+                .into_iter()
+                .find(|rule| rule.id == id)
+                .unwrap_or_else(|| panic!("{id} is not a shipped rule"))
+        };
+
+        assert_eq!(by_id("cpu-saturation-warning").consecutive_samples, 150);
+        assert_eq!(by_id("memory-pressure-warning").consecutive_samples, 30);
+        assert_eq!(by_id("disk-capacity-warning").consecutive_samples, 3);
         assert_eq!(
-            rules
-                .iter()
-                .map(|rule| (rule.severity, rule.threshold))
-                .collect::<Vec<_>>(),
-            vec![(NodeState::Warning, 90.0), (NodeState::Critical, 95.0)]
+            by_id("cpu-saturation-warning").severity,
+            NodeState::Warning,
+            "a saturated processor is not an outage"
         );
-        assert!(
-            rules.iter().all(|rule| rule.consecutive_samples >= 3),
-            "a single spiky sample must not raise a default alert"
-        );
+    }
+
+    #[test]
+    fn the_shipped_temperature_rules_defer_to_the_hardwares_own_limit() {
+        // Rackio has no basis for an absolute temperature. Both rules measure
+        // headroom against the limit the board publishes.
+        for id in ["temperature-headroom-warning", "temperature-critical"] {
+            let rule = super::default_alert_rules()
+                .into_iter()
+                .find(|rule| rule.id == id)
+                .unwrap_or_else(|| panic!("{id} is not a shipped rule"));
+            assert_eq!(rule.metric, "temperature_headroom_celsius");
+            assert_eq!(rule.comparison, Comparison::LessThanOrEqual);
+        }
     }
 
     fn with_disk(used: u64, total: u64, mount: &str) -> MetricSample {
@@ -782,6 +1077,170 @@ mod tests {
         let _ = evaluator.evaluate(&sample(90.0), &[]);
         assert_eq!(evaluator.worst_active_severity(), None);
         assert!(evaluator.active_details().is_empty());
+    }
+
+    fn override_for(id: &str) -> super::AlertRuleConfig {
+        super::AlertRuleConfig::new(id)
+    }
+
+    fn resolved(overrides: &[super::AlertRuleConfig], id: &str) -> super::ResolvedAlertRule {
+        super::resolve_alert_rules(overrides)
+            .unwrap_or_else(|error| panic!("{error}"))
+            .into_iter()
+            .find(|entry| entry.rule.id == id)
+            .unwrap_or_else(|| panic!("{id} is missing from the resolved rules"))
+    }
+
+    #[test]
+    fn changing_one_threshold_leaves_every_other_shipped_level_alone() {
+        // The whole point of overrides: raising one level must not silently
+        // drop the rules the operator never mentioned.
+        let change = super::AlertRuleConfig {
+            threshold: Some(80.0),
+            ..override_for("disk-capacity-warning")
+        };
+        let all = super::resolve_alert_rules(std::slice::from_ref(&change))
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(all.len(), super::default_alert_rules().len());
+        let changed = resolved(std::slice::from_ref(&change), "disk-capacity-warning");
+        assert!((changed.rule.threshold - 80.0).abs() < f64::EPSILON);
+        assert_eq!(changed.source, super::AlertRuleSource::Configured);
+        // The untouched sibling keeps both its level and its built-in origin.
+        let untouched = resolved(std::slice::from_ref(&change), "disk-capacity-critical");
+        assert!((untouched.rule.threshold - 95.0).abs() < f64::EPSILON);
+        assert_eq!(untouched.source, super::AlertRuleSource::BuiltIn);
+    }
+
+    #[test]
+    fn a_disabled_rule_stays_visible_and_keeps_following_the_shipped_level() {
+        // A rule that disappears when switched off cannot be switched back on,
+        // and an operator who only silenced a rule should still inherit a
+        // retuned default if they re-enable it after an upgrade.
+        let change = super::AlertRuleConfig {
+            enabled: Some(false),
+            ..override_for("cpu-saturation-warning")
+        };
+        let entry = resolved(std::slice::from_ref(&change), "cpu-saturation-warning");
+
+        assert!(!entry.enabled);
+        assert_eq!(entry.source, super::AlertRuleSource::BuiltIn);
+        assert!((entry.rule.threshold - 90.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn an_operator_can_add_a_rule_rackio_does_not_ship() {
+        let addition = super::AlertRuleConfig {
+            metric: Some(String::from("swap_percent")),
+            comparison: Some(Comparison::GreaterThanOrEqual),
+            threshold: Some(50.0),
+            consecutive_samples: Some(30),
+            severity: Some(NodeState::Warning),
+            ..override_for("swap-warning")
+        };
+        let entry = resolved(std::slice::from_ref(&addition), "swap-warning");
+
+        assert_eq!(entry.rule.metric, "swap_percent");
+        assert!(entry.enabled);
+        assert_eq!(entry.source, super::AlertRuleSource::Configured);
+    }
+
+    #[test]
+    fn a_rule_that_could_never_fire_is_rejected_instead_of_accepted_silently() {
+        // Each of these produces a rule that is quiet in exactly the same way a
+        // healthy machine is, which is the one failure mode a monitor cannot
+        // have. The operator must hear about it at configuration time.
+        let cases = [
+            (
+                super::AlertRuleConfig {
+                    metric: Some(String::from("gpu_percent")),
+                    ..override_for("disk-capacity-warning")
+                },
+                "unknown metric",
+            ),
+            (
+                super::AlertRuleConfig {
+                    threshold: Some(f64::NAN),
+                    ..override_for("disk-capacity-warning")
+                },
+                "not a finite number",
+            ),
+            (
+                super::AlertRuleConfig {
+                    severity: Some(NodeState::Offline),
+                    ..override_for("disk-capacity-warning")
+                },
+                "not a level a threshold can reach",
+            ),
+            (
+                super::AlertRuleConfig {
+                    threshold: Some(70.0),
+                    ..override_for("invented-rule")
+                },
+                "must define",
+            ),
+        ];
+
+        for (change, expected) in cases {
+            let Err(error) = super::resolve_alert_rules(std::slice::from_ref(&change)) else {
+                panic!("this configuration must be rejected");
+            };
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn swap_and_temperature_headroom_resolve_from_the_sample() {
+        let mut with_swap = sample(0.0);
+        with_swap.swap_used_bytes = Some(3);
+        with_swap.swap_total_bytes = Some(4);
+        with_swap.temperature = Some(TemperatureMetric {
+            label: "CPU die".into(),
+            celsius: 96.0,
+            critical_celsius: Some(100.0),
+            sensor_count: 1,
+        });
+
+        let swap = rule("swap", "swap_percent", Comparison::GreaterThanOrEqual, 75.0);
+        assert!(
+            AlertEvaluator::default().evaluate(&with_swap, std::slice::from_ref(&swap))[0].active,
+            "3 of 4 swap bytes in use is 75 percent"
+        );
+
+        // Four degrees of headroom is below a five-degree rule.
+        let headroom = rule(
+            "headroom",
+            "temperature_headroom_celsius",
+            Comparison::LessThanOrEqual,
+            5.0,
+        );
+        let raised = AlertEvaluator::default()
+            .evaluate(&with_swap, std::slice::from_ref(&headroom))
+            .remove(0);
+        assert!(raised.active);
+        assert!(raised.detail.contains("4 °C"), "{}", raised.detail);
+        assert!(raised.detail.contains("CPU die"), "{}", raised.detail);
+
+        // A machine with swap disabled, or a sensor with no published limit,
+        // resolves neither metric rather than reading as zero.
+        let mut without = sample(0.0);
+        without.swap_used_bytes = Some(0);
+        without.swap_total_bytes = Some(0);
+        without.temperature = Some(TemperatureMetric {
+            label: "CPU die".into(),
+            celsius: 96.0,
+            critical_celsius: None,
+            sensor_count: 1,
+        });
+        for rule in [&swap, &headroom] {
+            assert!(
+                AlertEvaluator::default()
+                    .evaluate(&without, std::slice::from_ref(rule))
+                    .is_empty(),
+                "{} must stay unresolved",
+                rule.id
+            );
+        }
     }
 
     #[test]

@@ -91,7 +91,7 @@ async fn flush_pending(runtime: &NodeRuntime, pending: &mut Vec<rackio_core::Met
 pub(super) async fn sample_loop(
     runtime: Arc<NodeRuntime>,
     mut collector: SystemCollector,
-    alert_rules: Vec<rackio_core::AlertRule>,
+    alert_rules: watch::Receiver<Vec<rackio_core::AlertRule>>,
     latest: watch::Sender<Option<rackio_core::MetricSample>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -114,7 +114,10 @@ pub(super) async fn sample_loop(
             }
         }
         let sample = collector.sample();
-        for signal in alerts.evaluate(&sample, &alert_rules) {
+        // Re-read every tick: `rackio alerts` retunes a threshold on a running
+        // daemon, and the evaluator drops the state of a rule that is gone.
+        let rules = alert_rules.borrow().clone();
+        for signal in alerts.evaluate(&sample, &rules) {
             // A raised alert is the event an operator is waiting for, so it is
             // logged at warn even when its severity is only `Warning`; the
             // recovery that ends it stays at info.
