@@ -847,7 +847,7 @@ async fn update_error(
         _ => snapshot.state_at(Utc::now().timestamp_millis()),
     };
     snapshot.details = vec![error.to_string()];
-    if let Some(hint) = unreachable_hint(error) {
+    if let Some(hint) = unreachable_hint(error, !record.relay_urls.is_empty()) {
         // A viewer that only says "connect timed out" leaves the operator
         // guessing. Name the recoverable cause, because a machine that rebound
         // to another port looks exactly like one that is switched off.
@@ -860,8 +860,24 @@ async fn update_error(
 /// Returns `None` for errors that a different address would not fix, so an
 /// authorization or compatibility failure is never dressed up as a reachability
 /// problem.
-fn unreachable_hint(error: &RemoteFleetError) -> Option<&'static str> {
+///
+/// A machine with a configured relay has a second way to become unreachable,
+/// and naming only the listen port sends its operator to inspect a setting that
+/// was never the cause. The relay is named first there because a relay outage
+/// takes every relay-dependent machine down at once, which a port change cannot
+/// do.
+fn unreachable_hint(error: &RemoteFleetError, relay_configured: bool) -> Option<&'static str> {
     match error {
+        RemoteFleetError::Timeout("connect")
+        | RemoteFleetError::Transport(TransportError::Connect(_))
+            if relay_configured =>
+        {
+            Some(
+                "no known address answered and the configured relay did not carry the session; \
+             check that the relay is running and reachable, or if this machine restarted on a \
+             new port, give it a fixed one with `rackio listen-port set <PORT>` and restart it",
+            )
+        }
         RemoteFleetError::Timeout("connect")
         | RemoteFleetError::Transport(TransportError::Connect(_)) => Some(
             "no known address answered; if this machine restarted on a new port, \
@@ -1373,16 +1389,41 @@ mod tests {
     #[test]
     fn only_a_reachability_failure_suggests_a_reachability_fix() {
         assert!(
-            unreachable_hint(&RemoteFleetError::Timeout("connect")).is_some(),
+            unreachable_hint(&RemoteFleetError::Timeout("connect"), false).is_some(),
             "an operator whose machine moved needs to be told what to do"
         );
         assert!(
-            unreachable_hint(&RemoteFleetError::IdentityMismatch).is_none(),
+            unreachable_hint(&RemoteFleetError::IdentityMismatch, false).is_none(),
             "an identity failure is not fixed by another address"
         );
         assert!(
-            unreachable_hint(&RemoteFleetError::Timeout("health")).is_none(),
+            unreachable_hint(&RemoteFleetError::Timeout("health"), false).is_none(),
             "a reachable machine that answered slowly is not unreachable"
+        );
+    }
+
+    #[test]
+    fn a_relay_machine_is_not_told_to_go_and_check_its_listen_port() {
+        // A relay outage and a moved listen port look identical from here, but
+        // they are not fixed in the same place — and an outage takes every
+        // relay-dependent machine down at once, so pointing its operator at a
+        // per-machine port setting sends them to the wrong screen entirely.
+        let with_relay = unreachable_hint(&RemoteFleetError::Timeout("connect"), true)
+            .unwrap_or_else(|| panic!("a relay machine still needs a recovery step"));
+        assert!(
+            with_relay.contains("relay"),
+            "the relay must be named as a cause, got: {with_relay}"
+        );
+        assert!(
+            with_relay.contains("listen-port"),
+            "the address-change cause does not stop applying, got: {with_relay}"
+        );
+
+        let without_relay = unreachable_hint(&RemoteFleetError::Timeout("connect"), false)
+            .unwrap_or_else(|| panic!("a direct machine still needs a recovery step"));
+        assert!(
+            !without_relay.contains("relay"),
+            "a direct-only machine has no relay to check, got: {without_relay}"
         );
     }
 }
