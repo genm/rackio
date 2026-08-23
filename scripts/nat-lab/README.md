@@ -75,6 +75,18 @@ Output, all gitignored build artefacts under the existing `/test-results/` rule:
   destination. `router-f` is `router-d` with that one setting flipped, which is
   what lets `symmetric_nat_relay_fallback` differ from a direct scenario in the
   NAT's mapping behaviour and in nothing else.
+- Every router drops unsolicited inbound UDP addressed to itself on its WAN
+  interface, which is what a NAT device does. Without that rule the router's own
+  host stack accepts a hole-punch probe aimed at its WAN address, conntrack
+  confirms an entry whose reply tuple is the one its internal machine needs, and
+  `nf_nat` then hands that machine a different external port — so a punch both
+  sides attempted correctly fails on the container's host stack rather than on
+  any NAT property. It was measured that way while `cone_nat_hole_punch` was
+  built: the monitored machine left `router-d` as `192.0.2.5:19522` while
+  listening on `41641`, and the viewer's router discarded every reply. ICMP is
+  left alone so the packet-loss probes still reach the routers, and a DNAT'd port
+  forward is unaffected because it is translated in `PREROUTING` and traverses
+  `FORWARD`, never `INPUT`.
 - The relay is `relay-package/` built unchanged — upstream `iroh-relay` pinned
   to `1.0.3`, the same image an operator would run. Only its configuration
   differs; see "The lab's relay is not a production relay" below.
@@ -196,10 +208,42 @@ event records leaving the direct path and another records arriving on the relay,
 and that the return is a single event naming `Relayed` as the previous path and
 `WanDirect` as the current one. Both migrations are timed.
 
-Two things this scenario measured rather than asserted, both recorded in the
-report and both listed as findings below: the relayed session does not climb
-back onto the direct path on its own, and the outbound migration passes through
-a transient `Unknown` path.
+Two things this scenario measures rather than asserts, both recorded in the
+report. `in_session_upgrade` answers whether the relayed session climbs back
+onto the direct path without reconnecting — since
+[#158](https://github.com/genm/rackio/issues/158) it does, in under five seconds
+(4,454 ms in the run that produced the current reports), where the same
+measurement previously found nothing in 240 seconds. The second
+is that the outbound migration passes through a transient `Unknown` path, which
+is still the case and is listed as a finding below.
+
+### `cone_nat_hole_punch`
+
+`lan-d-monitored` and `lan-e-viewer` sit behind cone NATs with **no port forward
+on either router**. Both pin their listen port and declare the address their own
+NAT maps them to with `rackio advertise-address add`, and both are pointed at
+the relay, which carries the address exchange the punch needs.
+
+Proves that an operator-declared address is a real traversal candidate rather
+than a pairing-bundle entry: it appears in `rackio status`.`direct_addresses` on
+both machines — asserted, and the machine cannot observe it on any interface —
+and the two machines, neither of which publishes anything inbound, end up on a
+direct path reported as `wan_direct`. The path is then sampled every two seconds
+for thirty seconds to show it held rather than flickering, and the capture on
+`router-d`'s WAN interface must show UDP between the two NAT external addresses.
+
+What makes it a hole punch rather than `port_forwarded_direct` under another
+name is asserted, not assumed: both routers' `nat` tables are read back during
+the run and must contain no DNAT rule. The relay is configured and does carry
+the address exchange, so the scenario also inherits the shared check that a
+relayed transport is never reported as direct — the selected path must be
+direct, backed by the capture, with no unicast peer beyond the two machines and
+the declared relay.
+
+The report records `first_path_the_viewer_reported` and any
+`Relayed -> WanDirect` transition under `in_session_promotion`, so whether the
+direct path arrived by promoting the running session or on a later connect is
+visible rather than assumed.
 
 ## The lab's relay is not a production relay
 
@@ -236,8 +280,10 @@ What the deviation changes:
   finds no readable application payload even with the relay's own TLS removed.
 - **There is no QUIC address discovery.** `iroh-relay` requires TLS for its QUIC
   endpoint, so the lab's config sets `enable_quic_addr_discovery = false`. A
-  machine in the lab therefore never learns its own NAT-mapped address. This is
-  what makes cone-NAT hole punching unprovable here — see below.
+  machine in the lab therefore never learns its own NAT-mapped address by
+  itself. `cone_nat_hole_punch` works anyway, because the operator declares that
+  address with `rackio advertise-address`; what the lab cannot exercise is the
+  case where nobody configured one and iroh has to discover it.
 
 What it does **not** change:
 
@@ -323,7 +369,9 @@ check.
 ## Findings from the relay and NAT-traversal run
 
 Four findings came out of building the relay scenarios. None is worked around,
-and none is patched by weakening anything on the agent side.
+and none is patched by weakening anything on the agent side. The second has
+since been fixed in the product and re-measured here; the entry keeps the
+original observation so the evidence trail survives.
 
 1. **The agent cannot be told to trust a self-hosted relay's own certificate
    authority.** `bind_endpoint` in
@@ -342,23 +390,37 @@ and none is patched by weakening anything on the agent side.
    so the relay runs over plain HTTP and QUIC address discovery is off. See
    "The lab's relay is not a production relay".
 
-2. **`rackio advertise-address` is not a NAT-traversal candidate.** The
-   configured address reaches a peer only inside a pairing bundle
-   (`bundle_direct_addresses` in `apps/agent/src/runtime/local_ipc.rs`); it is
-   never passed to the endpoint as an external address, and iroh has an API for
-   exactly this — `Endpoint::builder().external_addr(addr)`, documented as
-   "will be used in NAT traversal and to establish direct connections". Two
-   consequences, both observed:
+2. **`rackio advertise-address` was not a NAT-traversal candidate.** The
+   configured address reached a peer only inside a pairing bundle
+   (`bundle_direct_addresses` in `apps/agent/src/runtime/local_ipc.rs`); it was
+   never passed to the endpoint as an external address, though iroh has an API
+   for exactly this — `Endpoint::builder().external_addr(addr)`, documented as
+   "will be used in NAT traversal and to establish direct connections". Three
+   consequences were observed: the address was absent from
+   `rackio status`.`direct_addresses`, so an operator could not see from the
+   machine that the setting had taken effect; a session that fell back to the
+   relay never returned to the direct path on its own, measured at 240 seconds
+   in `path_migration`; and cone-NAT hole punching could not be exercised at
+   all.
 
-   - The address does not appear in `rackio status`.`direct_addresses`, so an
-     operator cannot see from the machine that the setting took effect on the
-     endpoint.
-   - A session that falls back to the relay never returns to the direct path on
-     its own. `path_migration` waited 240 seconds, four of iroh's sixty-second
-     upgrade intervals, and the path came back only on the next connect. The
-     measurement is in the report under `in_session_upgrade`, and the scenario
-     records it rather than asserting it, because the relay-to-direct migration
-     it _does_ assert is the one that follows.
+   **Fixed** for [#158](https://github.com/genm/rackio/issues/158):
+   `EndpointConfig` carries the configured addresses and `bind_endpoint` passes
+   each one to `external_addr`, so they join the endpoint's own advertised set.
+   Re-measured in this lab, all three consequences are gone:
+
+   - `cone_nat_hole_punch` reports the declared address in
+     `rackio status`.`direct_addresses` on both machines and asserts it;
+   - the same scenario reaches a direct path between two cone NATs with no port
+     forward on either side;
+   - `path_migration`'s `in_session_upgrade` now reports
+     `running_session_returned_to_direct_without_reconnecting: true` in under
+     five seconds — **4,454 ms** in the run that produced the current reports —
+     where the same measurement previously found nothing in 240 seconds. It is still recorded rather than asserted, because the
+     relay-to-direct migration the scenario _does_ assert is the one that
+     follows.
+
+   Still no probing and no discovery: the address remains operator-supplied
+   configuration, and a wrong one stays an unreachable candidate.
 
 3. **A direct-to-relay migration is logged as two transitions through
    `Unknown`.** Losing the direct path ends the session, and the replacement is
@@ -443,31 +505,15 @@ hardware and it is not the internet.
 - **Not a production relay.** The relay scenarios run against upstream
   `iroh-relay` 1.0.3 configured for plain HTTP, with no QUIC address discovery.
   See "The lab's relay is not a production relay" for exactly what that changes.
-- **Cone-NAT hole punching is still not covered, and cannot be here.** The
-  topology for it exists — `lan-d-monitored` and `lan-e-viewer` sit behind cone
-  NATs with no port forward on either router — and it was built and run. It does
-  not work, for a reason that is a property of the lab rather than a product
-  failure, so no scenario claims it.
+- **Hole punching without a declared address is not covered.**
+  `cone_nat_hole_punch` proves the punch when each operator declares the address
+  their NAT maps them to. It does not exercise the case where nobody configured
+  one and iroh has to discover it: that needs QUIC address discovery, which the
+  lab's relay cannot serve without TLS (finding 1). A machine whose external
+  address is neither configured nor discoverable is still untested here.
 
-  A hole punch needs each side to know its own NAT-mapped external address and
-  to offer it as a traversal candidate. iroh gets that from QUIC address
-  discovery, which the lab's relay cannot provide (finding 1). The remaining
-  route would be the operator declaring the address with
-  `rackio advertise-address`, which does not become a traversal candidate
-  (finding 2). Measured: with cone NAT on both sides, fixed listen ports, and
-  both external addresses declared, the session stayed `relayed` for two minutes
-  and `rackio status`.`direct_addresses` never contained anything but the LAN
-  address.
-
-  Writing this up as a failing scenario would report a lab limitation as a
-  product defect; writing it as a passing one would require calling a DNAT port
-  forward a hole punch, which is what `port_forwarded_direct` already is. It is
-  left unimplemented, and the checklist's "cone NAT hole punching" row must stay
-  unticked until it can be run against a relay with a trusted certificate.
-
-A green run of this lab is necessary evidence for the direct-path,
+A green run of this lab is necessary evidence for the direct-path, hole-punch,
 relay-fallback, relay-outage, UDP-blocked and path-migration rows of the NAT
 matrix, and for the relay payload-opacity item under "Privacy and security". It
-is not sufficient evidence that the product works on real networks, and the
-checklist rows it does not cover — IPv6 direct, and cone NAT hole punching —
-must stay unticked.
+is not sufficient evidence that the product works on real networks, and the one
+checklist row it does not cover — IPv6 direct — must stay unticked.

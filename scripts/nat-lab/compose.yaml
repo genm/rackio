@@ -162,9 +162,9 @@ services:
 
   # --- Cone NAT on both sides, no port forward anywhere ----------------------
   #
-  # This is the pair the hole-punching, UDP-blocked and path-migration
-  # scenarios use. Neither router has a DNAT rule, so a direct path between
-  # these two machines can only exist because both sides punched one open.
+  # This is the pair `cone_nat_hole_punch` uses. Neither router has a DNAT rule,
+  # so a direct path between these two machines can only exist because both
+  # sides punched one open.
   router-d:
     <<: *router
     container_name: rackio-nat-lab-router-d

@@ -27,6 +27,7 @@ scenario_ids=(
   relay_outage
   udp_blocked
   path_migration
+  cone_nat_hole_punch
 )
 scenario_script() {
   case "$1" in
@@ -37,6 +38,7 @@ scenario_script() {
   relay_outage) echo "$lab_dir/scenarios/relay-outage.sh" ;;
   udp_blocked) echo "$lab_dir/scenarios/udp-blocked.sh" ;;
   path_migration) echo "$lab_dir/scenarios/path-migration.sh" ;;
+  cone_nat_hole_punch) echo "$lab_dir/scenarios/cone-nat-hole-punch.sh" ;;
   *) return 1 ;;
   esac
 }
