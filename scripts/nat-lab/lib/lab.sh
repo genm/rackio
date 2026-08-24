@@ -19,6 +19,7 @@ lab_results_dir="$lab_repo_root/test-results/nat-matrix"
 
 LAB_AGENT_IMAGE="${LAB_AGENT_IMAGE:-rackio-nat-lab-agent:local}"
 LAB_ROUTER_IMAGE="${LAB_ROUTER_IMAGE:-rackio-nat-lab-router:local}"
+LAB_SERVICES_IMAGE="${LAB_SERVICES_IMAGE:-rackio-nat-lab-services:local}"
 # Captures are bounded so a long scenario cannot fill a disk with evidence.
 LAB_CAPTURE_SECONDS="${LAB_CAPTURE_SECONDS:-180}"
 LAB_CAPTURE_PACKETS="${LAB_CAPTURE_PACKETS:-20000}"
@@ -52,6 +53,11 @@ lab_build_images() {
     --platform linux/arm64 \
     --file "$lab_dir/router.Dockerfile" \
     --tag "$LAB_ROUTER_IMAGE" \
+    "$lab_repo_root"
+  DOCKER_BUILDKIT=1 docker build \
+    --platform linux/arm64 \
+    --file "$lab_dir/services.Dockerfile" \
+    --tag "$LAB_SERVICES_IMAGE" \
     "$lab_repo_root"
 }
 
@@ -504,9 +510,24 @@ lab_capture_interface() {
 # Capture on the interface that carries the path under test. Bounded by time,
 # packet count and snaplen: headers are enough to prove which sockets carried
 # the session, and a header-only capture keeps metric payloads out of evidence.
+#
+#   lab_capture_start <service> <subnet> [filter]
+#
+# The default filter is the path scenarios' one. `direct_only_isolation` widens
+# it, because a scenario asking "did this machine send anything anywhere else?"
+# cannot answer it from a filter that already excludes TCP — an HTTP request
+# would be invisible to the very capture meant to rule it out.
+LAB_CAPTURE_DEFAULT_FILTER='udp or icmp or icmp6'
+
 lab_capture_start() {
-  local service="$1" subnet="$2"
+  # `${3-...}`, not `${3:-...}`: an explicitly empty filter means "capture every
+  # packet on the interface" and must not silently fall back to the UDP-only
+  # default. It did exactly that once, and the isolation scenario then asserted
+  # that no HTTP request was sent using a capture that could not have recorded
+  # one.
+  local service="$1" subnet="$2" filter="${3-$LAB_CAPTURE_DEFAULT_FILTER}"
   lab_capture_service="$service"
+  lab_capture_filter="$filter"
   lab_capture_interface_name="$(lab_capture_interface "$service" "$subnet")"
   [[ -n "$lab_capture_interface_name" ]] ||
     lab_die "no interface on $service carries $subnet"
@@ -514,10 +535,39 @@ lab_capture_start() {
   docker exec --detach "$(lab_container "$service")" sh -c \
     "exec timeout ${LAB_CAPTURE_SECONDS} tcpdump -i ${lab_capture_interface_name} \
        -n -s ${LAB_CAPTURE_SNAPLEN} -c ${LAB_CAPTURE_PACKETS} -U \
-       -w /tmp/capture.pcap 'udp or icmp or icmp6' >/tmp/tcpdump.log 2>&1"
+       -w /tmp/capture.pcap '${filter}' >/tmp/tcpdump.log 2>&1"
   # tcpdump needs a moment to attach before traffic starts, or the first
   # handshake would be missing from the evidence.
   sleep 1
+}
+
+# Turn tcpdump's text into one "<src>\t<dst>" line per packet.
+#
+# Shared by the flow summary and the egress analysis so there is exactly one
+# implementation of "which address is which" in the lab. Getting this wrong
+# invents peers that never existed, which both readers would then report.
+lab_capture_endpoint_pairs() {
+  awk '
+    function host(token) {
+      # tcpdump terminates the destination field with ":". Strip exactly that,
+      # never the second colon of an IPv6 "::" — doing so turned the
+      # unspecified address of a duplicate-address-detection probe into a
+      # bogus peer named ":".
+      if (token ~ /:$/ && token !~ /::$/) { sub(/:$/, "", token) }
+      # IPv4 with a port has five dotted numbers; plain IPv4 has four.
+      if (token ~ /^([0-9]+\.){4}[0-9]+$/) { sub(/\.[0-9]+$/, "", token) }
+      # IPv6 with a port ends in ".<port>" after the colons.
+      else if (token ~ /:/ && token ~ /\.[0-9]+$/) { sub(/\.[0-9]+$/, "", token) }
+      return token
+    }
+    {
+      src = ""; dst = ""
+      for (i = 1; i <= NF; i++) {
+        if ($i == "IP" || $i == "IP6") { src = $(i + 1); dst = $(i + 3); break }
+      }
+      if (src == "" || dst == "") next
+      print host(src) "\t" host(dst)
+    }'
 }
 
 # Summarise the capture from inside the container and copy the pcap out beside
@@ -550,32 +600,13 @@ lab_capture_finish() {
   total="$(grep -c . <<<"$text" || true)"
 
   # tcpdump prints "IP <src>.<port> > <dst>.<port>:" for UDP and bare
-  # "IP <src> > <dst>:" for ICMP, so the port can only be stripped when one is
-  # actually there. Getting this wrong turns 192.168.101.10 into 192.168.101
-  # and invents a third party that never existed.
-  flows="$(awk '
-    function host(token) {
-      # tcpdump terminates the destination field with ":". Strip exactly that,
-      # never the second colon of an IPv6 "::" — doing so turned the
-      # unspecified address of a duplicate-address-detection probe into a
-      # bogus peer named ":".
-      if (token ~ /:$/ && token !~ /::$/) { sub(/:$/, "", token) }
-      # IPv4 with a port has five dotted numbers; plain IPv4 has four.
-      if (token ~ /^([0-9]+\.){4}[0-9]+$/) { sub(/\.[0-9]+$/, "", token) }
-      # IPv6 with a port ends in ".<port>" after the colons.
-      else if (token ~ /:/ && token ~ /\.[0-9]+$/) { sub(/\.[0-9]+$/, "", token) }
-      return token
-    }
-    {
-      src = ""; dst = ""
-      for (i = 1; i <= NF; i++) {
-        if ($i == "IP" || $i == "IP6") { src = $(i + 1); dst = $(i + 3); break }
-      }
-      if (src == "" || dst == "") next
-      src = host(src); dst = host(dst)
-      key = (src < dst) ? src " <-> " dst : dst " <-> " src
+  # "IP <src> > <dst>:" for ICMP; `lab_capture_endpoint_pairs` owns that
+  # parsing for every reader of a capture.
+  flows="$(lab_capture_endpoint_pairs <<<"$text" |
+    awk -F'\t' '{
+      key = ($1 < $2) ? $1 " <-> " $2 : $2 " <-> " $1
       if (!(key in seen)) { seen[key] = 1; print key }
-    }' <<<"$text" | sort)"
+    }' | sort)"
 
   present=false
   if grep -q -F -- "$required_a <-> $required_b" <<<"$flows" ||
@@ -607,8 +638,9 @@ lab_capture_finish() {
       --argjson seconds "$LAB_CAPTURE_SECONDS" \
       --argjson packets "$LAB_CAPTURE_PACKETS" \
       --argjson snaplen "$LAB_CAPTURE_SNAPLEN" \
+      --arg filter "${lab_capture_filter:-(none: every packet on the interface)}" \
       '{max_seconds: $seconds, max_packets: $packets, snaplen_bytes: $snaplen,
-        filter: "udp or icmp or icmp6",
+        filter: $filter,
         note: "headers only; a header-only capture keeps metric payloads out of evidence"}')" \
     --argjson packets "${total:-0}" \
     --argjson flows "$(jq -R . <<<"$flows" | jq -s '[.[] | select(length > 0)]')" \
@@ -620,6 +652,178 @@ lab_capture_finish() {
       expected_direct_flow_present: $expected_flow_present,
       unexpected_unicast_peers: $unexpected_peers,
       multicast_and_link_local_peers: $housekeeping}'
+}
+
+# --- direct-only isolation (issue #19) -------------------------------------
+
+# Every address the machine itself holds on the captured interface.
+#
+# The egress analysis needs to know which packets the machine *sent*, and its
+# IPv4 address alone is not enough: neighbour discovery leaves from the
+# interface's IPv6 link-local address, and a duplicate-address-detection probe
+# leaves from the unspecified address. Missing those would classify the
+# machine's own housekeeping as traffic it received.
+lab_interface_addresses() {
+  local service="$1" interface="$2"
+  {
+    lab_exec "$service" ip -o addr show dev "$interface" |
+      awk '$3 == "inet" || $3 == "inet6" { split($4, a, "/"); print a[1] }'
+    echo '::'
+  } | grep . | sort -u | jq -R . | jq -s .
+}
+
+# Classify, from the capture, every destination this machine sent a packet to.
+#
+#   lab_capture_egress <self-addresses-json> <peer-addresses-json>
+#
+# `lab_capture_finish` answers "was the session carried between these two?".
+# This answers the different question the isolation scenario asks: "of
+# everything this machine put on the wire, did any of it go anywhere else?".
+# It is directional on purpose — a bidirectional flow summary cannot tell a
+# packet the machine sent from one somebody else sent at it, and only the first
+# is the daemon's doing.
+#
+# Nothing is filtered away. Multicast, broadcast and link-local destinations are
+# real traffic and are reported with their packet counts under their own
+# heading; they are separated from the peer set rather than hidden, so a reader
+# sees mDNS and neighbour discovery for what they are.
+#
+# Call it after `lab_capture_finish`, which stops tcpdump; this re-reads the
+# same bounded capture file rather than taking a second one.
+lab_capture_egress() {
+  local self_json="$1" peers_json="$2"
+  local service="${lab_capture_service:-}"
+  [[ -n "$service" ]] || lab_die "lab_capture_egress was called without a capture"
+
+  local text
+  text="$(lab_exec "$service" sh -c \
+    'tcpdump -nn -r /tmp/capture.pcap 2>/dev/null || true')"
+
+  jq -r '.[]' <<<"$self_json" >"$lab_work/self-addresses"
+  jq -r '.[]' <<<"$peers_json" >"$lab_work/peer-addresses"
+
+  # Link housekeeping rather than a peer: IPv4 multicast, the subnet and global
+  # broadcast addresses, IPv6 multicast (mDNS), IPv6 link-local (neighbour
+  # discovery) and the unspecified address.
+  local housekeeping_pattern='^(22[4-9]|23[0-9])\.|^255\.255\.255\.255$|\.255$|^ff[0-9a-f][0-9a-f]:|^fe80:|^::$'
+
+  local table
+  table="$(lab_capture_endpoint_pairs <<<"$text" |
+    awk -F'\t' \
+      -v self_file="$lab_work/self-addresses" \
+      -v peer_file="$lab_work/peer-addresses" \
+      -v housekeeping="$housekeeping_pattern" '
+    BEGIN {
+      while ((getline line < self_file) > 0) { if (line != "") is_self[line] = 1 }
+      while ((getline line < peer_file) > 0) { if (line != "") is_peer[line] = 1 }
+    }
+    {
+      total += 1
+      if (!($1 in is_self)) { received += 1; next }
+      sent += 1
+      count[$2] += 1
+    }
+    END {
+      printf "totals\t%d\t%d\t%d\n", total + 0, sent + 0, received + 0
+      for (destination in count) {
+        class = "unexpected"
+        if (destination in is_peer) { class = "peer" }
+        else if (destination ~ housekeeping) { class = "link_housekeeping" }
+        printf "destination\t%s\t%d\t%s\n", destination, count[destination], class
+      }
+    }' | sort)"
+
+  local totals destinations
+  totals="$(awk -F'\t' '$1 == "totals" { print $2 "\t" $3 "\t" $4 }' <<<"$table")"
+
+  # ARP is link-layer broadcast with no IP destination, so it cannot appear
+  # under `destinations_sent_to` — and it must not simply vanish from the
+  # accounting either. It is counted here, and the targets this machine asked
+  # about are listed: an ARP for an off-path service would show intent to reach
+  # it even if no IP packet ever followed.
+  local capture_lines arp_targets
+  capture_lines="$(grep -c . <<<"$text" || true)"
+  arp_targets="$(awk -v self_file="$lab_work/self-addresses" '
+    BEGIN {
+      while ((getline line < self_file) > 0) { if (line != "") is_self[line] = 1 }
+    }
+    /ARP, Request who-has/ {
+      target = ""; teller = ""
+      for (i = 1; i <= NF; i += 1) {
+        if ($i == "who-has") { target = $(i + 1) }
+        if ($i == "tell") { teller = $(i + 1); sub(/,$/, "", teller) }
+      }
+      if (target != "" && (teller in is_self)) { count[target] += 1 }
+    }
+    END { for (target in count) { print target "\t" count[target] } }' <<<"$text" |
+    sort |
+    jq -R 'split("\t") | {address: .[0], arp_requests: (.[1] | tonumber)}' |
+    jq -s .)"
+
+  # The rows are turned into JSON by jq rather than by an awk `printf` of a JSON
+  # literal. An awk program containing `{"a":1,"b":2}` is brace-expanded by the
+  # shell into three separate commands before awk ever sees it, even inside
+  # single quotes within a command substitution, which silently produced three
+  # broken awk invocations and an empty result here.
+  destinations="$(awk -F'\t' '$1 == "destination" { print $2 "\t" $3 "\t" $4 }' <<<"$table" |
+    jq -R 'split("\t") | {address: .[0], packets: (.[1] | tonumber), classification: .[2]}' |
+    jq -s 'sort_by(-.packets)')"
+
+  jq -n \
+    --argjson self "$self_json" \
+    --argjson peers "$peers_json" \
+    --argjson packets_total "$(cut -f1 <<<"$totals")" \
+    --argjson packets_sent "$(cut -f2 <<<"$totals")" \
+    --argjson packets_received "$(cut -f3 <<<"$totals")" \
+    --argjson destinations "$destinations" \
+    --argjson capture_lines "${capture_lines:-0}" \
+    --argjson arp_targets "$arp_targets" \
+    '{
+      question: "of every packet this machine put on the wire, where did it go?",
+      method: "directional read of the scenario capture: packets whose source is one of this machines own addresses, grouped by destination",
+      self_addresses: $self, peer_addresses: $peers,
+      packets_in_capture: $capture_lines,
+      ip_packets_parsed: $packets_total,
+      packets_sent_by_this_machine: $packets_sent,
+      packets_received_by_this_machine: $packets_received,
+      link_layer: {
+        non_ip_packets: ($capture_lines - $packets_total),
+        arp_requests_sent_by_this_machine: $arp_targets,
+        note: "ARP and anything else without an IP header cannot appear under destinations_sent_to. It is counted here so the packet accounting adds up, and the ARP targets are listed because an ARP for an address is itself an attempt to reach it."
+      },
+      destinations_sent_to: $destinations,
+      peer_destinations: [$destinations[] | select(.classification == "peer")],
+      link_housekeeping_destinations: [$destinations[] | select(.classification == "link_housekeeping")],
+      unexpected_destinations: [$destinations[] | select(.classification == "unexpected")],
+      note: "link housekeeping is multicast, broadcast, IPv6 link-local and the unspecified address: mDNS advertisement during the pairing window and neighbour discovery. It is counted and listed rather than filtered out of the evidence."
+    }'
+}
+
+# Prove from the machine itself that the off-path services are reachable.
+#
+#   lab_probe_offpath_services <service> <dns-name> <http-url>
+#
+# Run outside the capture window on purpose: these probes are packets to the
+# resolver and the HTTP server, and inside the window they would be exactly the
+# traffic the scenario claims is absent. Running them before the capture starts
+# and again after it stops shows the services were up on both sides of it.
+#
+# `getent hosts` is glibc's own resolver path, so the DNS probe needs no tool
+# the product does not already imply; `curl` is lab tooling in the agent image.
+lab_probe_offpath_services() {
+  local service="$1" name="$2" url="$3" resolved="" http_status=""
+  resolved="$(lab_exec "$service" sh -c \
+    "getent hosts '$name' 2>/dev/null | awk 'NR == 1 { print \$1 }'" || true)"
+  http_status="$(lab_exec "$service" sh -c \
+    "curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' '$url' 2>/dev/null" || true)"
+  jq -n \
+    --arg name "$name" --arg url "$url" \
+    --arg resolved "$resolved" --arg status "$http_status" \
+    '{dns: {name: $name, resolved_to: (if $resolved == "" then null else $resolved end),
+            answered: ($resolved != "")},
+      http: {url: $url, status_code: (if $status == "" then null else ($status | tonumber) end),
+             answered: ($status == "200")},
+      note: "run outside the capture window; inside it these probes would be the very traffic the scenario claims is absent"}'
 }
 
 # --- UDP blocking ----------------------------------------------------------
@@ -765,6 +969,7 @@ lab_scenario_begin() {
   : >"$lab_work/observed.jsonl"
   lab_capture_service=""
   lab_capture_interface_name=""
+  lab_capture_filter=""
   mkdir -p "$lab_results_dir"
 }
 

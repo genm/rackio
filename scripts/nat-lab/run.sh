@@ -28,6 +28,7 @@ scenario_ids=(
   udp_blocked
   path_migration
   cone_nat_hole_punch
+  direct_only_isolation
 )
 scenario_script() {
   case "$1" in
@@ -39,6 +40,7 @@ scenario_script() {
   udp_blocked) echo "$lab_dir/scenarios/udp-blocked.sh" ;;
   path_migration) echo "$lab_dir/scenarios/path-migration.sh" ;;
   cone_nat_hole_punch) echo "$lab_dir/scenarios/cone-nat-hole-punch.sh" ;;
+  direct_only_isolation) echo "$lab_dir/scenarios/direct-only-isolation.sh" ;;
   *) return 1 ;;
   esac
 }

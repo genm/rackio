@@ -46,9 +46,13 @@ FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639
 
 # iproute2 points the LAN machines at their NAT router, tcpdump captures the
 # evidence, iputils-ping measures link loss and procps stops the daemon by name.
+# curl is lab tooling, never used by the product: `direct_only_isolation` proves
+# from the machine itself that the off-path HTTP server it did not contact was
+# in fact reachable. The DNS half of that probe needs no package — glibc's
+# `getent hosts` queries the configured resolver.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
-        iproute2 iputils-ping procps tcpdump \
+        curl iproute2 iputils-ping procps tcpdump \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/bin/rackio /usr/local/bin/rackio

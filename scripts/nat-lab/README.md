@@ -58,6 +58,12 @@ Output, all gitignored build artefacts under the existing `/test-results/` rule:
   lan-f-monitored .10 ── router-f .2 ──────┘
                         (192.0.2.7)
                         symmetric, no forward
+
+              lan_g  192.168.108.0/24  (flat, no router)
+              ├── lan-g-viewer      .10
+              ├── lan-g-monitored   .11   resolv.conf -> .20
+              ├── lan-g-resolver    .20   dnsmasq, authoritative for lab.test
+              └── lan-g-http        .21   busybox httpd
 ```
 
 - Every network is `internal`, so a lab machine physically cannot reach anything
@@ -87,6 +93,16 @@ Output, all gitignored build artefacts under the existing `/test-results/` rule:
   left alone so the packet-loss probes still reach the routers, and a DNAT'd port
   forward is unaffected because it is translated in `PREROUTING` and traverses
   `FORWARD`, never `INPUT`.
+- `lan_g` is the one segment that carries something other than the machines
+  under test and no relay: a DNS resolver and an HTTP server, both built from
+  `services.Dockerfile` and both reachable. They exist so `direct_only_isolation`
+  can produce a result rather than an artefact. The numbering skips
+  `192.168.107.0/24` deliberately — Docker's default address pool commonly hands
+  that block to unrelated compose projects on a developer machine, and it did
+  exactly that while `lan_g` was being added, so the lab could not come up. Any
+  block here can collide the same way; the symptom is
+  `Pool overlaps with other one on this address space` and the fix is to
+  renumber the network in `compose.yaml`.
 - The relay is `relay-package/` built unchanged — upstream `iroh-relay` pinned
   to `1.0.3`, the same image an operator would run. Only its configuration
   differs; see "The lab's relay is not a production relay" below.
@@ -244,6 +260,68 @@ The report records `first_path_the_viewer_reported` and any
 `Relayed -> WanDirect` transition under `in_session_promotion`, so whether the
 direct path arrived by promoting the running session or on a later connect is
 visible rather than assumed.
+
+### `direct_only_isolation`
+
+Two machines on a flat LAN that also carries a DNS resolver and an HTTP server,
+both reachable, with the machines' `/etc/resolv.conf` pointing at that resolver.
+Covers the "Privacy and security" row **direct-only packet capture has no
+peer-external DNS, HTTP or QUIC** — the other scenarios cross-check a _direct
+claim_ against a capture, and this one asserts the isolation property on its
+own.
+
+The two off-path services are the whole point. A machine that contacts nothing
+on an empty LAN has proven nothing about itself. Here the resolver is the one in
+`resolv.conf` and the web server is one hop away on the same segment, and the
+scenario proves from the monitored machine that both answer it — `getent hosts`
+for DNS, `curl` for HTTP — **before** the capture starts and again **after** it
+stops, so the services were up on both sides of the window. Those probes run
+outside the window on purpose: inside it they would be exactly the traffic the
+scenario claims is absent.
+
+The capture runs in the monitored machine's own namespace for the whole
+scenario — started before either daemon, so daemon start, pairing and
+steady-state monitoring are all in one window — and it is **unfiltered**. The
+path scenarios capture `udp or icmp or icmp6`; an HTTP request is TCP, so a
+scenario asserting none was sent from a UDP-only capture would be describing its
+filter rather than the daemon. That the filter really was empty is itself
+asserted, because it regressed once during development.
+
+The result is directional, under `egress_isolation`: of every packet whose
+source was one of the machine's own addresses, where did it go? A bidirectional
+flow summary cannot tell a packet the machine sent from one somebody sent at it,
+and only the first is the daemon's doing. Every destination is listed with its
+packet count and classified as the configured peer, link housekeeping
+(multicast, broadcast, IPv6 link-local, the unspecified address) or unexpected;
+the assertion is that the unexpected list is empty, plus named assertions that
+nothing at all went to the resolver's or the HTTP server's address. Nothing is
+filtered out of the evidence — housekeeping is separated from the peer set and
+counted, not hidden.
+
+Packets without an IP header are counted too. ARP is link-layer broadcast with
+no IP destination, so it cannot appear among the destinations, and an ARP for an
+address is itself an attempt to reach it. `link_layer.non_ip_packets` closes the
+arithmetic against the capture total and
+`link_layer.arp_requests_sent_by_this_machine` lists the targets, with its own
+assertion that neither off-path service is among them.
+
+In the run that produced the current report the machine sent 90 IP packets, all
+to its peer, and one ARP request, for its peer. There was **no** mDNS: the
+pairing bundle carries the peer's addresses, so nothing had to be discovered on
+this LAN. The scenario records an empty housekeeping list rather than implying
+traffic that did not occur.
+
+What it does not prove, recorded in the report under `scope.does_not_prove`:
+
+- nothing about a machine with a relay configured — relay mode is a different
+  claim and lives in the relay scenarios;
+- nothing at the payload level. The capture is unfiltered but keeps the lab's
+  128-byte snaplen, so this is an address-level result;
+- nothing about an operator who configures a _hostname_. No name is resolved
+  anywhere in this scenario, so a DNS lookup at configuration time is untested;
+- nothing about IPv6 routed traffic — the topology is IPv4-only;
+- not the negative for all time. It is one bounded window on one topology, not a
+  proof that no code path can ever reach out.
 
 ## The lab's relay is not a production relay
 
@@ -537,8 +615,16 @@ hardware and it is not the internet.
   lab's relay cannot serve without TLS (finding 1). A machine whose external
   address is neither configured nor discoverable is still untested here.
 
+- **Isolation is proven against two services, not against the internet.**
+  `direct_only_isolation` shows the daemon ignored a reachable resolver and a
+  reachable web server on its own LAN. It is not a proof that no code path
+  anywhere can reach out, and its networks are `internal`, so it cannot
+  distinguish "did not try" from "could not have succeeded" for a destination
+  outside the topology.
+
 A green run of this lab is necessary evidence for the direct-path, hole-punch,
 relay-fallback, relay-outage, UDP-blocked and path-migration rows of the NAT
-matrix, and for the relay payload-opacity item under "Privacy and security". It
-is not sufficient evidence that the product works on real networks, and the one
-checklist row it does not cover — IPv6 direct — must stay unticked.
+matrix, and for the relay payload-opacity and direct-only isolation items under
+"Privacy and security". It is not sufficient evidence that the product works on
+real networks, and the one checklist row it does not cover — IPv6 direct — must
+stay unticked.

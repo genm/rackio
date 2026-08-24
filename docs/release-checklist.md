@@ -105,6 +105,11 @@ duration, packet loss and relay byte count.
 ## Privacy and security
 
 - [ ] direct-only packet capture has no peer-external DNS, HTTP or QUIC
+  - measured by the NAT laboratory's `direct_only_isolation` scenario
+    (`scripts/nat-lab/run.sh direct_only_isolation`), which places a reachable
+    DNS resolver and HTTP server on the monitored machine's own LAN so the
+    absence of traffic to them is a result rather than an empty segment. Read
+    `scope.does_not_prove` in its report before accepting it
 - [x] binary scan contains no upstream public relay/discovery hostname defaults;
       run `just release-check`
 - [ ] relay cannot decode application protobuf frames
