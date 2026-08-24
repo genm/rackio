@@ -185,13 +185,25 @@ average_cpu_of() {
   awk '{ total += $1 } END { printf "%.3f", total / NR }' "$1"
 }
 
-# `ps -o %cpu` is a decaying average over up to a minute of previous real time,
-# so on a daemon that has just done bursty work — pairing and a history
-# backfill — it reports partly on traffic that is outside the window. It stays
-# the gating number because it is what the idle profile has always used and the
-# two profiles must be comparable, but every profile also records a
-# window-scoped figure derived from the process's own cumulative CPU time, and
-# both appear in the report.
+# `ps -o %cpu` is the gating number because it is what this script has always
+# used, and it is not a measurement of steady-state CPU.
+#
+# The BSD manual calls it a decaying average over up to a minute of previous
+# real time. On macOS it behaves as a *lifetime* average — total CPU time
+# divided by elapsed time since the process started — and startup dominates it.
+# Measured on this binary, changing nothing but how long the script waits before
+# sampling:
+#
+#   warm-up   5 s  ->  ps 1.250%   window 0.818%
+#   warm-up 120 s  ->  ps 0.060%   window 1.000%
+#
+# Twenty-fold movement in the gating number from waiting, while the real
+# steady-state figure did not move. A budget cannot rest on that, and a warm-up
+# cannot be tuned until it passes. So both numbers are recorded in every
+# profile, the window-scoped one derived from the process's own cumulative CPU
+# time over exactly the sampling window, and the profiles use the same warm-up
+# so neither is tuned. Which of the two should gate the release budget is a
+# decision for whoever owns the checklist, not for this script to make quietly.
 cpu_seconds_of() {
   ps -p "$1" -o cputime= | awk 'NR == 1 {
     n = split($1, part, ":")
@@ -212,21 +224,13 @@ peak_rss_of() {
 }
 
 sample_count="${RACKIO_BENCHMARK_SAMPLES:-10}"
-# The gating CPU number comes from `ps -o %cpu`, a decaying average over up to a
-# minute of previous real time. The idle profile keeps its five seconds — it
-# does nothing before the window but start up, and changing it would change what
-# every existing `resource-benchmark.json` means. The active-peer profile pairs
-# and backfills history first, and that burst stays inside `ps`'s decay window
-# for a full minute, so its window opens a minute after the session is streaming.
-# This is the same rule the idle profile already applies, sized to the sampler.
-# Measured at both five and sixty seconds while this profile was built: the
-# gating number barely moved, so the warm-up is here to remove a known
-# confounder, not because it was found to flatter the result.
-default_warmup_seconds=5
-if [[ "$profile" == "active_peer" ]]; then
-  default_warmup_seconds=60
-fi
-warmup_seconds="${RACKIO_BENCHMARK_WARMUP_SECONDS:-$default_warmup_seconds}"
+# One warm-up for both profiles, and it is the one the idle profile has always
+# used. The active-peer profile was tried at sixty seconds while it was being
+# built, on the theory that its pairing and history burst needed to decay out of
+# `ps`; see `cpu_seconds_of` for why that theory was wrong and why a warm-up
+# that moves the gating number is a reason not to tune it rather than a reason
+# to pick the flattering value.
+warmup_seconds="${RACKIO_BENCHMARK_WARMUP_SECONDS:-5}"
 cpu_limit_percent="${RACKIO_BENCHMARK_CPU_LIMIT_PERCENT:-1}"
 rss_limit_kib="${RACKIO_BENCHMARK_RSS_LIMIT_KIB:-40960}"
 # docs/release-checklist.md: "normal traffic below 2 KiB/s per active peer".
@@ -330,12 +334,13 @@ run_idle_direct_only() {
       average_cpu_percent: $average_cpu_percent,
       peak_rss_kib: $peak_rss_kib,
       cpu_measurement: {
-        gating_source: "ps -o %cpu, a decaying average over up to a minute of previous real time",
+        gating_source: "ps -o %cpu, which on macOS is a process-lifetime average dominated by startup, not a measurement of steady-state CPU",
         window_cpu_percent: $window_cpu_percent,
         window_source: "delta of the process cumulative CPU time over the sampling window, scoped to the window and to nothing else",
         cpu_seconds_consumed: $cpu_seconds_consumed,
         wall_seconds: $wall_seconds,
-        note: "both are reported because they answer different questions; wall_seconds has one-second resolution, so window_cpu_percent carries about ten percent of relative error over a ten-second window"
+        finding: "the gating number moved from 1.250% to 0.060% on this binary by changing the warm-up from 5s to 120s and nothing else, while window_cpu_percent stayed near 1%. Read window_cpu_percent as the steady-state figure; the gating source is kept unchanged rather than quietly reinterpreted.",
+        note: "wall_seconds has one-second resolution, so window_cpu_percent carries about ten percent of relative error over a ten-second window"
       },
       limits: {
         average_cpu_percent_exclusive: $cpu_limit_percent,
@@ -502,11 +507,12 @@ run_active_peer() {
                     bytes_in: $monitored_in, bytes_out: $monitored_out}
       },
       cpu_measurement: {
-        gating_source: "ps -o %cpu, a decaying average over up to a minute of previous real time",
+        gating_source: "ps -o %cpu, which on macOS is a process-lifetime average dominated by startup, not a measurement of steady-state CPU",
         window_cpu_percent: ($viewer_window_cpu | if . > $monitored_window_cpu then . else $monitored_window_cpu end),
         window_source: "delta of each process cumulative CPU time over the sampling window, scoped to the window and to nothing else",
         wall_seconds: $wall_seconds,
-        note: "the two sources disagree on this profile and both are reported rather than the flattering one being chosen. The warm-up was measured at five seconds and at sixty, a full ps decay window, and the gating number barely moved (1.45 then 1.42), so the gap is not the pairing burst decaying out. wall_seconds has one-second resolution, so window_cpu_percent carries about ten percent of relative error over a ten-second window"
+        finding: "the two sources disagree on this profile and both are reported rather than the flattering one being chosen. On the idle profile the gating number moved from 1.250% to 0.060% by changing the warm-up alone, while the window figure stayed near 1%. Read window_cpu_percent as the steady-state figure.",
+        note: "wall_seconds has one-second resolution, so window_cpu_percent carries about ten percent of relative error over a ten-second window"
       },
       traffic: {
         method: "nettop -P -x -J bytes_in,bytes_out -d -s 1, per-process byte deltas read from the daemons own sockets",
@@ -539,10 +545,19 @@ run_active_peer() {
 }
 
 mkdir -p "$(dirname "$result_path")"
+# Redirected to a file rather than piped to `tee`. A function on the left of a
+# pipe runs in a subshell, so the `agent_pid=$!` inside it never reaches this
+# shell, and the EXIT trap then has nothing to kill: every run leaked its
+# daemons, and ten of them were found still running after a session of
+# development. The daemons must be started by the same shell that cleans them
+# up.
+result_document="$benchmark_root/result.json"
 case "$profile" in
-idle_direct_only) run_idle_direct_only | tee "$result_path" ;;
-active_peer) run_active_peer | tee "$result_path" ;;
+idle_direct_only) run_idle_direct_only >"$result_document" ;;
+active_peer) run_active_peer >"$result_document" ;;
 esac
+cp "$result_document" "$result_path"
+cat "$result_path"
 
 if ! jq -e '.status == "passed"' "$result_path" >/dev/null; then
   exit 1
