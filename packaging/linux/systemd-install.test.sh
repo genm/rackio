@@ -105,6 +105,22 @@ sudo systemctl restart rackio.service
 systemctl is-active --quiet rackio.service
 wait_for_root_health
 
+# An upgrade installs over a running daemon. `systemctl enable --now` does not
+# restart an already-active unit, so without an explicit restart the installer
+# reports success while the previous binary image keeps running.
+upgrade_pid_before="$(systemctl show -p MainPID --value rackio.service)"
+sudo env RACKIO_VIEWER_USER="$viewer_user" \
+  sh "$repo_root/install.sh" --archive "$archive" --checksum "$checksum" >/dev/null
+systemctl is-active --quiet rackio.service
+wait_for_root_health
+upgrade_pid_after="$(systemctl show -p MainPID --value rackio.service)"
+if [[ "$upgrade_pid_after" == "$upgrade_pid_before" ]]; then
+  fail "installing over a running service left the previous process running"
+fi
+if sudo readlink "/proc/$upgrade_pid_after/exe" | grep -q '(deleted)'; then
+  fail "the running daemon still executes a replaced binary image"
+fi
+
 sudo touch /var/lib/rackio/preserve-marker
 sudo /usr/local/lib/rackio/uninstall.sh
 [[ ! -e /usr/local/bin/rackio ]]
@@ -153,6 +169,7 @@ jq --null-input \
     state_directory_isolated_from_viewers: true,
     unauthorized_user_rejected: true,
     restart_health: true,
+    in_place_upgrade_replaced_process: true,
     preserving_uninstall: true,
     reinstall_preserved_state: true,
     purge_removed_state: true
