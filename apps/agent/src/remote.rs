@@ -582,6 +582,11 @@ async fn monitor_machine(
     // refreshed set, not the one this task started with.
     let mut record = record;
     let mut retry_delay = INITIAL_RECONNECT_DELAY;
+    // Lives across reconnects, not inside a single session. A hostile peer can
+    // force a fresh session at will by dropping the connection; if the persist
+    // throttle reset with the session, that reconnect would be exactly as good
+    // as a crafted sequence number for forcing a registry rewrite.
+    let mut last_persisted: Option<Instant> = None;
     loop {
         let started = Instant::now();
         let result = monitor_session(
@@ -589,6 +594,7 @@ async fn monitor_machine(
             &mut record,
             &registry,
             Arc::clone(&snapshots),
+            &mut last_persisted,
         )
         .await;
         if let Err(error) = result {
@@ -611,6 +617,7 @@ async fn monitor_session(
     record: &mut RemoteMachineRecord,
     registry: &RemoteMachineRegistry,
     snapshots: Arc<AsyncRwLock<BTreeMap<String, RemoteMachineSnapshot>>>,
+    last_persisted: &mut Option<Instant>,
 ) -> Result<(), RemoteFleetError> {
     let client = connect_record(endpoint, record).await?;
     refresh_direct_addresses(&client, record, registry);
@@ -655,8 +662,9 @@ async fn monitor_session(
     // chooses: a peer that stamped every sample with a multiple of five and
     // streamed as fast as the link allowed drove one create-write-fsync-rename
     // of the whole registry per sample, with the file's size under its control
-    // too through the node name and detail strings it supplies.
-    let mut last_persisted: Option<Instant> = None;
+    // too through the node name and detail strings it supplies. The throttle
+    // state itself lives in the caller's loop, not here, so it survives a
+    // reconnect instead of resetting with every new session.
 
     loop {
         let response = tokio::select! {
@@ -690,7 +698,7 @@ async fn monitor_session(
                 // to its original value for the whole session.
                 snapshot.last_seen_ms = Some(Utc::now().timestamp_millis());
                 if should_persist {
-                    last_persisted = Some(Instant::now());
+                    *last_persisted = Some(Instant::now());
                     let snapshot = snapshot.clone();
                     drop(entries);
                     if let Err(error) = registry.update_snapshot(&record.endpoint_id, &snapshot) {
