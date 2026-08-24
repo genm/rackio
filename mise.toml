@@ -120,10 +120,17 @@ run = [
 ]
 
 [tasks."benchmark:agent"]
-description = "Enforce the release agent CPU and RSS budgets"
+description = "Enforce the release agent CPU and RSS budgets while idle and direct-only"
 run = [
   "cargo build --release -p rackio-agent",
   "scripts/benchmark-agent-resources.sh",
+]
+
+[tasks."benchmark:agent-active-peer"]
+description = "Enforce the release agent CPU, RSS and per-peer traffic budgets with a peer actively streaming"
+run = [
+  "cargo build --release -p rackio-agent",
+  "RACKIO_BENCHMARK_PROFILE=active_peer scripts/benchmark-agent-resources.sh",
 ]
 
 [tasks."licenses:check"]

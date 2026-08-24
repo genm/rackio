@@ -47,6 +47,9 @@ release-check:
 benchmark-agent:
     mise run benchmark:agent
 
+benchmark-agent-active-peer:
+    mise run benchmark:agent-active-peer
+
 test-installer:
     mise run test:installer
 
