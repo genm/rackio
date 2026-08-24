@@ -81,21 +81,32 @@ pub(crate) fn machine_json(
         .and_then(serde_json::Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let worst_disk = disks
+    // Every mounted filesystem, fullest first. The card and the trend still
+    // read the fullest one, but a machine's other filesystems are real
+    // capacity an operator has to be able to see — and once an alert names a
+    // mount, a viewer that cannot show mounts cannot answer it.
+    let mut filesystems: Vec<(String, u64, u64)> = disks
         .iter()
         .filter_map(|disk| {
+            let mount = disk.get("mount").and_then(serde_json::Value::as_str)?;
             let used = disk.get("used_bytes").and_then(serde_json::Value::as_u64)?;
             let total = disk
                 .get("total_bytes")
                 .and_then(serde_json::Value::as_u64)?;
-            (total > 0).then_some((used, total))
+            // A pseudo-filesystem reporting no capacity is not a full one, and
+            // has no share to rank or draw.
+            (total > 0).then(|| (String::from(mount), used, total))
         })
-        .max_by(|(left_used, left_total), (right_used, right_total)| {
-            u128::from(*left_used)
-                .saturating_mul(u128::from(*right_total))
-                .cmp(&u128::from(*right_used).saturating_mul(u128::from(*left_total)))
-        });
-    let (disk_used, disk_total) = worst_disk.unzip();
+        .collect();
+    filesystems.sort_by(|(_, left_used, left_total), (_, right_used, right_total)| {
+        u128::from(*right_used)
+            .saturating_mul(u128::from(*left_total))
+            .cmp(&u128::from(*left_used).saturating_mul(u128::from(*right_total)))
+    });
+    let fullest = filesystems.first();
+    let disk_used = fullest.map(|(_, used, _)| *used);
+    let disk_total = fullest.map(|(_, _, total)| *total);
+    let disk_mount = fullest.map(|(mount, _, _)| mount.clone());
     let cpu = latest
         .get("cpu_percent")
         .and_then(serde_json::Value::as_f64);
@@ -143,6 +154,17 @@ pub(crate) fn machine_json(
         "swapTotalBytes": latest.get("swap_total_bytes"),
         "diskUsedBytes": disk_used,
         "diskTotalBytes": disk_total,
+        // Which filesystem the headline disk figure belongs to. Absent rather
+        // than guessed on a machine that reported none.
+        "diskMount": disk_mount,
+        "filesystems": filesystems
+            .iter()
+            .map(|(mount, used, total)| serde_json::json!({
+                "mount": mount,
+                "usedBytes": used,
+                "totalBytes": total,
+            }))
+            .collect::<Vec<_>>(),
         "temperature": temperature,
         "networkReceivedBytesPerSecond": latest
             .get("network")
@@ -205,6 +227,53 @@ mod tests {
         let machine = machine_json(&sensorless, "healthy", "lan_direct", None, None, &[], None)
             .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(machine.get("temperature"), Some(&serde_json::Value::Null));
+    }
+
+    #[test]
+    fn every_mounted_filesystem_reaches_the_viewer_fullest_first() {
+        // The headline disk figure is one filesystem out of several. Dropping
+        // the rest here left the viewer unable to answer an alert that names a
+        // mount, and unable to show capacity the machine really has.
+        let source = serde_json::json!({
+            "node": { "node_id": "id", "display_name": "Server" },
+            "latest": {
+                "disks": [
+                    { "mount": "/", "total_bytes": 100, "used_bytes": 20 },
+                    { "mount": "/data", "total_bytes": 200, "used_bytes": 190 },
+                    // A pseudo-filesystem with no capacity is not a full one.
+                    { "mount": "/proc", "total_bytes": 0, "used_bytes": 50 },
+                ],
+            },
+        });
+
+        let machine = machine_json(&source, "healthy", "lan_direct", None, None, &[], None)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(
+            machine.get("filesystems"),
+            Some(&serde_json::json!([
+                { "mount": "/data", "usedBytes": 190, "totalBytes": 200 },
+                { "mount": "/", "usedBytes": 20, "totalBytes": 100 },
+            ]))
+        );
+        // The headline figure stays the fullest filesystem, now attributable.
+        assert_eq!(machine.get("diskUsedBytes"), Some(&serde_json::json!(190)));
+        assert_eq!(machine.get("diskMount"), Some(&serde_json::json!("/data")));
+    }
+
+    #[test]
+    fn a_machine_that_reported_no_filesystem_does_not_acquire_one() {
+        let source = serde_json::json!({
+            "node": { "node_id": "id", "display_name": "Server" },
+            "latest": { "cpu_percent": 1.0 },
+        });
+
+        let machine = machine_json(&source, "healthy", "lan_direct", None, None, &[], None)
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(machine.get("filesystems"), Some(&serde_json::json!([])));
+        assert_eq!(machine.get("diskMount"), Some(&serde_json::Value::Null));
+        assert_eq!(machine.get("diskUsedBytes"), Some(&serde_json::Value::Null));
     }
 
     #[test]

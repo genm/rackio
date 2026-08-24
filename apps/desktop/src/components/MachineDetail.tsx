@@ -57,6 +57,7 @@ function MachineDetailDialog({
   const dialogRef = useModalDialog<HTMLElement>(onClose);
   const { node } = detail;
   const live = isLiveNodeState(node.state);
+  const filesystems = node.filesystems ?? [];
   const [metric, setMetric] = useState<TrendMetric>("cpu");
   const series =
     detail.state === "ready"
@@ -206,6 +207,35 @@ function MachineDetailDialog({
                 <dd>{connectionPathRegistry[node.path].label}</dd>
               </div>
             </dl>
+            {/* The metric tiles above report the fullest filesystem only. A
+                machine has several, an alert names one of them by mount, and
+                the answer to "which disk do I clear?" has to be readable
+                somewhere in the viewer. */}
+            <section className="detail-filesystems" aria-label="Filesystems">
+              <h3>Filesystems</h3>
+              {live && filesystems.length > 0 ? (
+                <ul>
+                  {filesystems.map((filesystem) => (
+                    <li key={filesystem.mount}>
+                      <span className="filesystem-mount">{filesystem.mount}</span>
+                      <span className="filesystem-usage">
+                        {percent(filesystem.usedBytes, filesystem.totalBytes)} ·{" "}
+                        {bytes(filesystem.usedBytes)} of {bytes(filesystem.totalBytes)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                /* Distinct facts: an unreachable machine has filesystems we
+                   cannot currently read, a live one that reported none has
+                   nothing mounted we can measure. Neither is an empty disk. */
+                <p className="filesystem-empty">
+                  {live
+                    ? "This machine reported no measurable filesystem"
+                    : "No current filesystem reading from this machine"}
+                </p>
+              )}
+            </section>
           </>
         )}
       </section>

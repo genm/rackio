@@ -1,5 +1,6 @@
 import { ago, bytes, shortDuration, timeOfDay, uptime } from "../format";
 import {
+  diskDetail,
   swapDetail,
   temperatureDetail,
   tileValues,
@@ -45,12 +46,14 @@ export function NodeCard({
       : `Collecting ${spec.label} samples…`;
   // Tiles whose "—" has more than one cause explain which one it is, so an
   // unavailable reading is never mistaken for an idle machine.
-  const tileDetail = (tileMetric: TrendMetric) =>
-    tileMetric === "temp"
-      ? temperatureDetail(node.temperature)
-      : tileMetric === "swap"
-        ? swapDetail(node)
-        : undefined;
+  const tileDetail = (tileMetric: TrendMetric) => {
+    if (tileMetric === "temp") return temperatureDetail(node.temperature);
+    if (tileMetric === "swap") return swapDetail(node);
+    // The disk figure is one filesystem out of several, so the tile names it:
+    // an operator told "Disk 93%" cannot tell which mount to clear.
+    if (tileMetric === "disk") return diskDetail(node);
+    return undefined;
+  };
   const metricTile = (tileMetric: TrendMetric) => (
     <button
       key={tileMetric}

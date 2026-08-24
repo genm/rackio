@@ -391,6 +391,16 @@ Edit the file directly only while the daemon is stopped; a running daemon owns
 it, and `rackio alerts` is the interface that keeps the file and the running
 rules in step.
 
+#### Where a breach is visible
+
+The machine card shows the fullest filesystem; its disk tile names the mount,
+and **View history** opens a per-filesystem list of every mount the machine
+reported, fullest first. The tray submenu carries the same metrics as the card
+— CPU, memory, swap, the fullest filesystem by name, temperature, network rate
+and uptime — so the machine that raised an alert can be read without opening
+the window. A reading a machine cannot report is an em dash with no bar, never
+a zero.
+
 #### Notifications in the desktop
 
 Which state raises an OS notification, and whether notifications are sent at

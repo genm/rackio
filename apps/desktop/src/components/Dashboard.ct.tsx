@@ -47,6 +47,15 @@ const snapshot: FleetSnapshot = {
       uptimeSeconds: 12 * 86_400 + 4 * 3_600,
       diskUsedBytes: 320_000_000_000,
       diskTotalBytes: 1_000_000_000_000,
+      diskMount: "/System/Volumes/Data",
+      filesystems: [
+        {
+          mount: "/System/Volumes/Data",
+          usedBytes: 320_000_000_000,
+          totalBytes: 1_000_000_000_000,
+        },
+        { mount: "/", usedBytes: 11_000_000_000, totalBytes: 500_000_000_000 },
+      ],
       temperature: {
         label: "PMU tdie8",
         celsius: 60.7,
@@ -92,6 +101,26 @@ test("labels the trend chart with its metric and time window", async ({ mount })
   ).toBeVisible();
   await expect(studio.getByText("10 s ago")).toBeVisible();
   await expect(studio.getByText("now", { exact: true })).toBeVisible();
+});
+
+test("names the filesystem the disk tile is reporting", async ({ mount }) => {
+  // A machine has several filesystems and the tile shows the fullest. Without
+  // the mount, an operator paged about "Disk 93%" cannot tell which one.
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const studio = component.locator("article").filter({ hasText: "Studio Mac" });
+  const diskValue = studio.getByRole("button", { name: /^Disk/ }).locator(".metric-value");
+
+  await expect(diskValue).toHaveAttribute("title", /\/System\/Volumes\/Data/);
+  await expect(diskValue).toHaveAttribute("title", /1 more on this machine/);
+});
+
+test("says a machine reported no filesystem rather than naming one", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const server = component.locator("article").filter({ hasText: "Home Server" });
+
+  await expect(
+    server.getByRole("button", { name: /^Disk/ }).locator(".metric-value"),
+  ).toHaveAttribute("title", "No filesystem reading from this machine");
 });
 
 test("switches the trend chart to memory from its metric tile", async ({ mount }) => {
