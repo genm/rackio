@@ -74,10 +74,15 @@ lab_daemon_start "$monitored"
 lab_wait_for_command "viewer daemon" lab_rackio "$viewer" status
 lab_wait_for_command "monitored daemon" lab_rackio "$monitored" status
 
-relay_url="$(lab_rackio "$monitored" status | jq -r '.data.relay_url')"
+# Both machines, because both claims matter: the capture is taken on the
+# monitored machine, so its configuration is what the isolation result is about,
+# while the shared "a relayed transport is never reported as direct" check reads
+# the viewer's, which is the machine making the path claim.
+monitored_relay_url="$(lab_rackio "$monitored" status | jq -r '.data.relay_url')"
+relay_url="$(lab_rackio "$viewer" status | jq -r '.data.relay_url')"
 lab_assert_equal "monitored_machine_is_direct_only" \
   "the isolation claim is about a machine with no relay configured" \
-  "$relay_url" "null"
+  "$monitored_relay_url" "null"
 
 bundle="$(lab_rackio "$monitored" pairing create | jq -r '.data')"
 imported="$(lab_rackio "$viewer" pairing import "$bundle")"
@@ -98,7 +103,8 @@ lab_settle_path_events
 
 selected_path="$(jq -r '.data.remotes[0].path' <<<"$fleet")"
 state="$(lab_remote_field "$viewer" 'state')"
-relay_mode="$(lab_relay_mode "$monitored")"
+relay_mode="$(lab_relay_mode "$viewer")"
+monitored_relay_mode="$(lab_relay_mode "$monitored")"
 events="$(lab_observe_path_events "$viewer")"
 
 self_addresses="$(lab_interface_addresses "$monitored" "$lab_capture_interface_name")"
@@ -119,9 +125,15 @@ lab_observe steady_state_seconds "$steady_state_seconds"
 lab_observe capture "$capture"
 lab_observe egress_isolation "$egress"
 lab_observe off_path_reachability_after_capture "$reachability_after"
-lab_observe relay "$(jq -n --arg url "$relay_url" --arg mode "$relay_mode" \
-  '{configured_relay_url: (if $url == "null" then null else $url end),
-    relay_mode: $mode, relays_running_in_lab: 0}')"
+lab_observe relay "$(jq -n \
+  --arg url "$relay_url" --arg mode "$relay_mode" \
+  --arg monitored_url "$monitored_relay_url" --arg monitored_mode "$monitored_relay_mode" \
+  '{viewer: {configured_relay_url: (if $url == "null" then null else $url end),
+             relay_mode: $mode},
+    monitored: {configured_relay_url: (if $monitored_url == "null" then null else $monitored_url end),
+                relay_mode: $monitored_mode},
+    relay_reachable_from_this_lan: false,
+    note: "the labs relay container is running, as it is for every scenario, but it sits on net_internet and lan_g is a separate internal network with no route to it. Neither machine has a relay configured either."}')"
 lab_observe scope "$(jq -n \
   '{proves: "no packet this machine sent during daemon start, pairing and steady-state monitoring went to any unicast address other than its configured peer, on a LAN where a DNS resolver and an HTTP server were reachable throughout",
     does_not_prove: [
