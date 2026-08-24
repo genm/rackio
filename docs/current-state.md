@@ -33,6 +33,18 @@ moved to another port is reported offline with the recovery step and its last
 known values intact, and returning it to the paired port recovers without
 re-pairing or editing the registry.
 
+A container laboratory (`scripts/nat-lab/`, `mise run test:nat-lab`) runs the
+agent against real Linux kernel networking and iptables NAT, and writes one JSON
+report and one bounded capture per scenario. Eight scenarios pass: same-LAN
+direct, port-forwarded direct, address change, cone-NAT hole punching, symmetric
+NAT falling back to a relay, relay outage and recovery, UDP blocked, and path
+migration in both directions. A direct claim is cross-checked against the
+capture, and the relay scenarios show no decodable protobuf frame while
+recording the endpoint identities the relay genuinely does see. It is not
+carrier-grade NAT, not a real ISP's IPv6, and has no link impairment: necessary
+evidence for those rows, not sufficient on its own, and no release-checklist box
+is ticked from it.
+
 A reusable two-daemon same-host smoke exercises this flow: pairing produces one
 `lan_direct` remote machine with a live CPU sample, importing the same bundle
 again fails, and restarting the viewer daemon reconnects from its secret-free
@@ -47,15 +59,15 @@ NAT and mixed-OS release matrices.
 | Tray | One submenu per machine carrying the same metrics as the dashboard card — CPU, memory, swap, the fullest filesystem by mount name, temperature, network rate and uptime — plus the connection path and RTT | Metrics an unreachable machine cannot report show an em dash and no bar rather than a stale value |
 | Local history | 2-second samples, SQLite WAL batches, raw/minute retention and 64 MiB pruning | Cross-machine long-term aggregation is intentionally absent |
 | Health thresholds | Built-in disk, memory, CPU and hardware-relative temperature levels with sustained-condition windows, per-rule `rackio alerts` retuning, disable and machine-wide off, applied to the running daemon without a restart, each breach published as a named detail line that reaches the card and the OS notification | Thresholds are changed from the CLI or `config.json`; the desktop has no threshold editor |
-| Remote server | Endpoint authentication, allowlist authorization, immediate revoke teardown, node info, live metrics, health, path and bounded history protocol, an operator-configured fixed listen port that survives restarts, and operator-configured advertised addresses given to the endpoint as NAT-traversal candidates | NAT and relay migration evidence remains incomplete |
+| Remote server | Endpoint authentication, allowlist authorization, immediate revoke teardown, node info, live metrics, health, path and bounded history protocol, an operator-configured fixed listen port that survives restarts, and operator-configured advertised addresses given to the endpoint as NAT-traversal candidates | Container-lab evidence covers the direct, hole-punched, relayed and outage paths; real-network, IPv6 and carrier-grade NAT evidence remains incomplete |
 | Pairing | Five-minute, attempt-limited, single-use secret, window-scoped mDNS endpoint advertisement, copy/paste import, local QR generation, private file import/export, and bundles that carry operator-configured advertised addresses alongside this machine's own | Cross-LAN pairing still depends on transferred direct addresses or a configured self-hosted relay: a machine behind NAT needs an operator-supplied UDP address configured with `rackio advertise-address`, because nothing discovers the router's external address |
-| Viewer daemon | Secret-free remote inventory, reconnect loop, persisted last-known snapshot, bounded remote history query, periodic health/path refresh, direct-address refresh from authenticated sessions, structured path events and stale/offline derivation | NAT and relay migration evidence remains incomplete |
+| Viewer daemon | Secret-free remote inventory, reconnect loop, persisted last-known snapshot, bounded remote history query, periodic health/path refresh, direct-address refresh from authenticated sessions, structured path-change and session-established events, and stale/offline derivation | Container-lab evidence covers path migration in both directions; real-network evidence remains incomplete |
 | Desktop | Local/remote cards with a per-card live trend chart (CPU, memory, swap, disk, temperature, network or RTT, selected by clicking a metric tile and remembered per card), uptime as a card field rather than a series, a remote history dialog over 1/6/24/168 hours with the same selector minus network and RTT, a fleet view overlaying one metric across every machine, severity-ordered cards, dynamic worst-state tray icon, per-machine OS notifications including recovery and the reporting machine's own breach detail, a per-filesystem capacity list in the machine detail, QR/file/bundle pairing, SSH bootstrap, and explicit degraded states | Cross-platform packaging |
 | Trend charts | Time-proportional x axis, lines broken across gaps wider than the series' own spacing, hover crosshair reading the real sample rather than an interpolation, the hardware's own temperature critical drawn as a threshold, and network carried as separate received/sent lines | CPU and memory thresholds are deliberately absent: each peer evaluates its own alert rules, so the viewer has no truthful value to draw |
 | Linux packaging | Native x86_64/arm64 release archives with independently verified SLSA provenance, clean Ubuntu systemd lifecycle evidence, HTTPS or client-pushed archive install, checksum verification, viewer-group isolation, preserving/purge uninstaller and gated GitHub pre-release publication | No supported release: the publication workflow refuses a non-pre-release version; SSH client, reboot and supported-distribution coverage are not proven |
 | macOS | Dedicated daemon user/group, LaunchDaemon lifecycle, preserving uninstaller and fail-closed signed/notarized pkg builder | A real Developer ID signature, notarization receipt and reboot evidence require release credentials and a clean macOS host |
 | Windows | Explicit-DACL named-pipe IPC with caller-token verification, Windows Service installer/uninstaller and a GitHub-hosted CI integration scenario | Authenticode/MSI signing, clean-host remote-client rejection and reboot evidence require a Windows release host |
-| Relay | Version-pinned upstream relay container and configuration, and an operator-pinned CA certificate so a relay signed by an internal authority is reachable instead of only a publicly trusted one | Internet-exposure workflow, token delivery and NAT evidence |
+| Relay | Version-pinned upstream relay container and configuration, and an operator-pinned CA certificate so a relay signed by an internal authority is reachable instead of only a publicly trusted one | Internet-exposure workflow and token delivery; the container lab covers fallback, outage and migration, but not a relay reached across the public internet |
 
 CI evaluates every non-draft PR transition against its complete base-to-head
 change set using the planner from the protected base revision. It runs only the
