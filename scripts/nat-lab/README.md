@@ -213,6 +213,18 @@ both cases instead of choosing the flattering one:
 
 Then the block is lifted and the relay started, and the machine recovers.
 
+"No sample was invented while isolated" is measured across two reads taken
+_while_ isolated, and the sequence must be identical in both. It used to be
+checked by comparing the frozen sequence with the one read at the end of phase
+2, which measured a race rather than the product: the session is still live and
+streaming when phase 2 reads it, so a sample arriving between that read and the
+relay being stopped is a sample received, not invented. That comparison failed
+on exactly that — frozen 12 against phase-2 11, carrying a different CPU value,
+so a real extra sample — while this branch's full run was being produced. The
+assertion was made stricter rather than relaxed: the sequence must be frozen
+over a measured window of isolation, and separately must be at or past the last
+one seen over the relay, which is what rules out a fabricated value.
+
 ### `path_migration`
 
 The same session migrates twice, without re-pairing: direct, then relayed when

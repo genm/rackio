@@ -93,6 +93,20 @@ isolated_memory="$(lab_remote_field_of "$viewer" "$endpoint_id" 'latest.memory_u
 isolated_details="$(lab_remote_field_of "$viewer" "$endpoint_id" 'details | join(" ")')"
 isolated_registry_entries="$(lab_registry "$viewer" 'length')"
 
+# Read the sequence a second time, further into the isolation.
+#
+# "No sample was invented" used to be checked by comparing the frozen sequence
+# with the one read at the end of phase 2. That measured a race, not the
+# product: the session is still live and streaming when phase 2 reads it, so a
+# sample arriving between that read and `lab_relay_stop` is a sample *received*,
+# and the comparison failed on it — observed at frozen 12 against phase-2 11,
+# with a different CPU value, i.e. a real extra sample. What the claim actually
+# means is that the sequence stops moving once nothing is reachable, and that
+# needs two reads taken while isolated.
+isolated_freeze_seconds=8
+sleep "$isolated_freeze_seconds"
+isolated_sequence_later="$(lab_remote_field_of "$viewer" "$endpoint_id" 'latest.sequence')"
+
 # --- Phase 4: everything restored ------------------------------------------
 lab_unblock_udp "router-b"
 lab_relay_start
@@ -137,8 +151,14 @@ lab_observe isolated "$(jq -n \
   --arg state "$isolated_state" --arg details "$isolated_details" \
   --argjson sequence "$isolated_sequence" --argjson cpu "$isolated_cpu" \
   --argjson memory "$isolated_memory" --argjson registry "$isolated_registry_entries" \
+  --argjson sequence_later "$isolated_sequence_later" \
+  --argjson freeze_seconds "$isolated_freeze_seconds" \
+  --argjson sequence_over_the_relay "$blocked_sequence" \
   '{with_nothing_reachable: {state: $state, details: $details,
      frozen_sequence: $sequence,
+     frozen_sequence_after_a_further_wait: $sequence_later,
+     freeze_measured_over_seconds: $freeze_seconds,
+     last_sequence_seen_over_the_relay: $sequence_over_the_relay,
      last_known_sample: {cpu_percent: $cpu, memory_used_bytes: $memory},
      registry_entries: $registry,
      outcome: "UDP dropped and the relay stopped leaves no path at all; the viewer reports offline and keeps what it last saw"}}')"
@@ -172,8 +192,11 @@ lab_assert_true "isolated_machine_kept_its_last_known_values" \
   "$(jq -n --argjson cpu "$isolated_cpu" --argjson memory "$isolated_memory" \
     '($cpu != null) and ($memory != null) and ($memory > 0)')"
 lab_assert_equal "no_sample_was_invented_while_isolated" \
-  "the frozen sample is the last one received over the relay" \
-  "$isolated_sequence" "$blocked_sequence"
+  "with nothing reachable the sequence stops moving, measured across two reads taken while isolated" \
+  "$isolated_sequence_later" "$isolated_sequence"
+lab_assert_true "the_frozen_sample_was_one_the_viewer_received" \
+  "the frozen sequence is at or past the last one seen over the relay, so it was received and never fabricated" \
+  "$([[ "$isolated_sequence" -ge "$blocked_sequence" ]] && echo true || echo false)"
 lab_assert_equal "isolated_machine_stayed_registered" \
   "losing every path does not unregister the machine" \
   "$isolated_registry_entries" "1"
