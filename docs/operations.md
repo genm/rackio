@@ -317,6 +317,10 @@ normal P2P pairing path. The server does not download Rackio from the internet.
 Before using it, prepare:
 
 - a Linux systemd host with `x86_64` or `aarch64` architecture;
+- an SSH server listening on a reachable TCP port. The flow begins with
+  `ssh-keyscan`, which needs a real network endpoint: a host reached only
+  through a local `ProxyCommand` — as some container and VM managers provide —
+  cannot be bootstrapped this way, because there is no key to scan;
 - key or SSH-agent authentication (optionally choose a local identity file);
 - either `root` login or passwordless `sudo` for the SSH user;
 - the exact local `.tar.gz` release archive and its matching `.sha256` file;
@@ -336,6 +340,19 @@ independently reach. The accepted keys are stored in Rackio’s local applicatio
 configuration so later SSH/SCP calls stay pinned. If a connection drops before
 cleanup, inspect and remove only the matching `/tmp/rackio-bootstrap.*`
 directory on the target after confirming it belongs to this operation.
+
+An SSH bootstrap leaves the `rackio-viewers` group empty. The installer enrols
+the user it is told about — `RACKIO_VIEWER_USER`, or the invoking user — and
+over SSH it runs under `sudo`, so that user is `root` and no enrolment happens.
+That is correct for the case this path serves, where the machine is monitored
+from the desktop over P2P and nobody logs into it to read metrics locally. If an
+operator will also use the CLI on that server, add them afterwards:
+
+```sh
+sudo usermod --append --groups rackio-viewers <user>
+```
+
+Until then, `rackio status` on that server works only through `sudo`.
 
 SSH is solely the first-install transport. Once pairing succeeds, monitoring
 uses Rackio’s pinned-endpoint QUIC connection and follows the direct-first,
