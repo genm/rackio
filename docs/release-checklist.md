@@ -152,8 +152,15 @@ the artifact scan above guards against regression.
 - [ ] average daemon CPU below 1% and RSS below 40 MiB
   - [ ] `mise run benchmark:agent` passes on each supported OS and its
         `test-results/resource-benchmark.json` evidence is attached
-  - [ ] the active-peer profile is also measured; the automated
+  - [ ] the active-peer profile is also measured;
+        `mise run benchmark:agent-active-peer` pairs two daemons on the host,
+        streams metrics between them and writes
+        `test-results/resource-benchmark-active-peer.json`. The
         `idle_direct_only` profile does not cover network traffic
 - [ ] normal traffic below 2 KiB/s per active peer
+  - measured by the `active_peer` profile as
+    `traffic.bytes_per_second_per_active_peer`. The report names the method it
+    used and what the number does and does not include; read those before
+    accepting the figure
 - [ ] tray exit, logout and reboot do not stop collection
 - [ ] storage failure, notification denial and relay outage stay visible
