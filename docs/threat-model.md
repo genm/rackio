@@ -95,18 +95,24 @@ direct; both remain as described above.
 
 ## Known release limitations
 
-- Unix local IPC requires OS peer credentials and a mode-0600 or viewer-group
-  socket. Windows local IPC rejects remote pipe clients, grants access only to
-  LocalSystem, administrators and the `Rackio Viewers` local group, then
-  independently verifies the connected process token.
+- Unix local IPC is protected by filesystem permissions, not by a credential
+  comparison: the socket is mode 0600, or 0660 and group-owned by the viewer
+  group, inside a directory the viewer group can traverse but not write. The
+  daemon reads the caller's credentials and refuses a connection that has none,
+  but it does not compare the uid or gid against a list — the socket's mode and
+  ownership are what decide who may connect. Windows local IPC is stronger: it
+  rejects remote pipe clients, grants access only to LocalSystem, administrators
+  and the `Rackio Viewers` local group, and then independently verifies the
+  connected process token.
 - OS keystore integration is not complete. The private key is always stored in
-  a daemon-owned 0600 file on Unix. The daemon narrows a directory to 0700
-  only when it creates that directory itself (Linux's systemd-managed
-  `/var/lib/rackio` state directory); it never narrows a directory an
-  installer already provisioned. On macOS the installer provisions the shared
-  data directory as 0750 `_rackio:_rackio-viewers` so the viewer group can
-  keep traversing it to reach the adjacent runtime socket — the file mode is
-  the guarantee there, not the directory mode.
+  a daemon-owned 0600 file on Unix, and that file mode is the daemon's own
+  guarantee. Directory modes are the service manager's or the installer's:
+  systemd's `StateDirectoryMode=0700` for `/var/lib/rackio`, re-applied on every
+  start, and the macOS installer's 0750 `_rackio:_rackio-viewers` on the shared
+  data directory so the viewer group can traverse it to reach the adjacent
+  runtime socket. The daemon narrows a directory it creates itself, which on a
+  packaged install is never the case; do not read that branch as an active
+  control.
 - Relay endpoint allowlisting and token delivery need an operator-facing secret
   workflow before internet exposure.
 - `ssh-keyscan` cannot authenticate a host key by itself. A mistaken fingerprint

@@ -34,6 +34,13 @@ const HISTORY_RESPONSE_TIMEOUT: Duration = Duration::from_mins(1);
 /// anything beyond it is a malfunctioning or hostile peer rather than a range
 /// this viewer asked for.
 const MAX_REMOTE_HISTORY_SAMPLES: usize = rackio_core::MAX_QUERY_ROWS;
+/// How often a monitoring session may rewrite the persisted last-known snapshot.
+///
+/// Roughly the ten seconds the old `sequence % 5` rule produced at the
+/// collector's two-second cadence, but measured on this viewer's clock, so a
+/// peer cannot choose it. The registry rewrite is a full serialise plus fsync,
+/// which is exactly the work a hostile peer would want to amplify.
+const SNAPSHOT_PERSIST_INTERVAL: Duration = Duration::from_secs(10);
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 const MAX_HISTORY_RANGE_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
@@ -643,6 +650,13 @@ async fn monitor_session(
     .map_err(|_| RemoteFleetError::Timeout("watch metrics"))??;
     let mut state_refresh = tokio::time::interval(Duration::from_secs(5));
     state_refresh.tick().await;
+    // The cadence of durable writes is this viewer's decision, measured on its
+    // own clock. It used to be `sequence % 5`, a number the monitored machine
+    // chooses: a peer that stamped every sample with a multiple of five and
+    // streamed as fast as the link allowed drove one create-write-fsync-rename
+    // of the whole registry per sample, with the file's size under its control
+    // too through the node name and detail strings it supplies.
+    let mut last_persisted: Option<Instant> = None;
 
     loop {
         let response = tokio::select! {
@@ -658,7 +672,8 @@ async fn monitor_session(
         match response.body {
             Some(response::Body::MetricSample(sample)) => {
                 let sample = metric_sample(sample);
-                let should_persist = sample.sequence.is_multiple_of(5);
+                let should_persist =
+                    last_persisted.is_none_or(|last| last.elapsed() >= SNAPSHOT_PERSIST_INTERVAL);
                 let mut entries = snapshots.write().await;
                 let snapshot = entries
                     .entry(record.endpoint_id.clone())
@@ -675,6 +690,7 @@ async fn monitor_session(
                 // to its original value for the whole session.
                 snapshot.last_seen_ms = Some(Utc::now().timestamp_millis());
                 if should_persist {
+                    last_persisted = Some(Instant::now());
                     let snapshot = snapshot.clone();
                     drop(entries);
                     if let Err(error) = registry.update_snapshot(&record.endpoint_id, &snapshot) {

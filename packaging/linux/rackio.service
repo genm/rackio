@@ -18,7 +18,12 @@ StateDirectoryMode=0700
 LogsDirectory=rackio
 LogsDirectoryMode=0700
 RuntimeDirectory=rackio
-RuntimeDirectoryMode=0770
+# 0750, not 0770: the viewer group needs to traverse this directory and open
+# the 0660 socket inside it, never to write the directory itself. Write
+# permission on a directory is what allows unlinking and re-creating entries in
+# it, so a group-writable runtime directory would let any viewer replace the
+# daemon's socket with their own and answer for it.
+RuntimeDirectoryMode=0750
 Environment=RACKIO_CONFIG_DIR=/etc/rackio
 Environment=RACKIO_DATA_DIR=/var/lib/rackio
 Environment=RACKIO_STATE_DIR=/var/lib/rackio/state
