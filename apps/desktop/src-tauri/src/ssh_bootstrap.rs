@@ -364,10 +364,17 @@ fn validate_local_file(path: &str, label: &str) -> Result<PathBuf, String> {
 }
 
 fn validate_remote_temp_dir(path: &str) -> Result<(), String> {
+    // The prefix and the character set together are what keep this path inside
+    // the directory this operation created. A `..` component satisfies both and
+    // walks straight back out — `/tmp/rackio-bootstrap./../../etc` passes an
+    // alphanumeric-plus-`/._-` test — so it is rejected by name. The path is
+    // interpolated into the remote `rm -rf`, the scp destination and the
+    // `sudo sh` invocation, which is why the guard exists at all.
     if !path.starts_with("/tmp/rackio-bootstrap.")
         || path
             .chars()
             .any(|character| !(character.is_ascii_alphanumeric() || "/._-".contains(character)))
+        || path.split('/').any(|component| component == "..")
     {
         return Err(String::from(
             "SSH server returned an unsafe temporary directory path.",
@@ -655,6 +662,14 @@ mod tests {
         assert!(validate_remote_temp_dir("/tmp/rackio-bootstrap.A1b2").is_ok());
         assert!(validate_remote_temp_dir("/tmp/rackio-bootstrap.A1b2;id").is_err());
         assert!(validate_remote_temp_dir("/var/tmp/rackio-bootstrap.A1b2").is_err());
+        // A traversal satisfies both the prefix and the character set, so it
+        // has to be refused on its own terms. The path reaches a remote
+        // `rm -rf` and a `sudo sh`.
+        assert!(validate_remote_temp_dir("/tmp/rackio-bootstrap./../../etc").is_err());
+        assert!(validate_remote_temp_dir("/tmp/rackio-bootstrap.A1b2/../..").is_err());
+        // A dot that is not a traversal component stays acceptable, or the
+        // guard would reject the server's own `mktemp -d` output.
+        assert!(validate_remote_temp_dir("/tmp/rackio-bootstrap.a..b").is_ok());
     }
 
     #[test]

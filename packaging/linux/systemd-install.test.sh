@@ -91,6 +91,15 @@ if sudo -u "$viewer_user" -g rackio-viewers cat /var/lib/rackio/identity.key >/d
   fail "a rackio-viewers member could read /var/lib/rackio/identity.key"
 fi
 
+# A viewer reaches the socket; it must not be able to replace it. Directory
+# write permission is what governs unlinking and re-creating entries, so a
+# group-writable runtime directory would let any viewer bind their own socket at
+# the daemon's path and answer for every later client, including root.
+[[ "$(sudo stat -c '%a' /run/rackio)" == "750" ]]
+if sudo -u "$viewer_user" -g rackio-viewers touch /run/rackio/squatted 2>/dev/null; then
+  fail "a rackio-viewers member could create an entry in the runtime directory"
+fi
+
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin "$denied_user"
 denied_output=""
 if denied_output="$(
@@ -167,6 +176,7 @@ jq --null-input \
     root_health: true,
     viewer_group_health: true,
     state_directory_isolated_from_viewers: true,
+    runtime_directory_not_viewer_writable: true,
     unauthorized_user_rejected: true,
     restart_health: true,
     in_place_upgrade_replaced_process: true,

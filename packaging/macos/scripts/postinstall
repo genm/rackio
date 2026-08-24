@@ -34,7 +34,10 @@ install -d -o _rackio -g _rackio-viewers -m 0750 \
   "/Library/Application Support/Rackio/state" \
   "/Library/Application Support/Rackio/run" \
   "/Library/Logs/Rackio"
-chmod 0770 "/Library/Application Support/Rackio/run"
+# 0750: the viewer group traverses this directory to reach the 0660 socket.
+# Group write would let a viewer unlink the socket and bind their own in its
+# place, and every later client — including root — would connect to it.
+chmod 0750 "/Library/Application Support/Rackio/run"
 console_user="$(stat -f %Su /dev/console)"
 if [ "$console_user" != "root" ] && [ "$console_user" != "_rackio" ]; then
   dseditgroup -o edit -a "$console_user" -t user _rackio-viewers
