@@ -28,8 +28,14 @@ public relay configuration.
 - direct addresses are carried in the pairing bundle: the machine's own
   interface addresses, plus any address an operator advertised with
   `rackio advertise-address` because the machine cannot observe it, such as a
-  router's forwarded address. Advertised addresses are stored verbatim and
-  never probed or resolved
+  router's forwarded or NAT-mapped address. Advertised addresses are stored
+  verbatim and never probed or resolved
+- advertised addresses are also given to the endpoint at bind time as iroh
+  external addresses, so they appear in `rackio status`'s `direct_addresses`
+  and are candidates for path selection rather than pairing-bundle entries
+  alone. A change takes effect on the endpoint at the next restart. Nothing
+  resolves, probes or corrects them: a wrong entry stays an unreachable
+  candidate
 - the selected iroh path, not the attempted address, determines whether the UI
   reports LAN direct, WAN direct or relayed
 - an endpoint takes an ephemeral UDP port unless the operator configures a fixed

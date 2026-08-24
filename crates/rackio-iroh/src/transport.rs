@@ -26,6 +26,16 @@ pub struct EndpointConfig {
     /// direct path configures a fixed port so the address survives a restart.
     #[serde(default)]
     pub bind_port: Option<u16>,
+    /// Addresses this machine is reachable on but cannot observe on any of its
+    /// own interfaces, such as the `IP:PORT` a router forwards to it.
+    ///
+    /// They are handed to the endpoint as external addresses, so they join the
+    /// endpoint's own advertised set and become traversal candidates. Nothing
+    /// resolves, probes or corrects them: this stays operator-supplied
+    /// configuration, and a wrong entry is simply a candidate that never
+    /// answers.
+    #[serde(default)]
+    pub advertise_addresses: Vec<SocketAddr>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -84,6 +94,14 @@ pub async fn bind_endpoint(
             .collect::<Result<Vec<_>, _>>()?;
         builder.relay_mode(RelayMode::Custom(RelayMap::from_iter(urls)))
     };
+    // Tell the endpoint about the addresses the operator knows and the host
+    // cannot see. `external_addr` publishes them alongside the observed ones
+    // and uses them for NAT traversal, which is what turns a forwarded or
+    // NAT-mapped address into a real candidate instead of a bundle entry.
+    let builder = config
+        .advertise_addresses
+        .iter()
+        .fold(builder, |builder, address| builder.external_addr(*address));
     let Some(port) = config.bind_port else {
         return Ok(builder.bind().await?);
     };
@@ -471,6 +489,95 @@ mod tests {
         );
 
         second.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_configured_advertised_address_becomes_an_endpoint_address() {
+        // An operator behind NAT knows the address their router forwards and
+        // the host cannot see it. Unless the endpoint is told, the address is
+        // only ever a pairing-bundle entry: it is neither reported back to the
+        // operator nor usable to open a path mid-session.
+        let advertised: SocketAddr = "198.51.100.7:41641"
+            .parse()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let endpoint = bind_endpoint(
+            SecretKey::generate(),
+            &EndpointConfig {
+                advertise_addresses: vec![advertised],
+                ..EndpointConfig::default()
+            },
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+
+        let addresses: Vec<SocketAddr> = endpoint.addr().ip_addrs().copied().collect();
+
+        assert!(
+            addresses.contains(&advertised),
+            "a configured address must be one the endpoint advertises, got {addresses:?}"
+        );
+        assert!(
+            addresses.len() > 1,
+            "a configured address must be added to the observed ones, not replace them"
+        );
+
+        endpoint.close().await;
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_advertised_address_does_not_change_failure_behaviour() {
+        // A wrong or stale entry stays an ordinary candidate that never
+        // answers. Nothing resolves or probes it, so it must not stop the
+        // endpoint from binding or from reaching a peer over a usable address.
+        let advertised: SocketAddr = "203.0.113.9:41641"
+            .parse()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let server = bind_endpoint(
+            SecretKey::generate(),
+            &EndpointConfig {
+                advertise_addresses: vec![advertised],
+                ..EndpointConfig::default()
+            },
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+        let client_endpoint = bind_endpoint(SecretKey::generate(), &EndpointConfig::default())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let server_address = server.addr();
+        assert!(
+            server_address
+                .ip_addrs()
+                .any(|address| *address == advertised),
+            "the unreachable candidate is offered like any other"
+        );
+        let accept = tokio::spawn({
+            let server = server.clone();
+            async move {
+                server
+                    .accept()
+                    .await
+                    .unwrap_or_else(|| panic!("endpoint closed"))
+                    .await
+                    .unwrap_or_else(|error| panic!("{error}"))
+            }
+        });
+
+        let client = ClientConnection::connect(client_endpoint.clone(), server_address)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let incoming = accept.await.unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(client.remote_id(), server.id());
+        assert!(
+            !client.observed_direct_addresses().contains(&advertised),
+            "an address that never answered must not be reported as one the session reached"
+        );
+
+        client.close();
+        drop(incoming);
+        client_endpoint.close().await;
+        server.close().await;
     }
 
     #[tokio::test]

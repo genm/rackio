@@ -627,6 +627,10 @@ fn handle_alerts(
 /// resolved, probed or connected to. An address that turns out to be wrong is
 /// an ordinary unreachable candidate and surfaces as the existing
 /// unreachable-machine state, never as a silent correction.
+///
+/// A restart is reported as required because the endpoint reads these
+/// addresses when it binds: until then the change reaches new pairing bundles
+/// but not `status.direct_addresses` and not path selection.
 fn update_advertise_addresses(
     paths: &AppPaths,
     address: &str,
@@ -648,6 +652,7 @@ fn update_advertise_addresses(
     match save_config(paths, &config) {
         Ok(()) => LocalResponse::success(serde_json::json!({
             "saved": true,
+            "restart_required": true,
             "advertise_addresses": config.advertise_addresses
         })),
         Err(error) => LocalResponse::failure(error),
@@ -886,6 +891,27 @@ mod tests {
             vec![
                 address("192.168.102.10:41641"),
                 address("10.0.0.4:41641"),
+                address("198.51.100.7:41641"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_address_the_endpoint_already_publishes_is_still_offered_once() {
+        // The configured addresses reach the endpoint as external addresses,
+        // so the endpoint's own advertised set contains them too. The overlap
+        // is now the normal case rather than an operator mistake, and the
+        // bundle must not list the same candidate twice because of it.
+        let observed = [
+            address("192.168.102.10:41641"),
+            address("198.51.100.7:41641"),
+        ];
+        let advertised = [address("198.51.100.7:41641")];
+
+        assert_eq!(
+            bundle_direct_addresses(&observed, &advertised),
+            vec![
+                address("192.168.102.10:41641"),
                 address("198.51.100.7:41641"),
             ]
         );

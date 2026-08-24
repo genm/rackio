@@ -217,6 +217,7 @@ router to this machine, then advertise the forwarded address:
 sudo rackio listen-port set 41641
 sudo systemctl restart rackio.service
 sudo rackio advertise-address add 198.51.100.7:41641   # the router's forwarded address
+sudo systemctl restart rackio.service
 sudo rackio advertise-address list
 sudo rackio pairing create
 ```
@@ -224,7 +225,15 @@ sudo rackio pairing create
 The bundle then carries the machine's own interface addresses *and* the
 advertised ones, so the same bundle pairs from inside the LAN and from outside
 it. Advertised addresses take effect for bundles created afterwards; already
-paired viewers keep the addresses they were given. Up to eight addresses are
+paired viewers keep the addresses they were given.
+
+The restart above is what hands the address to the endpoint itself, which is
+why `advertise-address add` and `remove` report `restart_required`. After it,
+`rackio status` lists the advertised address among its `direct_addresses` — the
+way to confirm from the machine that the setting took effect — and the address
+is a candidate for path selection, so a session that fell back to a relay can
+return to a direct path without waiting for the next connection. Up to eight
+addresses are
 kept — adding a ninth is refused, naming the address to remove first, rather
 than dropping one silently. `sudo rackio advertise-address remove
 198.51.100.7:41641` stops advertising one.
@@ -235,9 +244,14 @@ a forwarding rule that is not in place is not corrected: it behaves as an
 ordinary unreachable candidate, and the viewer reports the machine as `offline`
 with its recovery hint. Verify the forwarding rule on the router itself.
 
-This is not NAT traversal. It works when the operator can forward a stable UDP
-port; a machine behind carrier-grade NAT or a router you do not control still
-needs a configured self-hosted relay.
+Nothing here discovers an address for you. It works when the operator knows a
+stable UDP address for the machine — a forwarded port, or the address an
+endpoint-independent ("cone") NAT maps it to. With a self-hosted relay
+configured on both sides to carry the address exchange, two such machines can
+open a direct path between them without any port forward. A machine behind
+carrier-grade NAT or a symmetric NAT, whose mapped port changes per
+destination, has no stable address to advertise and is reached through the
+relay.
 
 ## SSH-assisted Linux bootstrap
 

@@ -81,6 +81,7 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         &EndpointConfig {
             relay_urls: config.relay_url.clone().into_iter().collect(),
             bind_port: config.bind_port,
+            advertise_addresses: config.advertise_addresses.clone(),
         },
     )
     .await?;
