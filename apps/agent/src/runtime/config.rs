@@ -79,15 +79,29 @@ pub fn app_paths() -> anyhow::Result<AppPaths> {
     })
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+const fn enabled_by_default() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct AgentConfig {
     pub(super) relay_url: Option<String>,
-    /// Operator-defined local health thresholds. Empty by default: Rackio does
-    /// not invent thresholds for a machine it knows nothing about, and
-    /// `docs/operations.md` documents `warning`/`critical` as "a *configured*
-    /// local health threshold was crossed".
-    #[serde(default)]
-    pub(super) alerts: Vec<rackio_core::AlertRule>,
+    /// Whether this machine evaluates local health thresholds at all.
+    ///
+    /// `false` is the operator saying "never raise a local alert on this
+    /// machine"; it does not silence stale, offline or degraded, which are
+    /// reported by the viewer from evidence rather than from a threshold.
+    #[serde(default = "enabled_by_default")]
+    pub(super) alerts_enabled: bool,
+    /// Operator changes to the shipped health thresholds.
+    ///
+    /// Entries are merged over `rackio_core::default_alert_rules`, so an
+    /// operator who retunes one level keeps every other shipped rule and still
+    /// receives later releases' defaults for the rules they never touched. An
+    /// entry naming a rule Rackio does not ship defines a new one and must
+    /// describe it in full.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) alerts: Vec<rackio_core::AlertRuleConfig>,
     /// The fixed UDP port this machine listens on. Unset means an ephemeral
     /// port, which moves on every restart: viewers that hold only the previous
     /// direct addresses then cannot reach this machine again. Operators who
@@ -167,6 +181,49 @@ pub(super) fn remove_advertise_address(
         return Err(format!("{address} is not advertised"));
     }
     Ok(())
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            relay_url: None,
+            alerts_enabled: true,
+            alerts: Vec::new(),
+            bind_port: None,
+            advertise_addresses: Vec::new(),
+        }
+    }
+}
+
+impl AgentConfig {
+    /// Every effective rule, including the ones switched off, for the operator
+    /// surfaces that have to show what exists before it can be changed.
+    ///
+    /// # Errors
+    /// Returns the operator-facing reason a configured rule cannot be applied.
+    pub(super) fn resolved_alert_rules(
+        &self,
+    ) -> Result<Vec<rackio_core::ResolvedAlertRule>, String> {
+        rackio_core::resolve_alert_rules(&self.alerts)
+    }
+
+    /// The rules the sampler actually evaluates.
+    ///
+    /// # Errors
+    /// Returns the operator-facing reason a configured rule cannot be applied.
+    /// Reporting nothing would leave the machine silently unmonitored, which is
+    /// indistinguishable from a healthy one.
+    pub(super) fn alert_rules(&self) -> Result<Vec<rackio_core::AlertRule>, String> {
+        if !self.alerts_enabled {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .resolved_alert_rules()?
+            .into_iter()
+            .filter(|entry| entry.enabled)
+            .map(|entry| entry.rule)
+            .collect())
+    }
 }
 
 pub(super) fn create_directories(paths: &AppPaths) -> anyhow::Result<()> {
@@ -249,7 +306,7 @@ pub(super) fn init_logging(paths: &AppPaths) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use rackio_core::{AlertRule, Comparison, NodeState};
+    use rackio_core::{AlertRuleConfig, Comparison, NodeState};
 
     use std::net::SocketAddr;
 
@@ -274,6 +331,18 @@ mod tests {
         }
     }
 
+    fn write_config(paths: &AppPaths, body: &str) {
+        std::fs::create_dir_all(&paths.config).unwrap_or_else(|error| panic!("{error}"));
+        std::fs::write(paths.config.join("config.json"), body)
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    fn rules(config: &AgentConfig) -> Vec<rackio_core::AlertRule> {
+        config
+            .alert_rules()
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
     #[test]
     fn relay_url_validation_fails_closed() {
         assert!(validate_relay_url(Some("not a relay URL")).is_err());
@@ -282,15 +351,110 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_config_is_direct_only_without_invented_alerts() {
+    fn a_missing_config_is_direct_only_with_every_shipped_threshold() {
         let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let config =
             load_config(&test_paths(directory.path())).unwrap_or_else(|error| panic!("{error}"));
 
         assert!(config.relay_url.is_none());
-        assert!(config.alerts.is_empty());
         assert!(config.bind_port.is_none());
+        // Unconfigured is not unmonitored: a machine nobody has tuned still
+        // reports a filling disk, memory pressure and a saturated processor.
+        assert!(config.alerts.is_empty());
+        assert!(config.alerts_enabled);
         assert!(config.advertise_addresses.is_empty());
+        assert_eq!(rules(&config), rackio_core::default_alert_rules());
+    }
+
+    #[test]
+    fn switching_alerting_off_leaves_the_sampler_no_rules_to_evaluate() {
+        // The operator's global "never alert on this machine". The rules stay
+        // in the file so turning it back on restores what they had.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = test_paths(directory.path());
+        write_config(&paths, r#"{"alerts_enabled": false}"#);
+
+        let config = load_config(&paths).unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(rules(&config).is_empty());
+        assert_eq!(
+            config
+                .resolved_alert_rules()
+                .unwrap_or_else(|error| panic!("{error}"))
+                .len(),
+            rackio_core::default_alert_rules().len(),
+            "the rules must stay visible so they can be switched back on"
+        );
+    }
+
+    #[test]
+    fn one_retuned_threshold_keeps_every_other_shipped_rule() {
+        // The reason overrides are merged rather than replacing the list: an
+        // operator who raises one level must not silently stop watching the
+        // rest of the machine.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = test_paths(directory.path());
+        write_config(
+            &paths,
+            r#"{"alerts": [{"id": "disk-capacity-warning", "threshold": 80.0}]}"#,
+        );
+
+        let effective = rules(&load_config(&paths).unwrap_or_else(|error| panic!("{error}")));
+
+        assert_eq!(effective.len(), rackio_core::default_alert_rules().len());
+        let disk = effective
+            .iter()
+            .find(|rule| rule.id == "disk-capacity-warning")
+            .unwrap_or_else(|| panic!("the retuned rule is missing"));
+        assert!((disk.threshold - 80.0).abs() < f64::EPSILON);
+        assert_eq!(
+            disk.consecutive_samples, 3,
+            "the sample window is untouched"
+        );
+    }
+
+    #[test]
+    fn a_disabled_rule_is_withheld_from_the_sampler_but_still_listed() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = test_paths(directory.path());
+        write_config(
+            &paths,
+            r#"{"alerts": [{"id": "cpu-saturation-warning", "enabled": false}]}"#,
+        );
+        let config = load_config(&paths).unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(
+            !rules(&config)
+                .iter()
+                .any(|rule| rule.id == "cpu-saturation-warning")
+        );
+        let listed = config
+            .resolved_alert_rules()
+            .unwrap_or_else(|error| panic!("{error}"));
+        let cpu = listed
+            .iter()
+            .find(|entry| entry.rule.id == "cpu-saturation-warning")
+            .unwrap_or_else(|| panic!("a disabled rule must stay listed"));
+        assert!(!cpu.enabled);
+    }
+
+    #[test]
+    fn a_rule_that_could_never_fire_is_reported_rather_than_run() {
+        // Silently dropping it would leave the machine reporting healthy for a
+        // threshold its operator believes is being watched.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = test_paths(directory.path());
+        write_config(
+            &paths,
+            r#"{"alerts": [{"id": "disk-capacity-warning", "metric": "gpu_percent"}]}"#,
+        );
+
+        let config = load_config(&paths).unwrap_or_else(|error| panic!("{error}"));
+
+        let Err(error) = config.alert_rules() else {
+            panic!("an unknown metric must not resolve");
+        };
+        assert!(error.contains("gpu_percent"), "{error}");
     }
 
     #[test]
@@ -389,18 +553,44 @@ mod tests {
     }
 
     #[test]
+    fn saving_an_untouched_alert_list_does_not_freeze_the_defaults_into_the_file() {
+        // Setting a relay must not write today's default thresholds into the
+        // operator's configuration as if they had chosen them.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = test_paths(directory.path());
+        let config = AgentConfig {
+            relay_url: Some(String::from("https://relay.example.test")),
+            ..AgentConfig::default()
+        };
+
+        save_config(&paths, &config).unwrap_or_else(|error| panic!("{error}"));
+
+        let written = std::fs::read_to_string(paths.config.join("config.json"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(!written.contains("\"alerts\""), "{written}");
+        assert!(
+            load_config(&paths)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .alerts
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn config_round_trips_every_operator_owned_field() {
         let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let paths = test_paths(directory.path());
         let expected = AgentConfig {
             relay_url: Some(String::from("https://relay.example.test")),
-            alerts: vec![AlertRule {
-                id: String::from("cpu-warning"),
-                metric: String::from("cpu_percent"),
-                comparison: Comparison::GreaterThanOrEqual,
-                threshold: 80.0,
-                consecutive_samples: 3,
-                severity: NodeState::Warning,
+            alerts_enabled: false,
+            alerts: vec![AlertRuleConfig {
+                metric: Some(String::from("cpu_percent")),
+                comparison: Some(Comparison::GreaterThanOrEqual),
+                threshold: Some(80.0),
+                consecutive_samples: Some(3),
+                severity: Some(NodeState::Warning),
+                enabled: Some(false),
+                ..AlertRuleConfig::new("cpu-warning")
             }],
             bind_port: Some(7777),
             advertise_addresses: vec![address("198.51.100.7:7777"), address("[2001:db8::1]:7777")],
@@ -411,6 +601,7 @@ mod tests {
 
         assert_eq!(actual.relay_url, expected.relay_url);
         assert_eq!(actual.alerts, expected.alerts);
+        assert_eq!(actual.alerts_enabled, expected.alerts_enabled);
         assert_eq!(actual.bind_port, expected.bind_port);
         // Order is stable across a restart so the bundle offers the candidates
         // in the order the operator configured them.
@@ -430,9 +621,7 @@ mod tests {
     fn an_invalid_config_fails_closed_instead_of_using_defaults() {
         let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let paths = test_paths(directory.path());
-        std::fs::create_dir_all(&paths.config).unwrap_or_else(|error| panic!("{error}"));
-        std::fs::write(paths.config.join("config.json"), b"not json")
-            .unwrap_or_else(|error| panic!("{error}"));
+        write_config(&paths, "not json");
 
         assert!(load_config(&paths).is_err());
     }

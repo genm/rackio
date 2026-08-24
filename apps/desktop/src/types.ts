@@ -51,6 +51,17 @@ export interface TrendPoint {
   rttMs?: number | null;
 }
 
+/**
+ * One mounted filesystem. A machine has several, and the headline disk figure
+ * is only the fullest of them; naming the mount is what makes an alert such as
+ * "Disk /data 93%" answerable in the viewer.
+ */
+export interface FilesystemUsage {
+  mount: string;
+  usedBytes: number;
+  totalBytes: number;
+}
+
 export interface FleetNode {
   id: string;
   endpointId?: string;
@@ -65,6 +76,14 @@ export interface FleetNode {
   swapTotalBytes?: number | null;
   diskUsedBytes?: number | null;
   diskTotalBytes?: number | null;
+  /** Which filesystem the headline disk figure belongs to. */
+  diskMount?: string | null;
+  /**
+   * Every filesystem the machine reported, fullest first. Empty when the
+   * machine reported none — never padded with a placeholder, which would read
+   * as an empty disk.
+   */
+  filesystems?: FilesystemUsage[];
   /** Absent or null on a machine with no readable sensor. */
   temperature?: TemperatureReading | null;
   networkReceivedBytesPerSecond?: number | null;
@@ -78,7 +97,8 @@ export interface FleetNode {
   uptimeSeconds?: number | null;
   lastSeenMs?: number;
   trend: TrendPoint[];
-  detail?: string;
+  /** The reporting machine's own explanation; absent or null when it has none. */
+  detail?: string | null;
 }
 
 export type HistoryPoint = TrendPoint;

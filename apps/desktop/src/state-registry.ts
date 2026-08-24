@@ -52,6 +52,16 @@ const detailFixtureNode = {
   memoryTotalBytes: 32_000_000_000,
   swapUsedBytes: 1_073_741_824,
   swapTotalBytes: 4_294_967_296,
+  diskUsedBytes: 460_000_000_000,
+  diskTotalBytes: 500_000_000_000,
+  diskMount: "/data",
+  // Several filesystems, fullest first, as the daemon delivers them. The
+  // headline disk figure is the first of these, not the whole machine.
+  filesystems: [
+    { mount: "/data", usedBytes: 460_000_000_000, totalBytes: 500_000_000_000 },
+    { mount: "/", usedBytes: 60_000_000_000, totalBytes: 250_000_000_000 },
+    { mount: "/boot", usedBytes: 180_000_000, totalBytes: 1_000_000_000 },
+  ],
   uptimeSeconds: 12 * 86_400 + 4 * 3_600,
   temperature: {
     label: "Package id 0",
@@ -133,6 +143,20 @@ export const machineDetailStateRegistry: Record<string, MachineDetailState> = {
   swapless: {
     state: "ready",
     node: { ...detailFixtureNode, swapUsedBytes: 0, swapTotalBytes: 0, uptimeSeconds: undefined },
+    hours: 24,
+    points: detailHistoryPoints,
+  },
+  // A machine that reported no measurable filesystem: the section has to say
+  // so rather than render an empty list that reads as an empty disk.
+  filesystemless: {
+    state: "ready",
+    node: {
+      ...detailFixtureNode,
+      filesystems: [],
+      diskMount: undefined,
+      diskUsedBytes: undefined,
+      diskTotalBytes: undefined,
+    },
     hours: 24,
     points: detailHistoryPoints,
   },

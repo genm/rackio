@@ -19,12 +19,12 @@ use tokio::sync::{RwLock, watch};
 use uuid::Uuid;
 
 use crate::remote::RemoteFleet;
-use config::{create_directories, init_logging, load_config, load_or_create_node_id};
-use local_ipc::run_local_server;
+use config::{AgentConfig, create_directories, init_logging, load_config, load_or_create_node_id};
+use local_ipc::{LocalContext, run_local_server};
 use sampling::sample_loop;
 
 pub use config::{AppPaths, app_paths};
-pub use local_ipc::{LocalCommand, LocalResponse, request_local};
+pub use local_ipc::{AlertCommand, LocalCommand, LocalResponse, request_local};
 
 const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 /// How far back a restart reads to refill the local trend. Generous enough to
@@ -49,6 +49,25 @@ async fn shutdown_signal() -> anyhow::Result<()> {
     {
         tokio::signal::ctrl_c().await.map_err(anyhow::Error::from)
     }
+}
+
+/// The rules the sampler starts with.
+///
+/// Fails closed: a machine that cannot resolve its thresholds would run
+/// silently, which reads exactly like a healthy one. The effective rules are
+/// logged because "why did this machine never warn me?" is answerable only if
+/// what the daemon actually runs is on the record.
+fn load_alert_rules(config: &AgentConfig) -> anyhow::Result<Vec<rackio_core::AlertRule>> {
+    let rules = config
+        .alert_rules()
+        .map_err(|error| anyhow!("local health thresholds are unusable: {error}"))?;
+    tracing::info!(
+        rules = ?rules.iter().map(|rule| rule.id.as_str()).collect::<Vec<_>>(),
+        alerts_enabled = config.alerts_enabled,
+        overrides = config.alerts.len(),
+        "local health thresholds loaded"
+    );
+    Ok(rules)
 }
 
 pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
@@ -99,20 +118,26 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     );
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let alert_rules = load_alert_rules(&config)?;
+    // Thresholds are the one setting an operator changes while watching a
+    // machine misbehave, so `rackio alerts` applies them to the running sampler
+    // instead of asking for a restart that would blind every paired viewer.
+    let (alert_rules_tx, alert_rules_rx) = watch::channel(alert_rules);
     let mut sampler = tokio::spawn(sample_loop(
         Arc::clone(&runtime),
         collector,
-        config.alerts.clone(),
+        alert_rules_rx,
         latest_tx,
         shutdown_rx,
     ));
     let mut remote = tokio::spawn(server.run());
-    let mut local = tokio::spawn(run_local_server(
+    let mut local = tokio::spawn(run_local_server(LocalContext::new(
         paths.clone(),
         endpoint.clone(),
         runtime,
         remote_fleet,
-    ));
+        alert_rules_tx,
+    )));
 
     // Polling a `JoinHandle` that already resolved panics, so remember whether
     // the sampler is the branch that ended the select.

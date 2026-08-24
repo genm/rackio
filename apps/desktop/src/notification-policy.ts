@@ -25,7 +25,14 @@ export function machineNotificationTransitions(
     if (isAlerting && !wasAlerting) {
       announcements.push({
         title: `Rackio · ${node.name} is ${nodeStateRegistry[node.state].label}`,
-        body: `${node.name} changed from ${nodeStateRegistry[was].label} to ${nodeStateRegistry[node.state].label}.`,
+        // The reporting machine's own detail — which filesystem, what value,
+        // which threshold — is what makes the notification actionable without
+        // opening the app. States the daemon derives from silence, such as
+        // offline, carry no detail (the daemon sends `null`), so the transition
+        // sentence still has to stand on its own.
+        body: `${node.name} changed from ${nodeStateRegistry[was].label} to ${nodeStateRegistry[node.state].label}.${
+          node.detail ? ` ${node.detail}` : ""
+        }`,
       });
     } else if (wasAlerting && !isAlerting) {
       announcements.push({

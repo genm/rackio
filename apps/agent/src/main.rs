@@ -35,6 +35,11 @@ enum Command {
         #[command(subcommand)]
         command: RelayCommand,
     },
+    /// Inspect and change this machine's local health thresholds.
+    Alerts {
+        #[command(subcommand)]
+        command: AlertCommand,
+    },
     /// Control the fixed UDP port this machine listens on.
     ListenPort {
         #[command(subcommand)]
@@ -59,6 +64,42 @@ enum PairingCommand {
 enum PeerCommand {
     List,
     Revoke { endpoint_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum AlertCommand {
+    /// Show every effective rule, including the ones switched off.
+    List,
+    /// Change one rule. Omitted options keep their current value, and a rule
+    /// Rackio does not ship needs `--metric`, `--comparison`, `--threshold`
+    /// and `--severity` the first time it is defined.
+    Set {
+        id: String,
+        #[arg(long, value_parser = finite_threshold)]
+        threshold: Option<f64>,
+        /// How many two-second samples in a row the condition must hold.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        samples: Option<u32>,
+        #[arg(long, value_parser = ["warning", "critical"])]
+        severity: Option<String>,
+        #[arg(long, value_parser = rackio_core::ALERT_METRICS)]
+        metric: Option<String>,
+        #[arg(long, value_parser = ["at-or-above", "at-or-below"])]
+        comparison: Option<String>,
+    },
+    /// Switch one rule off without losing its level.
+    Disable { id: String },
+    /// Switch one rule back on.
+    Enable { id: String },
+    /// Drop changes to one rule, or to every rule, restoring shipped levels.
+    Reset {
+        /// Omit to reset every rule on this machine.
+        id: Option<String>,
+    },
+    /// Stop evaluating local thresholds on this machine entirely.
+    Off,
+    /// Evaluate local thresholds again.
+    On,
 }
 
 #[derive(Debug, Subcommand)]
@@ -151,6 +192,10 @@ async fn main() -> anyhow::Result<()> {
             };
             print_response(request_local(&paths, LocalCommand::BindPortSet { bind_port }).await?)?;
         }
+        Command::Alerts { command } => {
+            let alert = alert_request(command);
+            print_response(request_local(&paths, LocalCommand::Alerts { alert }).await?)?;
+        }
         Command::AdvertiseAddress { command } => {
             let command = match command {
                 AdvertiseAddressCommand::Add { address } => {
@@ -166,6 +211,67 @@ async fn main() -> anyhow::Result<()> {
         Command::Doctor => print_response(request_local(&paths, LocalCommand::Doctor).await?)?,
     }
     Ok(())
+}
+
+/// Translate the operator's wording into the daemon's threshold command.
+fn alert_request(command: AlertCommand) -> runtime::AlertCommand {
+    match command {
+        AlertCommand::List => runtime::AlertCommand::List,
+        AlertCommand::Set {
+            id,
+            threshold,
+            samples,
+            severity,
+            metric,
+            comparison,
+        } => runtime::AlertCommand::Set {
+            id,
+            metric,
+            comparison: comparison.as_deref().map(comparison_from),
+            threshold,
+            consecutive_samples: samples,
+            severity: severity.as_deref().map(severity_from),
+        },
+        AlertCommand::Disable { id } => runtime::AlertCommand::RuleEnabled { id, enabled: false },
+        AlertCommand::Enable { id } => runtime::AlertCommand::RuleEnabled { id, enabled: true },
+        AlertCommand::Reset { id } => runtime::AlertCommand::Reset { id },
+        AlertCommand::Off => runtime::AlertCommand::Enabled { enabled: false },
+        AlertCommand::On => runtime::AlertCommand::Enabled { enabled: true },
+    }
+}
+
+/// Reject `nan` and `inf` here, at the boundary that can still explain itself.
+///
+/// JSON has no way to carry them, so a non-finite threshold would reach the
+/// daemon as an absent field and be reported as a successful change that
+/// changed nothing.
+fn finite_threshold(value: &str) -> Result<f64, String> {
+    let parsed: f64 = value
+        .parse()
+        .map_err(|_| format!("`{value}` is not a number"))?;
+    if parsed.is_finite() {
+        Ok(parsed)
+    } else {
+        Err(format!("`{value}` is not a finite threshold"))
+    }
+}
+
+/// The CLI spells the comparison the way an operator reads a threshold; clap
+/// has already rejected anything else.
+fn comparison_from(value: &str) -> rackio_core::Comparison {
+    if value == "at-or-below" {
+        rackio_core::Comparison::LessThanOrEqual
+    } else {
+        rackio_core::Comparison::GreaterThanOrEqual
+    }
+}
+
+fn severity_from(value: &str) -> rackio_core::NodeState {
+    if value == "critical" {
+        rackio_core::NodeState::Critical
+    } else {
+        rackio_core::NodeState::Warning
+    }
 }
 
 fn print_response(response: runtime::LocalResponse) -> anyhow::Result<()> {

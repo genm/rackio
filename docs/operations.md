@@ -296,46 +296,132 @@ actual P2P path separately.
 | UI state | Meaning | First operator action |
 | --- | --- | --- |
 | `healthy` | Fresh metrics and no active health warning | None |
-| `warning` / `critical` | A configured local health threshold was crossed | Open the machine detail and inspect the affected resource |
+| `warning` / `critical` | A local health threshold was crossed | Read the detail line on the card, which names the resource, its value and the threshold |
 | `stale` | No metric or heartbeat for 10 seconds | Check path, RTT and local agent logs; preserve last known values |
 | `offline` | No metric or heartbeat for 30 seconds | Check agent process, network reachability and relay availability if shown as relayed; if the machine restarted on a new port, give it a fixed listen port |
 | `auth_error` | The remote agent rejected this viewer | Confirm endpoint pairing and allowlist; do not retry with a reused bundle |
 | `incompatible` | Protocol major versions differ | Upgrade or roll back a machine to a compatible release |
 | `degraded` | A collector, storage, notification or local dependency failed | Read the displayed error and structured agent logs; values are not silently zeroed |
 
-### Configuring local health thresholds
+### Local health thresholds
 
-`warning` and `critical` are only reachable when an operator defines a
-threshold. Rackio ships none: it has no basis for deciding what CPU or disk
-level matters on a machine it knows nothing about. Add rules to the `alerts`
-array in the daemon's `config.json`:
+Rackio ships the levels that are generally worth acting on, so an untouched
+machine still reports trouble:
+
+| Rule | Condition | Sustained for | State |
+| --- | --- | --- | --- |
+| `disk-capacity-warning` | fullest filesystem at or above 90 % | 6 s | `warning` |
+| `disk-capacity-critical` | fullest filesystem at or above 95 % | 6 s | `critical` |
+| `memory-pressure-warning` | memory in use at or above 90 % | 1 min | `warning` |
+| `memory-pressure-critical` | memory in use at or above 97 % | 1 min | `critical` |
+| `cpu-saturation-warning` | CPU at or above 90 % | 5 min | `warning` |
+| `temperature-headroom-warning` | within 5 °C of the hardware's own limit | 30 s | `warning` |
+| `temperature-critical` | at or past the hardware's own limit | 30 s | `critical` |
+
+The sustained window is what separates a busy machine from one in trouble: a
+compile pins the CPU, a backup fills a cache, and neither should page anyone.
+Temperature is measured against the limit the hardware itself publishes, never
+a number Rackio picked — a machine whose OS publishes no limit resolves neither
+temperature rule instead of being judged against a guess. `disk_percent` is the
+fullest mounted filesystem, and every alert publishes a line naming what
+crossed, for example `Disk /data 93% is at or above the warning threshold of
+90%`, which is what the desktop shows on the card and sends in the OS
+notification.
+
+CPU saturation is the rule build, render and simulation machines most often
+switch off; that is what `rackio alerts disable` is for.
+
+#### Changing the levels
+
+```bash
+rackio alerts list
+```
+
+```bash
+sudo rackio alerts set disk-capacity-warning --threshold 80
+```
+
+`set` accepts `--threshold`, `--samples` (two-second samples in a row),
+`--severity warning|critical`, and — when defining a rule Rackio does not ship —
+`--metric` and `--comparison at-or-above|at-or-below`. Omitted options keep
+their current value, so retuning a level never restates the rest of the rule.
+
+| Command | Effect |
+| --- | --- |
+| `rackio alerts list` | every effective rule, with `built_in` or `configured` as its source |
+| `sudo rackio alerts set <id> …` | change one rule, or define a new one |
+| `sudo rackio alerts disable <id>` / `enable <id>` | switch one rule off or on without losing its level |
+| `sudo rackio alerts reset [<id>]` | drop changes to one rule, or to all of them |
+| `sudo rackio alerts off` / `on` | stop or resume evaluating thresholds on this machine |
+
+The reading command needs no privilege beyond viewer-group membership; the
+changing ones write the daemon's configuration and run as the daemon's owner,
+the same as `rackio relay set`.
+
+Changes apply to the running daemon immediately — no restart, and no gap in
+what paired viewers see. A change that cannot be applied is rejected before
+anything is written, and the reason is reported rather than saved.
+
+Turning alerting off silences only thresholds. `stale`, `offline`,
+`auth_error`, `incompatible` and `degraded` come from evidence rather than from
+a level, and are still reported.
+
+#### Metrics a rule may name
+
+`cpu_percent`, `memory_percent`, `swap_percent`, `disk_percent` and
+`temperature_headroom_celsius` (degrees remaining before the hardware's own
+limit). A rule naming anything else is rejected: a metric that never resolves
+would leave the machine silent in exactly the way a healthy one is. A source
+the host cannot read — no swap, no published sensor limit — leaves its rule
+inactive rather than reading as zero, and a rule whose metric becomes
+unreadable clears instead of staying latched. A degraded collector or storage
+subsystem still reports `degraded` in preference to a threshold state, because
+the underlying values are no longer trustworthy.
+
+The daemon's `config.json` is the same setting seen from the other side: an
+`alerts` array of partial overrides keyed by rule `id`, plus `alerts_enabled`.
+Overrides are merged over the shipped rules, so a machine that only ever
+retuned one level still receives later releases' defaults for the rest.
 
 ```json
 {
+  "alerts_enabled": true,
   "alerts": [
+    { "id": "disk-capacity-warning", "threshold": 80.0 },
+    { "id": "cpu-saturation-warning", "enabled": false },
     {
-      "id": "disk-critical",
-      "metric": "disk_percent",
+      "id": "swap-warning",
+      "metric": "swap_percent",
       "comparison": "greater_than_or_equal",
-      "threshold": 90.0,
-      "consecutive_samples": 3,
-      "severity": "critical"
+      "threshold": 50.0,
+      "consecutive_samples": 30,
+      "severity": "warning"
     }
   ]
 }
 ```
 
-`metric` accepts `cpu_percent`, `memory_percent`, `disk_percent` and
-`temperature_celsius` (`disk_percent` uses the fullest mounted filesystem, and
-`temperature_celsius` the hottest readable sensor). A machine whose
-`temperature` capability is `unsupported` never resolves a
-`temperature_celsius` rule, so the rule stays inactive there rather than
-reading as a cold machine. `consecutive_samples`
-requires that many two-second samples in a row before the state changes, which
-suppresses flapping. A rule whose metric becomes unreadable clears rather than
-staying latched, and a degraded collector or storage subsystem still reports
-`degraded` in preference to a threshold state, because the underlying values
-are no longer trustworthy. Restart the daemon after editing the file.
+Edit the file directly only while the daemon is stopped; a running daemon owns
+it, and `rackio alerts` is the interface that keeps the file and the running
+rules in step.
+
+#### Where a breach is visible
+
+The machine card shows the fullest filesystem; its disk tile names the mount,
+and **View history** opens a per-filesystem list of every mount the machine
+reported, fullest first. The tray submenu carries the same metrics as the card
+— CPU, memory, swap, the fullest filesystem by name, temperature, network rate
+and uptime — so the machine that raised an alert can be read without opening
+the window. A reading a machine cannot report is an em dash with no bar, never
+a zero.
+
+#### Notifications in the desktop
+
+Which state raises an OS notification, and whether notifications are sent at
+all, is the viewer's own setting: **Notify at** (Warning / Degraded / Critical /
+Offline) and the notifications toggle in the desktop header. It is stored per
+viewer, so one operator can watch at `warning` while another is paged only at
+`critical`, without changing what any machine evaluates.
 
 When storage is degraded, live sampling continues in memory but history may not
 persist. When a relay is unavailable, a direct peer may stay connected while a
