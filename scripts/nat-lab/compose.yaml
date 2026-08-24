@@ -11,6 +11,16 @@
 #   lan_d         192.168.104.0/24  behind router-d          (cone, no forward)
 #   lan_e         192.168.105.0/24  behind router-e          (cone, no forward)
 #   lan_f         192.168.106.0/24  behind router-f          (symmetric)
+#   lan_g         192.168.108.0/24  flat LAN with off-path services
+#                                                            (direct-only isolation)
+#
+# The numbering skips 192.168.107.0/24 on purpose: Docker's default address pool
+# hands that block out to unrelated compose projects on a developer machine, and
+# `docker network create` refuses an overlapping pool, so the lab would fail to
+# come up for a reason that has nothing to do with Rackio. It was observed doing
+# exactly that while `lan_g` was added. Any of these blocks can collide the same
+# way; a collision is a `Pool overlaps with other one on this address space`
+# error from `lab_up`, and the fix is to renumber the offending network here.
 #   net_internet  192.0.2.0/24      shared "internet" segment, and the relay
 #
 # 192.0.2.0/24 is RFC 5737 TEST-NET-1. It is deliberately *not* an RFC 1918
@@ -251,6 +261,88 @@ services:
       lan_f:
         ipv4_address: 192.168.106.10
 
+  # --- Direct-only isolation: a LAN that is not empty ------------------------
+  #
+  # A flat LAN like `lan_a`, plus the two things a leaking daemon would most
+  # plausibly reach: a DNS resolver and an HTTP server. Both are reachable from
+  # the machines, and `direct_only_isolation` proves that from the monitored
+  # machine itself before and after its capture window. Without them, "the
+  # daemon contacted no resolver and no web server" would only say that the LAN
+  # had none.
+  #
+  # Both machines are pointed at the lab resolver with `LAB_RESOLVER`, so any
+  # DNS they did emit would be a packet on this LAN rather than a query to
+  # Docker's embedded resolver on loopback, where the capture could not see it.
+  lan-g-viewer:
+    <<: *machine
+    container_name: rackio-nat-lab-lan-g-viewer
+    hostname: viewer-g.lab.test
+    environment:
+      RUST_LOG: info
+      LAB_RESOLVER: 192.168.108.20
+    depends_on:
+      - lan-g-resolver
+    networks:
+      lan_g:
+        ipv4_address: 192.168.108.10
+
+  lan-g-monitored:
+    <<: *machine
+    container_name: rackio-nat-lab-lan-g-monitored
+    hostname: monitored-g.lab.test
+    environment:
+      RUST_LOG: info
+      LAB_RESOLVER: 192.168.108.20
+    depends_on:
+      - lan-g-resolver
+    networks:
+      lan_g:
+        ipv4_address: 192.168.108.11
+
+  lan-g-resolver:
+    image: rackio-nat-lab-services:local
+    container_name: rackio-nat-lab-lan-g-resolver
+    hostname: resolver-g.lab.test
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      LAB_SERVICE_ROLE: resolver
+      LAB_HTTP_ADDRESS: 192.168.108.21
+      LAB_MONITORED_ADDRESS: 192.168.108.11
+      LAB_VIEWER_ADDRESS: 192.168.108.10
+    healthcheck:
+      # `-type=a`: the lab's names have A records and no AAAA, and busybox
+      # nslookup exits non-zero on the empty AAAA answer even though the
+      # resolver is working exactly as configured.
+      test: ["CMD", "busybox", "nslookup", "-type=a", "http.lab.test", "127.0.0.1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 2s
+    networks:
+      lan_g:
+        ipv4_address: 192.168.108.20
+
+  lan-g-http:
+    image: rackio-nat-lab-services:local
+    container_name: rackio-nat-lab-lan-g-http
+    hostname: http-g.lab.test
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      LAB_SERVICE_ROLE: http
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--output", "/dev/null", "http://127.0.0.1/"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 2s
+    networks:
+      lan_g:
+        ipv4_address: 192.168.108.21
+
 networks:
   lan_a:
     internal: true
@@ -282,6 +374,11 @@ networks:
     ipam:
       config:
         - subnet: 192.168.106.0/24
+  lan_g:
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.108.0/24
   net_internet:
     internal: true
     ipam:
