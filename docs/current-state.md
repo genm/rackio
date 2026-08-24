@@ -55,7 +55,7 @@ NAT and mixed-OS release matrices.
 | Linux packaging | Native x86_64/arm64 release archives with independently verified SLSA provenance, clean Ubuntu systemd lifecycle evidence, HTTPS or client-pushed archive install, checksum verification, viewer-group isolation, preserving/purge uninstaller and gated GitHub pre-release publication | No supported release: the publication workflow refuses a non-pre-release version; SSH client, reboot and supported-distribution coverage are not proven |
 | macOS | Dedicated daemon user/group, LaunchDaemon lifecycle, preserving uninstaller and fail-closed signed/notarized pkg builder | A real Developer ID signature, notarization receipt and reboot evidence require release credentials and a clean macOS host |
 | Windows | Explicit-DACL named-pipe IPC with caller-token verification, Windows Service installer/uninstaller and a GitHub-hosted CI integration scenario | Authenticode/MSI signing, clean-host remote-client rejection and reboot evidence require a Windows release host |
-| Relay | Version-pinned upstream relay container and configuration | Internet-exposure workflow, token delivery and NAT evidence |
+| Relay | Version-pinned upstream relay container and configuration, and an operator-pinned CA certificate so a relay signed by an internal authority is reachable instead of only a publicly trusted one | Internet-exposure workflow, token delivery and NAT evidence |
 
 CI evaluates every non-draft PR transition against its complete base-to-head
 change set using the planner from the protected base revision. It runs only the

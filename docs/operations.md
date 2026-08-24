@@ -173,6 +173,58 @@ sudo systemctl restart rackio.service
 not make the relay an identity authority and does not make a relayed path
 direct.
 
+### Reach a relay signed by an internal certificate authority
+
+The command above expects the relay to present a publicly trusted TLS
+certificate: the agent verifies it against a compiled-in WebPKI root set. A
+relay on an internal network usually cannot have one — no public authority
+issues for an internal-only name — while the organisation running that network
+usually does operate its own CA.
+
+Pin that CA on each monitored machine, alongside the relay URL:
+
+```sh
+sudo install -o root -g root -m 0644 relay-ca.pem /etc/rackio/relay-ca.pem
+sudo rackio relay set https://relay.internal.example.test \
+  --ca-certificate /etc/rackio/relay-ca.pem
+sudo systemctl restart rackio.service
+sudo rackio status   # the machine reaches the relay, or reports why it cannot
+```
+
+Points to get right:
+
+- **Supply the issuing authority's certificate**, PEM encoded — not the relay's
+  own certificate, not a private key. Include intermediates the relay does not
+  send; every `CERTIFICATE` block in the file is used, which is also how you
+  keep the old and new anchors valid across a CA rotation.
+- **Give an absolute path.** The daemon reads the file, from its own working
+  directory rather than your shell's, at every start.
+- **Make the relay's certificate match the URL.** Its Subject Alternative Name
+  must contain the exact host in the relay URL. Pinning the CA does not relax
+  hostname verification.
+- **Protect the file's integrity, not its secrecy.** A CA certificate is
+  public. Whoever can write this file chooses what the agent trusts for the
+  relay, so keep it root-owned and not writable by unprivileged users. The
+  trade this makes is stated in [`threat-model.md`](threat-model.md).
+
+The pin **replaces** the public root set for relay connections rather than
+adding to it, so a pinned relay is not also accepted on a publicly issued
+certificate.
+
+`rackio relay set` refuses a CA file that is missing, unreadable, or not a
+usable certificate authority, naming the file and the correction; the relay
+configuration you already had is left exactly as it was. If the file later
+becomes unusable the daemon refuses to start rather than falling back to the
+public root set — an unusable relay is visibly unusable, never a quietly
+widened trust anchor. The startup log records which anchor is in use as
+`relay_trust_anchor=pinned_ca` or `relay_trust_anchor=webpki`; the certificate
+itself is never logged.
+
+Setting up the relay side is described in
+[`../relay-package/README.md`](../relay-package/README.md).
+`sudo rackio relay set direct-only` clears the relay and its pinned CA
+together.
+
 ## Keep a monitored machine reachable across restarts
 
 By default an agent listens on an ephemeral UDP port, which the OS reassigns on

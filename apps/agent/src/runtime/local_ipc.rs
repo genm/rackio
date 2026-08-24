@@ -1,8 +1,8 @@
 //! Authorized OS-local IPC transport, command dispatch, and CLI client.
 
 #[cfg(unix)]
-use std::{fs, path::PathBuf, time::Instant};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{fs, time::Instant};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 #[cfg(windows)]
 use anyhow::Context as _;
@@ -17,7 +17,8 @@ use crate::remote::{RemoteFleet, RemoteHistoryResolution, RemoteMachineSnapshot}
 
 use super::config::{
     AppPaths, add_advertise_address, load_config, parse_advertise_address,
-    remove_advertise_address, save_config, validate_bind_port, validate_relay_url,
+    remove_advertise_address, save_config, validate_bind_port, validate_relay_ca_certificate,
+    validate_relay_url,
 };
 
 // The Windows local IPC listener has its own connect loop, so these bound the
@@ -53,6 +54,13 @@ pub enum LocalCommand {
     },
     RelaySet {
         relay_url: Option<String>,
+        /// The PEM file whose certificate authority signs the relay's TLS
+        /// certificate, for a relay a public CA would never issue for. Absent
+        /// keeps the public root set, which is the default.
+        ///
+        /// This is set with the relay and cleared with it: it is part of the
+        /// same decision, not an independent one.
+        ca_certificate: Option<PathBuf>,
     },
     BindPortSet {
         bind_port: Option<u16>,
@@ -481,26 +489,60 @@ async fn handle_local(context: &LocalContext, command: LocalCommand) -> LocalRes
             })),
             Err(error) => LocalResponse::failure(error),
         },
-        LocalCommand::RelaySet { relay_url } => {
-            if let Err(error) = validate_relay_url(relay_url.as_deref()) {
-                return LocalResponse::failure(error);
-            }
-            // Preserve every other configured value. Rebuilding the struct
-            // from one field would silently discard the operator's alert
-            // thresholds on the next relay change.
-            let mut config = match load_config(paths) {
-                Ok(config) => config,
-                Err(error) => return LocalResponse::failure(error),
-            };
-            config.relay_url = relay_url;
-            match save_config(paths, &config) {
-                Ok(()) => LocalResponse::success(serde_json::json!({
-                    "saved": true,
-                    "restart_required": true
-                })),
-                Err(error) => LocalResponse::failure(error),
-            }
-        }
+        LocalCommand::RelaySet {
+            relay_url,
+            ca_certificate,
+        } => set_relay(paths, relay_url, ca_certificate),
+    }
+}
+
+/// Apply one operator change to the relay and its trust anchor, and persist it.
+///
+/// The URL and the CA are one decision, so they are validated together and
+/// written together: clearing or replacing the relay clears or replaces the
+/// anchor with it, and a stale CA is never left trusting an authority for a
+/// relay nobody chose.
+///
+/// Everything is checked before anything is loaded or written. A CA that cannot
+/// anchor the relay would otherwise be stored as accepted and only surface at
+/// the next daemon start — by which time the working relay the operator already
+/// had would be gone.
+///
+/// Nothing is contacted. The URL is parsed and the CA file read from this
+/// machine's own filesystem; no name is resolved and no relay is dialled.
+///
+/// A restart is reported as required because the endpoint reads both values
+/// when it binds.
+fn set_relay(
+    paths: &AppPaths,
+    relay_url: Option<String>,
+    ca_certificate: Option<PathBuf>,
+) -> LocalResponse {
+    if let Err(error) = validate_relay_url(relay_url.as_deref()) {
+        return LocalResponse::failure(error);
+    }
+    if let Err(error) =
+        validate_relay_ca_certificate(relay_url.as_deref(), ca_certificate.as_deref())
+    {
+        return LocalResponse::failure(error);
+    }
+    // Preserve every other configured value. Rebuilding the struct from these
+    // fields would silently discard the operator's alert thresholds on the next
+    // relay change.
+    let mut config = match load_config(paths) {
+        Ok(config) => config,
+        Err(error) => return LocalResponse::failure(error),
+    };
+    config.relay_url = relay_url;
+    config.relay_ca_certificate = ca_certificate;
+    match save_config(paths, &config) {
+        Ok(()) => LocalResponse::success(serde_json::json!({
+            "saved": true,
+            "restart_required": true,
+            "relay_url": config.relay_url,
+            "relay_ca_certificate": config.relay_ca_certificate
+        })),
+        Err(error) => LocalResponse::failure(error),
     }
 }
 

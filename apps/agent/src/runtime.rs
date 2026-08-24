@@ -82,6 +82,7 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
             relay_urls: config.relay_url.clone().into_iter().collect(),
             bind_port: config.bind_port,
             advertise_addresses: config.advertise_addresses.clone(),
+            relay_ca_certificate: config.relay_ca_certificate.clone(),
         },
     )
     .await?;
@@ -113,6 +114,9 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     tracing::info!(
         endpoint_id = %endpoint.id(),
         relay_mode = if config.relay_url.is_some() { "self_hosted" } else { "direct_only" },
+        // Which anchor verifies the relay, not the anchor itself: the
+        // certificate is not a secret, but a log line is no place for a PEM.
+        relay_trust_anchor = if config.relay_ca_certificate.is_some() { "pinned_ca" } else { "webpki" },
         listen_port = listen_port_label(config.bind_port),
         "agent started"
     );

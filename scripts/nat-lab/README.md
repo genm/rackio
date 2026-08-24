@@ -252,12 +252,18 @@ to configure agents with `rackio relay set https://relay.example.test`. The lab
 cannot do that, and the reason is worth stating precisely because it is the one
 place where the lab's relay differs from the one the product documents.
 
-The agent builds its iroh endpoint without setting a CA configuration, so iroh's
-default applies: `CaTlsConfig::EmbeddedWebPki`, the compiled-in Mozilla root
-set. That is the trust anchor for the relay's HTTPS connection _and_ for the
-QUIC address-discovery connection. No certificate the lab can mint is signed by
-a Mozilla root, and the lab's networks are `internal`, so no publicly trusted
+Unless the operator pins a CA, the agent builds its iroh endpoint without
+setting a CA configuration, so iroh's default applies:
+`CaTlsConfig::EmbeddedWebPki`, the compiled-in Mozilla root set. That is the
+trust anchor for the relay's HTTPS connection _and_ for the QUIC
+address-discovery connection. No certificate the lab can mint is signed by a
+Mozilla root, and the lab's networks are `internal`, so no publicly trusted
 certificate can be obtained for `192.0.2.4` either.
+
+Since [#157](https://github.com/genm/rackio/issues/157) an operator _can_ pin a
+CA, with `rackio relay set <URL> --ca-certificate <PATH>`, so an HTTPS lab relay
+is now possible in principle. The lab has not been rebuilt around it; what that
+would take is recorded under finding 1 below.
 
 The lab therefore runs the relay over plain HTTP, at `http://192.0.2.4/`. This
 is not a lab hack around a product rule: iroh 1.0.3's relay client disables TLS
@@ -389,6 +395,25 @@ original observation so the evidence trail survives.
    Consequence for the lab: no relay it can build would be trusted over HTTPS,
    so the relay runs over plain HTTP and QUIC address discovery is off. See
    "The lab's relay is not a production relay".
+
+   **Fixed** for [#157](https://github.com/genm/rackio/issues/157):
+   `rackio relay set <URL> --ca-certificate <PATH>` stores the anchor beside the
+   relay URL and `bind_endpoint` passes it to
+   `Endpoint::builder().ca_tls_config(CaTlsConfig::custom_roots(..))`, which
+   replaces the WebPKI root set for relay connections. A file that is missing,
+   unreadable or not a usable authority is refused when it is configured, and a
+   pinned relay whose CA cannot be loaded refuses to start rather than falling
+   back to the public roots.
+
+   Not yet re-measured in this lab. The lab's relay still runs over plain HTTP,
+   because switching it to HTTPS means minting a lab CA, issuing a certificate
+   for `192.0.2.4`, mounting it in the relay container, adding a `[tls]` section
+   to the relay config, distributing the CA into each machine image and
+   configuring `--ca-certificate` in the runner — and the plain-HTTP relay is
+   what makes the payload-opacity evidence in "Relay payload opacity" strictly
+   stronger than production. Doing so would additionally allow
+   `enable_quic_addr_discovery = true`, which is the one relay capability the
+   lab currently cannot exercise at all. Neither is in scope here.
 
 2. **`rackio advertise-address` was not a NAT-traversal candidate.** The
    configured address reached a peer only inside a pairing bundle
