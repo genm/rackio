@@ -130,7 +130,23 @@ enum AdvertiseAddressCommand {
 #[derive(Debug, Subcommand)]
 enum RelayCommand {
     /// Set a self-hosted relay URL, or pass `direct-only` to remove it.
-    Set { url: String },
+    Set {
+        url: String,
+        /// PEM file holding the certificate authority that signs the relay's
+        /// TLS certificate.
+        ///
+        /// Use it for a relay on an internal network, whose certificate no
+        /// public authority would ever issue. It *replaces* the public root
+        /// set for relay connections, so the relay must present a certificate
+        /// this authority signed. Without it the relay must present a publicly
+        /// trusted certificate.
+        ///
+        /// Give an absolute path: the daemon reads the file, and it does so
+        /// from its own working directory, not the shell's. `direct-only`
+        /// clears the relay and this anchor together.
+        #[arg(long, value_name = "PATH")]
+        ca_certificate: Option<std::path::PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -175,10 +191,26 @@ async fn main() -> anyhow::Result<()> {
             print_response(request_local(&paths, LocalCommand::PeerRevoke { endpoint_id }).await?)?;
         }
         Command::Relay {
-            command: RelayCommand::Set { url },
+            command:
+                RelayCommand::Set {
+                    url,
+                    ca_certificate,
+                },
         } => {
             let relay_url = (url != "direct-only").then_some(url);
-            print_response(request_local(&paths, LocalCommand::RelaySet { relay_url }).await?)?;
+            // A CA passed alongside `direct-only` is forwarded rather than
+            // dropped here, so the daemon refuses it by name. Discarding it
+            // quietly would report success for a pin that was never stored.
+            print_response(
+                request_local(
+                    &paths,
+                    LocalCommand::RelaySet {
+                        relay_url,
+                        ca_certificate,
+                    },
+                )
+                .await?,
+            )?;
         }
         Command::ListenPort {
             command: ListenPortCommand::Set { port },

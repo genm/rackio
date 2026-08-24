@@ -44,6 +44,55 @@ payloads. It can observe endpoint IDs involved in relay connections, connection
 times, source network addresses, duration and byte counts. Traffic analysis is
 out of scope for v1. Operators must document retention of relay access logs.
 
+## Relay trust anchor
+
+By default the agent verifies a relay's TLS certificate against iroh's
+compiled-in WebPKI root set, so a relay must present a certificate issued by a
+publicly trusted authority. `rackio relay set <URL> --ca-certificate <PATH>`
+replaces that root set, for relay connections only, with the certificates in
+the named PEM file. It is a replacement, not an addition: a pinned relay is not
+also accepted on a publicly issued certificate.
+
+This is a deliberate trade, made so that an organisation self-hosting a relay on
+an internal network — the fallback this product supports — can use the internal
+CA it already runs. What it moves:
+
+- **Before:** the relay's identity is vouched for by the public CA system.
+  Compromise requires a publicly trusted authority to issue in error.
+- **After:** the relay's identity is vouched for by one file on the monitored
+  machine. Whoever can write that file chooses the authority the agent trusts
+  for the relay.
+
+Consequences of that shift:
+
+- An attacker who can write the pinned PEM, and who can also intercept the
+  relay's network path, can present a relay of their own that the agent
+  accepts. They then see what any relay operator sees: endpoint IDs, timing,
+  addresses and byte counts. They do **not** gain metric or history payloads —
+  those stay inside the QUIC session between the two endpoints, which is
+  authenticated by endpoint public keys and is unaffected by relay TLS — and
+  they cannot become an authorized peer, because peer authorization is the
+  local allowlist, not the relay.
+- The pinned file therefore needs the protection of a trust anchor, not of a
+  secret. Its contents are public; its *integrity* is what matters. Store it
+  root-owned and not writable by unprivileged users, on the same footing as the
+  daemon's own configuration.
+- The path is stored, not the certificate. Replacing the file's contents changes
+  what the agent trusts at the next daemon start, with no further operator
+  action. That is what makes CA rotation possible and what makes write access to
+  the file security-relevant.
+
+The trust anchor is configuration, not a secret: its path is recorded in the
+daemon's configuration and its use is reported in the startup log as
+`relay_trust_anchor=pinned_ca`. The certificate's contents are never logged.
+
+A missing, unreadable or unusable pinned CA fails closed. The configuration is
+refused when it is set, and if the file becomes unusable later the daemon
+refuses to start rather than falling back to the public root set — falling back
+would silently restore the anchor the operator deliberately replaced. Pinning
+does not make the relay an identity authority and does not make a relayed path
+direct; both remain as described above.
+
 ## Known release limitations
 
 - Unix local IPC requires OS peer credentials and a mode-0600 or viewer-group

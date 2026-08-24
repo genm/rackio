@@ -86,6 +86,18 @@ const fn enabled_by_default() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct AgentConfig {
     pub(super) relay_url: Option<String>,
+    /// The PEM file holding the certificate authority that signs the configured
+    /// relay's TLS certificate.
+    ///
+    /// Unset — the default — means the relay must present a publicly trusted
+    /// certificate, verified against the compiled-in public root set. Set, it
+    /// *replaces* that root set for relay connections, which is how a relay on
+    /// an internal network with an internal CA becomes reachable.
+    ///
+    /// The path is stored exactly as the operator wrote it and is only ever
+    /// meaningful alongside `relay_url`: clearing the relay clears this too.
+    #[serde(default)]
+    pub(super) relay_ca_certificate: Option<PathBuf>,
     /// Whether this machine evaluates local health thresholds at all.
     ///
     /// `false` is the operator saying "never raise a local alert on this
@@ -187,6 +199,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             relay_url: None,
+            relay_ca_certificate: None,
             alerts_enabled: true,
             alerts: Vec::new(),
             bind_port: None,
@@ -243,6 +256,30 @@ pub(super) fn validate_relay_url(relay_url: Option<&str>) -> Result<(), &'static
     } else {
         Ok(())
     }
+}
+
+/// Check an operator-supplied relay trust anchor before it is stored.
+///
+/// A CA without a relay is refused rather than kept: it would sit in the
+/// configuration doing nothing while reading as though a relay were pinned.
+/// A CA the daemon cannot turn into a trust anchor is refused too, so a relay
+/// that could never be reached is never recorded as configured.
+///
+/// Nothing here is contacted. The file is read from this machine's own
+/// filesystem and parsed; no name is resolved and no relay is dialled.
+pub(super) fn validate_relay_ca_certificate(
+    relay_url: Option<&str>,
+    ca_certificate: Option<&Path>,
+) -> Result<(), String> {
+    let Some(path) = ca_certificate else {
+        return Ok(());
+    };
+    if relay_url.is_none() {
+        return Err(String::from(
+            "a relay CA certificate only applies to a relay; set it together with the relay URL",
+        ));
+    }
+    rackio_iroh::validate_relay_ca_certificate(path).map_err(|error| error.to_string())
 }
 
 pub(super) fn validate_bind_port(bind_port: Option<u16>) -> Result<(), &'static str> {
@@ -311,10 +348,23 @@ mod tests {
     use std::net::SocketAddr;
 
     use super::{
-        AgentConfig, AppPaths, MAX_ADVERTISE_ADDRESSES, add_advertise_address, load_config,
-        parse_advertise_address, remove_advertise_address, save_config, validate_bind_port,
-        validate_relay_url,
+        AgentConfig, AppPaths, MAX_ADVERTISE_ADDRESSES, PathBuf, add_advertise_address,
+        load_config, parse_advertise_address, remove_advertise_address, save_config,
+        validate_bind_port, validate_relay_ca_certificate, validate_relay_url,
     };
+
+    const RELAY_URL: &str = "https://relay.example.test";
+
+    /// Whether a PEM file really holds a usable certificate authority is
+    /// `rackio-iroh`'s question, and its tests answer it against a real
+    /// certificate. What is checked here is the configuration layer: that the
+    /// anchor is tied to a relay, that a refusal names the file, and that a
+    /// refused change leaves the operator's working relay alone.
+    fn write_file(root: &std::path::Path, name: &str, contents: &str) -> PathBuf {
+        let path = root.join(name);
+        std::fs::write(&path, contents).unwrap_or_else(|error| panic!("{error}"));
+        path
+    }
 
     fn address(value: &str) -> SocketAddr {
         value.parse().unwrap_or_else(|error| panic!("{error}"))
@@ -357,6 +407,10 @@ mod tests {
             load_config(&test_paths(directory.path())).unwrap_or_else(|error| panic!("{error}"));
 
         assert!(config.relay_url.is_none());
+        assert!(
+            config.relay_ca_certificate.is_none(),
+            "the default trust anchor is the public root set, not a pinned file"
+        );
         assert!(config.bind_port.is_none());
         // Unconfigured is not unmonitored: a machine nobody has tuned still
         // reports a filling disk, memory pressure and a saturated processor.
@@ -594,11 +648,16 @@ mod tests {
             }],
             bind_port: Some(7777),
             advertise_addresses: vec![address("198.51.100.7:7777"), address("[2001:db8::1]:7777")],
+            relay_ca_certificate: Some(PathBuf::from("/etc/rackio/relay-ca.pem")),
         };
 
         save_config(&paths, &expected).unwrap_or_else(|error| panic!("{error}"));
         let actual = load_config(&paths).unwrap_or_else(|error| panic!("{error}"));
 
+        // Stored exactly as the operator wrote it: the daemon reads this file
+        // at every start, so a path it silently rewrote would be a path the
+        // operator could not correct from what they see.
+        assert_eq!(actual.relay_ca_certificate, expected.relay_ca_certificate);
         assert_eq!(actual.relay_url, expected.relay_url);
         assert_eq!(actual.alerts, expected.alerts);
         assert_eq!(actual.alerts_enabled, expected.alerts_enabled);
@@ -615,6 +674,109 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn a_relay_without_a_pinned_ca_round_trips_as_public_trust() {
+        // The common case has to stay the default on disk: no field, no pin,
+        // and the public root set still verifying the relay.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = test_paths(directory.path());
+        let expected = AgentConfig {
+            relay_url: Some(String::from(RELAY_URL)),
+            ..AgentConfig::default()
+        };
+
+        save_config(&paths, &expected).unwrap_or_else(|error| panic!("{error}"));
+        let actual = load_config(&paths).unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(actual.relay_url, expected.relay_url);
+        assert!(actual.relay_ca_certificate.is_none());
+    }
+
+    #[test]
+    fn a_relay_ca_without_a_relay_is_refused() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        // Deliberately a file that exists and is a perfectly good PEM: the
+        // reason for the refusal must be the missing relay, not the contents.
+        let ca = write_file(directory.path(), "ca.pem", "-----BEGIN CERTIFICATE-----\n");
+
+        let Err(error) = validate_relay_ca_certificate(None, Some(&ca)) else {
+            panic!("a trust anchor for no relay anchors nothing");
+        };
+        assert!(error.contains("relay URL"), "{error}");
+
+        // No relay and no anchor is the direct-only default, and a relay on the
+        // public root set is the ordinary relay case. Neither is refused.
+        validate_relay_ca_certificate(Some(RELAY_URL), None)
+            .unwrap_or_else(|error| panic!("{error}"));
+        validate_relay_ca_certificate(None, None).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn an_unusable_relay_ca_is_refused_by_name_and_reason() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+
+        for (name, contents) in [
+            ("garbage.pem", "this is not a certificate\n"),
+            ("empty.pem", ""),
+            (
+                "key.pem",
+                "-----BEGIN PRIVATE KEY-----\naGVsbG8gcmFja2lv\n-----END PRIVATE KEY-----\n",
+            ),
+            (
+                "fake.pem",
+                "-----BEGIN CERTIFICATE-----\naGVsbG8gcmFja2lv\n-----END CERTIFICATE-----\n",
+            ),
+        ] {
+            let path = write_file(directory.path(), name, contents);
+            let Err(error) = validate_relay_ca_certificate(Some(RELAY_URL), Some(&path)) else {
+                panic!("{name} must not be accepted as a certificate authority");
+            };
+            assert!(
+                error.contains(name),
+                "the operator must be told which file failed: {error}"
+            );
+        }
+
+        let missing = directory.path().join("absent.pem");
+        let Err(error) = validate_relay_ca_certificate(Some(RELAY_URL), Some(&missing)) else {
+            panic!("a CA file that does not exist must not be accepted");
+        };
+        assert!(error.contains("absent.pem"), "{error}");
+    }
+
+    #[test]
+    fn a_refused_relay_ca_leaves_the_previous_configuration_in_place() {
+        // The order matters as much as the refusal: the relay change is
+        // validated before anything is loaded or written, so a bad CA cannot
+        // take a working relay down with it.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = test_paths(directory.path());
+        let working = AgentConfig {
+            relay_url: Some(String::from(RELAY_URL)),
+            relay_ca_certificate: Some(PathBuf::from("/etc/rackio/relay-ca.pem")),
+            ..AgentConfig::default()
+        };
+        save_config(&paths, &working).unwrap_or_else(|error| panic!("{error}"));
+
+        let broken = write_file(directory.path(), "broken.pem", "not a certificate\n");
+        let outcome =
+            validate_relay_ca_certificate(Some("https://other-relay.example.test"), Some(&broken))
+                .and_then(|()| {
+                    let mut config = load_config(&paths).map_err(|error| error.to_string())?;
+                    config.relay_url = Some(String::from("https://other-relay.example.test"));
+                    config.relay_ca_certificate = Some(broken.clone());
+                    save_config(&paths, &config).map_err(|error| error.to_string())
+                });
+
+        assert!(outcome.is_err(), "a broken CA must not be stored");
+        let reloaded = load_config(&paths).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(reloaded.relay_url, working.relay_url);
+        assert_eq!(
+            reloaded.relay_ca_certificate, working.relay_ca_certificate,
+            "the relay the operator had working must survive a rejected change"
+        );
     }
 
     #[test]
