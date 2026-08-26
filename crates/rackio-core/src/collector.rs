@@ -340,6 +340,35 @@ fn rate_per_second(bytes: u64, elapsed: Duration) -> u64 {
     u64::try_from(rate).unwrap_or(u64::MAX)
 }
 
+/// Test-only observation points into the throttled refresh state.
+///
+/// These read the same timestamps `sample` already maintains rather than
+/// adding counters or a mockable clock: whether a refresh ran is exactly
+/// whether its timestamp moved, so that is what the regression test checks.
+#[cfg(test)]
+impl SystemCollector {
+    fn last_disk_refresh(&self) -> Instant {
+        self.last_disk_refresh
+    }
+
+    fn last_temperature_refresh(&self) -> Instant {
+        self.last_temperature_refresh
+    }
+
+    /// Make both throttled refreshes immediately due, without waiting out
+    /// their real intervals. Production code only ever measures real elapsed
+    /// time; this exists so the regression test does not have to sleep for
+    /// the longest interval to prove a refresh still happens once one is due.
+    fn force_refreshes_due(&mut self) {
+        let longest = DISK_REFRESH_INTERVAL.max(TEMPERATURE_REFRESH_INTERVAL);
+        let long_ago = Instant::now()
+            .checked_sub(longest + Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        self.last_disk_refresh = long_ago;
+        self.last_temperature_refresh = long_ago;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -635,6 +664,49 @@ mod tests {
                 "a published reading came from at least the sensor it names"
             );
         }
+    }
+
+    #[test]
+    fn rapid_sampling_does_not_repeat_the_expensive_refreshes() {
+        // Deterministic, hardware-independent regression gate for the CPU
+        // incident this collector caused: a disk or sensor refresh on every
+        // 2-second sample pinned a daemon thread at ~30% of a core on macOS,
+        // because a refresh there recomputes purgeable disk space and makes
+        // several mach RPCs per temperature sensor. It never showed up as a
+        // wall-clock or CPU% assertion here, since CI hardware and sensor
+        // counts vary; instead this checks the one fact that must hold on any
+        // host: back-to-back samples do not each re-run the expensive
+        // refresh, and a refresh still happens once its interval is due.
+        let mut collector = SystemCollector::new();
+        let disk_before = collector.last_disk_refresh();
+        let temperature_before = collector.last_temperature_refresh();
+
+        for _ in 0..20 {
+            let _ = collector.sample();
+        }
+
+        assert_eq!(
+            collector.last_disk_refresh(),
+            disk_before,
+            "20 back-to-back samples must not each re-run the disk refresh"
+        );
+        assert_eq!(
+            collector.last_temperature_refresh(),
+            temperature_before,
+            "20 back-to-back samples must not each re-run the sensor refresh"
+        );
+
+        collector.force_refreshes_due();
+        let _ = collector.sample();
+
+        assert!(
+            collector.last_disk_refresh() > disk_before,
+            "once the interval has elapsed, the disk refresh must still run"
+        );
+        assert!(
+            collector.last_temperature_refresh() > temperature_before,
+            "once the interval has elapsed, the sensor refresh must still run"
+        );
     }
 
     #[test]
