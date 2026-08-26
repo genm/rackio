@@ -113,7 +113,31 @@ pub(super) async fn sample_loop(
                 continue;
             }
         }
-        let sample = collector.sample();
+        // The refresh inside `sample` is a burst of blocking syscalls — on
+        // macOS the disk and sensor reads go through mach RPCs that can take
+        // over a second. Run it off the async workers so a slow refresh never
+        // delays the QUIC endpoint this daemon serves: a stalled endpoint
+        // inflates the RTT viewers measure and destabilises their path choice.
+        let sample = match tokio::task::spawn_blocking(move || {
+            let sample = collector.sample();
+            (sample, collector)
+        })
+        .await
+        {
+            Ok((sample, returned)) => {
+                collector = returned;
+                sample
+            }
+            Err(error) => {
+                if let Ok(panic) = error.try_into_panic() {
+                    std::panic::resume_unwind(panic);
+                }
+                // Only runtime teardown cancels a blocking task before it
+                // starts; there is no tick to continue into.
+                tracing::warn!("sampling stopped: the runtime is shutting down");
+                return;
+            }
+        };
         // Re-read every tick: `rackio alerts` retunes a threshold on a running
         // daemon, and the evaluator drops the state of a rule that is gone.
         let rules = alert_rules.borrow().clone();
