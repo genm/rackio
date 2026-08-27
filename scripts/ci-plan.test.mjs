@@ -35,6 +35,9 @@ test("docs-only updates select no heavy gates", () => {
       frontend: false,
       security_policy: false,
       security_source: false,
+      codeql_actions: false,
+      codeql_javascript: false,
+      codeql_rust: false,
       reason: "affected",
     },
   );
@@ -121,7 +124,56 @@ test("CI routing changes force every gate", () => {
     assert.equal(plan.rust_windows, true);
     assert.equal(plan.frontend, true);
     assert.equal(plan.security_policy, true);
+    assert.equal(plan.codeql_actions, true);
+    assert.equal(plan.codeql_javascript, true);
+    assert.equal(plan.codeql_rust, true);
   }
+});
+
+test("CodeQL languages are selected only by their own source", () => {
+  const rustOnly = classifyChangedFiles(["crates/rackio-iroh/src/transport.rs"]);
+  assert.equal(rustOnly.codeql_rust, true);
+  assert.equal(rustOnly.codeql_javascript, false);
+  assert.equal(rustOnly.codeql_actions, false);
+
+  const frontendOnly = classifyChangedFiles(["apps/desktop/src/App.tsx"]);
+  assert.equal(frontendOnly.codeql_javascript, true);
+  assert.equal(frontendOnly.codeql_rust, false);
+  assert.equal(frontendOnly.codeql_actions, false);
+});
+
+test("shell and packaging changes build no CodeQL database", () => {
+  // These select the Rust gate because they gate a Rust runner's platform
+  // steps, but they hold no Rust, TypeScript or workflow source, so charging a
+  // whole-program CodeQL database to them buys nothing.
+  for (const file of [
+    "install.sh",
+    "packaging/linux/systemd-install.test.sh",
+    "packaging/windows/install.ps1",
+  ]) {
+    const plan = classifyChangedFiles([file]);
+    assert.equal(plan.rust, true, file);
+    assert.equal(plan.codeql_rust, false, file);
+    assert.equal(plan.codeql_javascript, false, file);
+    assert.equal(plan.codeql_actions, false, file);
+  }
+});
+
+test("documentation changes build no CodeQL database", () => {
+  const plan = classifyChangedFiles(["README.md", "docs/operations.md"]);
+  assert.equal(plan.codeql_actions, false);
+  assert.equal(plan.codeql_javascript, false);
+  assert.equal(plan.codeql_rust, false);
+});
+
+test("Dependabot configuration selects the Actions CodeQL language", () => {
+  // .github/dependabot.yml is not a workflow, so it escapes the global CI
+  // routing rule, but it is still Actions-owned configuration that the
+  // `actions` query pack reads.
+  const plan = classifyChangedFiles([".github/dependabot.yml"]);
+  assert.equal(plan.full_run, false);
+  assert.equal(plan.codeql_actions, true);
+  assert.equal(plan.codeql_rust, false);
 });
 
 test("Tauri JSON configuration selects both desktop owners", () => {
@@ -155,13 +207,38 @@ test("workflow wiring compares every pull request from its protected base", () =
     "github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before";
   const ciWorkflow = readFileSync(resolve(".github/workflows/ci.yml"), "utf8");
   const securityWorkflow = readFileSync(resolve(".github/workflows/security.yml"), "utf8");
+  const codeqlWorkflow = readFileSync(resolve(".github/workflows/codeql.yml"), "utf8");
 
   assert.equal(ciWorkflow.split(pullRequestBase).length - 1, 1);
   assert.equal(securityWorkflow.split(pullRequestBase).length - 1, 2);
+  assert.equal(codeqlWorkflow.split(pullRequestBase).length - 1, 1);
   assert.doesNotMatch(
-    `${ciWorkflow}\n${securityWorkflow}`,
+    `${ciWorkflow}\n${securityWorkflow}\n${codeqlWorkflow}`,
     /github\.event\.before \|\| github\.event\.pull_request\.base\.sha/,
   );
+});
+
+test("CodeQL analysis never uploads for an unaffected language", () => {
+  // Uploading an empty or partial SARIF for a language nobody scanned would
+  // resolve that language's live alerts as fixed. Every CodeQL step must
+  // therefore carry the same gate as the checkout it depends on.
+  const codeqlWorkflow = readFileSync(resolve(".github/workflows/codeql.yml"), "utf8");
+  const codeqlSteps = codeqlWorkflow
+    .split("\n")
+    .reduce((steps, line) => {
+      if (/^ {6}- name: /.test(line)) {
+        steps.push([]);
+      }
+      steps.at(-1)?.push(line);
+      return steps;
+    }, [])
+    .map((lines) => lines.join("\n"));
+
+  const guarded = codeqlSteps.filter((step) => step.includes("github/codeql-action/"));
+  assert.equal(guarded.length, 2);
+  for (const step of guarded) {
+    assert.match(step, /if: env\.RUN_CODEQL == 'true'/);
+  }
 });
 
 test("NUL-delimited paths preserve newlines and reject malformed diff output", () => {

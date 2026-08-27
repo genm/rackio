@@ -1,0 +1,135 @@
+name: CodeQL
+
+# Replaces GitHub's code-scanning default setup, which analysed every enabled
+# language on every pull request and every push to main with no way to narrow
+# the trigger, the paths or the language list. CodeQL itself cannot be limited
+# to a diff — its whole point is dataflow that leaves the changed file — so what
+# this workflow narrows is *which language databases get built at all*, using
+# the same affected planner the CI and Security workflows already use.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "43 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  # Superseding a pull-request run is free; cancelling a main-branch run would
+  # leave that commit without the baseline every later pull request diffs
+  # against, and cancelling the scheduled run would drop the only full-language
+  # sweep.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    name: Plan affected CodeQL languages
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      codeql_actions: ${{ steps.plan.outputs.codeql_actions }}
+      codeql_javascript: ${{ steps.plan.outputs.codeql_javascript }}
+      codeql_rust: ${{ steps.plan.outputs.codeql_rust }}
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out trusted pull request planner
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .ci-trusted-base
+          persist-credentials: false
+      - name: Select affected languages
+        id: plan
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          CI_EVENT_ACTION: ${{ github.event.action }}
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          planner="scripts/ci-plan.mjs"
+          # A script-only PR change must not choose which languages are scanned.
+          if [[ "$CI_EVENT_NAME" == "pull_request" ]]; then
+            planner=".ci-trusted-base/scripts/ci-plan.mjs"
+          fi
+          node "$planner"
+
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    needs: plan
+    if: always() && (needs.plan.result == 'success' || needs.plan.result == 'failure')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      RUN_CODEQL: >-
+        ${{
+          needs.plan.result != 'success' ||
+          needs.plan.outputs[matrix.gate] != 'false'
+        }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            gate: codeql_actions
+          - language: javascript-typescript
+            gate: codeql_javascript
+          - language: rust
+            gate: codeql_rust
+            # Rust analysis is no-build; there is nothing for autobuild to do
+            # and a cargo build here would only duplicate the CI Rust job.
+            build-mode: none
+    steps:
+      # An unresolvable gate lookup would yield an empty string, which
+      # `!= 'false'` reads as "run" — the safe direction, but silently so.
+      # Printing the resolved value makes a mis-wired gate visible in the log
+      # instead of quietly scanning everything forever.
+      - name: Report resolved CodeQL gate
+        env:
+          GATE_NAME: ${{ matrix.gate }}
+          GATE_VALUE: ${{ needs.plan.outputs[matrix.gate] }}
+        run: |
+          echo "language=${{ matrix.language }} gate=${GATE_NAME} value=${GATE_VALUE:-<unresolved>} run=${RUN_CODEQL}"
+      # Skipping a language uploads nothing, which is what keeps its existing
+      # alerts intact: code scanning only reconciles a category against a run
+      # that actually reports on it, so an unaffected language's findings are
+      # carried forward rather than resolved as fixed.
+      - name: Report unaffected CodeQL language
+        if: env.RUN_CODEQL != 'true'
+        run: echo "No ${{ matrix.language }} source changed; prior results for this language stand."
+      - name: Check out source
+        if: env.RUN_CODEQL == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        if: env.RUN_CODEQL == 'true'
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # No `queries:` or `config:` on purpose. That reproduces exactly what
+          # the replaced default setup ran — the `default` query suite under the
+          # `remote` threat model — so this switch changes scheduling, not which
+          # alerts the repository is held to.
+      - name: Perform CodeQL analysis
+        if: env.RUN_CODEQL == 'true'
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          # Pinning the category per language keeps each language's alerts in
+          # their own code-scanning bucket, which is what lets the skip above
+          # be a no-op instead of a mass "fixed" event.
+          category: /language:${{ matrix.language }}
