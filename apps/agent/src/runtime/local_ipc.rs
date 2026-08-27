@@ -858,18 +858,40 @@ pub async fn request_local(
 
 #[cfg(unix)]
 fn local_socket_candidates(paths: &AppPaths, explicit: bool) -> Vec<PathBuf> {
+    #[cfg(target_os = "linux")]
+    let user_runtime_socket = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .map(|runtime_dir| runtime_dir.join("rackio/agent.sock"));
+    #[cfg(not(target_os = "linux"))]
+    let user_runtime_socket = None;
+
+    local_socket_candidates_with_runtime_socket(paths, explicit, user_runtime_socket)
+}
+
+#[cfg(unix)]
+fn local_socket_candidates_with_runtime_socket(
+    paths: &AppPaths,
+    explicit: bool,
+    user_runtime_socket: Option<PathBuf>,
+) -> Vec<PathBuf> {
     if explicit {
         return vec![paths.local_socket.clone()];
     }
     let mut candidates = Vec::new();
-    // Installed services use a machine-wide socket; developer daemons retain
-    // their per-user socket as a fallback.
+    // Installed services use a machine-wide socket. A user-level systemd
+    // service uses XDG_RUNTIME_DIR, while developer daemons retain their
+    // per-user state socket as a fallback.
     #[cfg(target_os = "linux")]
     candidates.push(PathBuf::from("/run/rackio/agent.sock"));
     #[cfg(target_os = "macos")]
     candidates.push(PathBuf::from(
         "/Library/Application Support/Rackio/run/agent.sock",
     ));
+    if let Some(user_runtime_socket) = user_runtime_socket.filter(|socket| socket.is_absolute())
+        && !candidates.contains(&user_runtime_socket)
+    {
+        candidates.push(user_runtime_socket);
+    }
     if !candidates.contains(&paths.local_socket) {
         candidates.push(paths.local_socket.clone());
     }
@@ -1172,6 +1194,8 @@ mod tests {
         assert!(!response.ok);
     }
 
+    #[cfg(target_os = "linux")]
+    use super::local_socket_candidates_with_runtime_socket;
     #[cfg(unix)]
     use super::{AppPaths, local_socket_candidates};
 
@@ -1192,5 +1216,80 @@ mod tests {
         let candidates = local_socket_candidates(&paths, true);
 
         assert_eq!(candidates, vec![explicit]);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn discovers_a_user_systemd_socket_before_the_state_socket() {
+        let paths = AppPaths {
+            config: PathBuf::from("/unused/config"),
+            data: PathBuf::from("/unused/data"),
+            state: PathBuf::from("/unused/state"),
+            log: PathBuf::from("/unused/log"),
+            local_socket: PathBuf::from("/home/genm/.local/state/rackio/agent.sock"),
+        };
+        let user_runtime_socket = PathBuf::from("/run/user/1000/rackio/agent.sock");
+
+        let candidates = local_socket_candidates_with_runtime_socket(
+            &paths,
+            false,
+            Some(user_runtime_socket.clone()),
+        );
+
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from("/run/rackio/agent.sock"),
+                user_runtime_socket,
+                paths.local_socket,
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn does_not_duplicate_a_user_runtime_socket_used_as_the_state_socket() {
+        let user_runtime_socket = PathBuf::from("/run/user/1000/rackio/agent.sock");
+        let paths = AppPaths {
+            config: PathBuf::from("/unused/config"),
+            data: PathBuf::from("/unused/data"),
+            state: PathBuf::from("/unused/state"),
+            log: PathBuf::from("/unused/log"),
+            local_socket: user_runtime_socket.clone(),
+        };
+
+        let candidates = local_socket_candidates_with_runtime_socket(
+            &paths,
+            false,
+            Some(user_runtime_socket.clone()),
+        );
+
+        assert_eq!(
+            candidates,
+            vec![PathBuf::from("/run/rackio/agent.sock"), user_runtime_socket]
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn ignores_a_relative_user_runtime_socket() {
+        let paths = AppPaths {
+            config: PathBuf::from("/unused/config"),
+            data: PathBuf::from("/unused/data"),
+            state: PathBuf::from("/unused/state"),
+            log: PathBuf::from("/unused/log"),
+            local_socket: PathBuf::from("/home/genm/.local/state/rackio/agent.sock"),
+        };
+
+        let candidates = local_socket_candidates_with_runtime_socket(
+            &paths,
+            false,
+            Some(PathBuf::from("relative/runtime")),
+        );
+
+        assert_eq!(
+            candidates,
+            vec![PathBuf::from("/run/rackio/agent.sock"), paths.local_socket,]
+        );
     }
 }

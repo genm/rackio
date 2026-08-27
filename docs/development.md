@@ -157,7 +157,10 @@ RFC 6761 are excluded in `.lycheeignore` because they are unresolvable by design
 
 Pairing, reconnect and remote-snapshot changes need two isolated sets of
 `RACKIO_CONFIG_DIR`, `RACKIO_DATA_DIR`, `RACKIO_STATE_DIR` and `RACKIO_SOCKET`
-values. Each daemon must have its own identity and socket. The minimum smoke is:
+values. Each daemon must have its own identity and socket. On Linux, when
+`RACKIO_SOCKET` is unset, the CLI checks the system service socket, then the
+user systemd socket under `$XDG_RUNTIME_DIR/rackio/agent.sock`, and finally the
+developer state socket. The minimum smoke is:
 
 1. start both daemons;
 2. create a bundle on the monitored daemon;
