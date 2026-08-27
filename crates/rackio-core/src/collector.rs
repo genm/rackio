@@ -8,6 +8,18 @@ use crate::{
     TemperatureMetric,
 };
 
+/// How often the expensive, slow-moving sources are actually re-read.
+///
+/// On macOS a disk refresh recomputes purgeable space through the `CacheDelete`
+/// framework and a sensor refresh performs several mach RPCs per temperature
+/// sensor — dozens of sensors on Apple Silicon. Paying that on every 2-second
+/// sample held one daemon thread at ~30% of a core and stalled it for over a
+/// second per tick. Disk usage and die temperature move on the scale of tens
+/// of seconds, so between refreshes each sample re-publishes the last reading
+/// instead of re-paying the syscalls; every other source stays per-sample.
+const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+const TEMPERATURE_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+
 pub struct SystemCollector {
     system: System,
     disks: Disks,
@@ -15,6 +27,8 @@ pub struct SystemCollector {
     components: Components,
     sequence: u64,
     last_network_refresh: Instant,
+    last_disk_refresh: Instant,
+    last_temperature_refresh: Instant,
 }
 
 impl SystemCollector {
@@ -31,6 +45,8 @@ impl SystemCollector {
             components: Components::new_with_refreshed_list(),
             sequence: 0,
             last_network_refresh: Instant::now(),
+            last_disk_refresh: Instant::now(),
+            last_temperature_refresh: Instant::now(),
         }
     }
 
@@ -78,8 +94,19 @@ impl SystemCollector {
     pub fn sample(&mut self) -> MetricSample {
         self.system.refresh_cpu_usage();
         self.system.refresh_memory();
-        self.disks.refresh(true);
-        self.components.refresh(true);
+        let now = Instant::now();
+        if refresh_due(self.last_disk_refresh, DISK_REFRESH_INTERVAL, now) {
+            self.disks.refresh(true);
+            self.last_disk_refresh = now;
+        }
+        if refresh_due(
+            self.last_temperature_refresh,
+            TEMPERATURE_REFRESH_INTERVAL,
+            now,
+        ) {
+            self.components.refresh(true);
+            self.last_temperature_refresh = now;
+        }
 
         let elapsed = self.last_network_refresh.elapsed();
         self.networks.refresh(true);
@@ -156,6 +183,15 @@ impl SystemCollector {
             errors,
         }
     }
+}
+
+/// Whether an expensive source's interval has elapsed at `now`.
+///
+/// `duration_since` saturates to zero when `now` is before `last_refresh`, so
+/// a monotonic-clock anomaly delays a refresh by at most one interval rather
+/// than underflowing or forcing a refresh storm.
+fn refresh_due(last_refresh: Instant, interval: Duration, now: Instant) -> bool {
+    now.duration_since(last_refresh) >= interval
 }
 
 /// Report what a host with these readings can collect.
@@ -302,6 +338,35 @@ fn rate_per_second(bytes: u64, elapsed: Duration) -> u64 {
         .checked_div(elapsed.as_nanos())
         .unwrap_or_default();
     u64::try_from(rate).unwrap_or(u64::MAX)
+}
+
+/// Test-only observation points into the throttled refresh state.
+///
+/// These read the same timestamps `sample` already maintains rather than
+/// adding counters or a mockable clock: whether a refresh ran is exactly
+/// whether its timestamp moved, so that is what the regression test checks.
+#[cfg(test)]
+impl SystemCollector {
+    fn last_disk_refresh(&self) -> Instant {
+        self.last_disk_refresh
+    }
+
+    fn last_temperature_refresh(&self) -> Instant {
+        self.last_temperature_refresh
+    }
+
+    /// Make both throttled refreshes immediately due, without waiting out
+    /// their real intervals. Production code only ever measures real elapsed
+    /// time; this exists so the regression test does not have to sleep for
+    /// the longest interval to prove a refresh still happens once one is due.
+    fn force_refreshes_due(&mut self) {
+        let longest = DISK_REFRESH_INTERVAL.max(TEMPERATURE_REFRESH_INTERVAL);
+        let long_ago = Instant::now()
+            .checked_sub(longest + Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        self.last_disk_refresh = long_ago;
+        self.last_temperature_refresh = long_ago;
+    }
 }
 
 #[cfg(test)]
@@ -599,6 +664,87 @@ mod tests {
                 "a published reading came from at least the sensor it names"
             );
         }
+    }
+
+    #[test]
+    fn rapid_sampling_does_not_repeat_the_expensive_refreshes() {
+        // Deterministic, hardware-independent regression gate for the CPU
+        // incident this collector caused: a disk or sensor refresh on every
+        // 2-second sample pinned a daemon thread at ~30% of a core on macOS,
+        // because a refresh there recomputes purgeable disk space and makes
+        // several mach RPCs per temperature sensor. It never showed up as a
+        // wall-clock or CPU% assertion here, since CI hardware and sensor
+        // counts vary; instead this checks the one fact that must hold on any
+        // host: back-to-back samples do not each re-run the expensive
+        // refresh, and a refresh still happens once its interval is due.
+        let mut collector = SystemCollector::new();
+        let disk_before = collector.last_disk_refresh();
+        let temperature_before = collector.last_temperature_refresh();
+
+        for _ in 0..20 {
+            let _ = collector.sample();
+        }
+
+        assert_eq!(
+            collector.last_disk_refresh(),
+            disk_before,
+            "20 back-to-back samples must not each re-run the disk refresh"
+        );
+        assert_eq!(
+            collector.last_temperature_refresh(),
+            temperature_before,
+            "20 back-to-back samples must not each re-run the sensor refresh"
+        );
+
+        collector.force_refreshes_due();
+        let _ = collector.sample();
+
+        assert!(
+            collector.last_disk_refresh() > disk_before,
+            "once the interval has elapsed, the disk refresh must still run"
+        );
+        assert!(
+            collector.last_temperature_refresh() > temperature_before,
+            "once the interval has elapsed, the sensor refresh must still run"
+        );
+    }
+
+    #[test]
+    fn an_expensive_source_is_refreshed_on_its_own_interval() {
+        use std::time::Instant;
+
+        let interval = Duration::from_secs(10);
+        let base = Instant::now();
+
+        assert!(
+            !super::refresh_due(base, interval, base),
+            "a source refreshed just now is not due again"
+        );
+        assert!(!super::refresh_due(
+            base,
+            interval,
+            base + Duration::from_secs(9)
+        ));
+        assert!(
+            super::refresh_due(base, interval, base + interval),
+            "the boundary itself is due, or a slow tick would drift the cadence"
+        );
+        assert!(super::refresh_due(
+            base,
+            interval,
+            base + Duration::from_secs(11)
+        ));
+    }
+
+    #[test]
+    fn a_clock_anomaly_delays_a_refresh_instead_of_forcing_a_storm() {
+        use std::time::Instant;
+
+        // `now` before the recorded refresh saturates to a zero age: the
+        // refresh waits out one interval rather than firing on every sample.
+        let interval = Duration::from_secs(10);
+        let later = Instant::now() + Duration::from_mins(1);
+        assert!(!super::refresh_due(later, interval, Instant::now()));
     }
 
     #[test]

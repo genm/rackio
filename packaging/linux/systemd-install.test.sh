@@ -91,6 +91,15 @@ if sudo -u "$viewer_user" -g rackio-viewers cat /var/lib/rackio/identity.key >/d
   fail "a rackio-viewers member could read /var/lib/rackio/identity.key"
 fi
 
+# A viewer reaches the socket; it must not be able to replace it. Directory
+# write permission is what governs unlinking and re-creating entries, so a
+# group-writable runtime directory would let any viewer bind their own socket at
+# the daemon's path and answer for every later client, including root.
+[[ "$(sudo stat -c '%a' /run/rackio)" == "750" ]]
+if sudo -u "$viewer_user" -g rackio-viewers touch /run/rackio/squatted 2>/dev/null; then
+  fail "a rackio-viewers member could create an entry in the runtime directory"
+fi
+
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin "$denied_user"
 denied_output=""
 if denied_output="$(
@@ -104,6 +113,22 @@ printf '%s\n' "$denied_output" >"$report_dir/linux-systemd-denied.txt"
 sudo systemctl restart rackio.service
 systemctl is-active --quiet rackio.service
 wait_for_root_health
+
+# An upgrade installs over a running daemon. `systemctl enable --now` does not
+# restart an already-active unit, so without an explicit restart the installer
+# reports success while the previous binary image keeps running.
+upgrade_pid_before="$(systemctl show -p MainPID --value rackio.service)"
+sudo env RACKIO_VIEWER_USER="$viewer_user" \
+  sh "$repo_root/install.sh" --archive "$archive" --checksum "$checksum" >/dev/null
+systemctl is-active --quiet rackio.service
+wait_for_root_health
+upgrade_pid_after="$(systemctl show -p MainPID --value rackio.service)"
+if [[ "$upgrade_pid_after" == "$upgrade_pid_before" ]]; then
+  fail "installing over a running service left the previous process running"
+fi
+if sudo readlink "/proc/$upgrade_pid_after/exe" | grep -q '(deleted)'; then
+  fail "the running daemon still executes a replaced binary image"
+fi
 
 sudo touch /var/lib/rackio/preserve-marker
 sudo /usr/local/lib/rackio/uninstall.sh
@@ -151,8 +176,10 @@ jq --null-input \
     root_health: true,
     viewer_group_health: true,
     state_directory_isolated_from_viewers: true,
+    runtime_directory_not_viewer_writable: true,
     unauthorized_user_rejected: true,
     restart_health: true,
+    in_place_upgrade_replaced_process: true,
     preserving_uninstall: true,
     reinstall_preserved_state: true,
     purge_removed_state: true

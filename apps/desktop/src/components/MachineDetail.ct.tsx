@@ -124,6 +124,32 @@ test("says a machine has no swap device and no uptime instead of showing zeroes"
   await expect(fields.locator("dd").filter({ hasText: /^—$/ })).toHaveCount(2);
 });
 
+test("lists every filesystem, fullest first, with its mount named", async ({ mount }) => {
+  // The metric tiles report one filesystem. An operator answering an alert
+  // that names `/data` has to be able to see `/data` — and the machine's other
+  // capacity — somewhere in the viewer.
+  const component = await mount(
+    <MachineDetail detail={machineDetailStateRegistry.ready} onClose={() => undefined} />,
+  );
+  const filesystems = component.locator(".detail-filesystems li");
+  await expect(filesystems).toHaveCount(3);
+  await component.screenshot({ path: "../../output/playwright/machine-detail-filesystems.png" });
+  await expect(filesystems.first()).toContainText("/data");
+  await expect(filesystems.first()).toContainText("92%");
+  await expect(filesystems.nth(1)).toContainText("/");
+  await expect(filesystems.nth(2)).toContainText("/boot");
+});
+
+test("says a machine reported no filesystem instead of showing an empty list", async ({
+  mount,
+}) => {
+  const component = await mount(
+    <MachineDetail detail={machineDetailStateRegistry.filesystemless} onClose={() => undefined} />,
+  );
+  await expect(component.locator(".detail-filesystems li")).toHaveCount(0);
+  await expect(component.getByText("This machine reported no measurable filesystem")).toBeVisible();
+});
+
 test("distinguishes empty history from a zero metric", async ({ mount }) => {
   const component = await mount(
     <MachineDetail detail={machineDetailStateRegistry.empty} onClose={() => undefined} />,

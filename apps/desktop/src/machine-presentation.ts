@@ -29,6 +29,20 @@ export function swapDetail(node: FleetNode): string {
   return `${bytes(node.swapUsedBytes)} of ${bytes(node.swapTotalBytes)} swap in use`;
 }
 
+/**
+ * Say which filesystem the headline disk figure is, and how much of it is in
+ * use. A percentage with no mount cannot be acted on when a machine has
+ * several filesystems, and the alert an operator was notified about names one.
+ */
+export function diskDetail(node: FleetNode): string {
+  const filesystems = node.filesystems ?? [];
+  if (filesystems.length === 0) return "No filesystem reading from this machine";
+  const [fullest] = filesystems;
+  if (fullest === undefined) return "No filesystem reading from this machine";
+  const others = filesystems.length > 1 ? ` · ${filesystems.length - 1} more on this machine` : "";
+  return `${fullest.mount} · ${bytes(fullest.usedBytes)} of ${bytes(fullest.totalBytes)} used${others}`;
+}
+
 /** The latest value each tile reports, in the tile's own unit. */
 export function tileValues(node: FleetNode): Record<TrendMetric, string> {
   return {
@@ -47,3 +61,14 @@ export function tileValues(node: FleetNode): Record<TrendMetric, string> {
     rtt: node.rttMs == null ? "—" : `${node.rttMs} ms`,
   };
 }
+
+/** Non-live machines must not expose their last-known values as current data. */
+export const unavailableTileValues: Record<TrendMetric, string> = {
+  cpu: "—",
+  memory: "—",
+  swap: "—",
+  disk: "—",
+  temp: "—",
+  network: "—",
+  rtt: "—",
+};

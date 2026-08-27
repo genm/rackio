@@ -47,6 +47,15 @@ const snapshot: FleetSnapshot = {
       uptimeSeconds: 12 * 86_400 + 4 * 3_600,
       diskUsedBytes: 320_000_000_000,
       diskTotalBytes: 1_000_000_000_000,
+      diskMount: "/System/Volumes/Data",
+      filesystems: [
+        {
+          mount: "/System/Volumes/Data",
+          usedBytes: 320_000_000_000,
+          totalBytes: 1_000_000_000_000,
+        },
+        { mount: "/", usedBytes: 11_000_000_000, totalBytes: 500_000_000_000 },
+      ],
       temperature: {
         label: "PMU tdie8",
         celsius: 60.7,
@@ -94,6 +103,26 @@ test("labels the trend chart with its metric and time window", async ({ mount })
   await expect(studio.getByText("now", { exact: true })).toBeVisible();
 });
 
+test("names the filesystem the disk tile is reporting", async ({ mount }) => {
+  // A machine has several filesystems and the tile shows the fullest. Without
+  // the mount, an operator paged about "Disk 93%" cannot tell which one.
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const studio = component.locator("article").filter({ hasText: "Studio Mac" });
+  const diskValue = studio.getByRole("button", { name: /^Disk/ }).locator(".metric-value");
+
+  await expect(diskValue).toHaveAttribute("title", /\/System\/Volumes\/Data/);
+  await expect(diskValue).toHaveAttribute("title", /1 more on this machine/);
+});
+
+test("says a machine reported no filesystem rather than naming one", async ({ mount }) => {
+  const component = await mount(<Dashboard snapshot={snapshot} />);
+  const server = component.locator("article").filter({ hasText: "Home Server" });
+
+  await expect(
+    server.getByRole("button", { name: /^Disk/ }).locator(".metric-value"),
+  ).toHaveAttribute("title", "No filesystem reading from this machine");
+});
+
 test("switches the trend chart to memory from its metric tile", async ({ mount }) => {
   const component = await mount(<Dashboard snapshot={snapshot} />);
   const studio = component.locator("article").filter({ hasText: "Studio Mac" });
@@ -127,7 +156,9 @@ test("every metric tile switches the trend chart", async ({ mount }) => {
   await studio.screenshot({ path: "../../output/playwright/node-card-rtt.png" });
 });
 
-test("dates an offline machine's numbers instead of presenting them as live", async ({ mount }) => {
+test("hides an offline machine's current numbers while preserving last-contact context", async ({
+  mount,
+}) => {
   const offline: FleetSnapshot = {
     daemon: "connected",
     nodes: [
@@ -150,13 +181,43 @@ test("dates an offline machine's numbers instead of presenting them as live", as
   };
   const component = await mount(<Dashboard snapshot={offline} />);
   const card = component.locator("article").filter({ hasText: "Steam Deck" });
-  // The frozen trend must not claim to end "now", and the stale numbers must
-  // be datable without hiding the failure cause.
+  // Frozen samples remain in the muted diagnostic trend, but current metric
+  // surfaces must not imply that an offline machine is still reporting.
+  await expect(card.locator(".metric-value")).toHaveText(["—", "—", "—", "—", "—", "—", "—"]);
+  await expect(card.locator(".trend-now")).toHaveText("");
+  await expect(card.getByText("Current memory unavailable", { exact: true })).toBeVisible();
+  await expect(card.getByText("Current uptime unavailable", { exact: true })).toBeVisible();
   await expect(card.getByText("last contact", { exact: true })).toBeVisible();
   await expect(
     card.getByText(/remote operation timed out: connect · last contact 5 min ago/),
   ).toBeVisible();
   await card.screenshot({ path: "../../output/playwright/node-card-offline.png" });
+});
+
+test("excludes offline machines from the live comparison", async ({ mount }) => {
+  const component = await mount(
+    <Dashboard
+      snapshot={{
+        daemon: "connected",
+        nodes: [
+          ...snapshot.nodes,
+          {
+            id: "node-3",
+            name: "Steam Deck",
+            os: "Linux · x86_64",
+            state: "offline",
+            path: "lan_direct",
+            cpuPercent: 2,
+            trend: trendFixture([2, 3, 2, 4, 2, 3], 4_000_000_000, 15_500_000_000),
+          },
+        ],
+      }}
+    />,
+  );
+  await component.getByRole("button", { name: "Compare machines" }).click();
+  const chart = component.getByRole("img", { name: /across every machine/ });
+  await expect(chart).toBeVisible();
+  await expect(component.locator(".trend-legend")).not.toContainText("Steam Deck");
 });
 
 test("puts the worst machine first so it needs no scrolling", async ({ mount }) => {

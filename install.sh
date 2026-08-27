@@ -254,7 +254,12 @@ if [ "$VIEWER_USER" != "root" ] && id "$VIEWER_USER" >/dev/null 2>&1; then
 fi
 
 run_root systemctl daemon-reload
-run_root systemctl enable --now rackio.service
+run_root systemctl enable rackio.service
+# `enable --now` only starts a unit that is stopped, so installing over a
+# running daemon left the previous binary image executing while the installer
+# reported success. Restart activates the version that was just installed and
+# also starts the unit on a first install.
+run_root systemctl restart rackio.service
 run_root systemctl is-active --quiet rackio.service ||
   fail "rackio.service did not become active; inspect: journalctl -u rackio.service"
 

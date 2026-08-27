@@ -4374,6 +4374,7 @@ dependencies = [
  "rackio-core",
  "rackio-protocol",
  "rand 0.10.2",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "subtle",

@@ -13,6 +13,9 @@ extend-exclude = [
   "proto/**",
   # Fuzzer inputs are encoded bytes chosen for the decoder's benefit, not prose.
   "fuzz/corpus/**",
+  # PEM bodies are base64-encoded DER. Any word the checker finds in one is an
+  # accident of the encoding, and "correcting" it would corrupt the certificate.
+  "**/*.pem",
 ]
 
 [default.extend-identifiers]

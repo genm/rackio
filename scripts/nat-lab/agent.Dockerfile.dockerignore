@@ -1,0 +1,11 @@
+*
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!crates
+!apps/agent
+!apps/desktop/src-tauri/Cargo.toml
+!proto
+!scripts/nat-lab/container
+**/target
+**/node_modules

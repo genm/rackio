@@ -74,10 +74,24 @@ struct TrayNodeSnapshot {
     memory_used_bytes: Option<u64>,
     #[serde(rename = "memoryTotalBytes")]
     memory_total_bytes: Option<u64>,
+    #[serde(rename = "swapUsedBytes")]
+    swap_used_bytes: Option<u64>,
+    #[serde(rename = "swapTotalBytes")]
+    swap_total_bytes: Option<u64>,
     #[serde(rename = "diskUsedBytes")]
     disk_used_bytes: Option<u64>,
     #[serde(rename = "diskTotalBytes")]
     disk_total_bytes: Option<u64>,
+    /// Which filesystem the disk figure belongs to; absent on a machine that
+    /// reported none.
+    #[serde(rename = "diskMount")]
+    disk_mount: Option<String>,
+    #[serde(rename = "networkReceivedBytesPerSecond")]
+    network_received_bytes_per_second: Option<u64>,
+    #[serde(rename = "networkSentBytesPerSecond")]
+    network_sent_bytes_per_second: Option<u64>,
+    #[serde(rename = "uptimeSeconds")]
+    uptime_seconds: Option<u64>,
     temperature: Option<TrayTemperature>,
     #[serde(rename = "rttMs")]
     rtt_ms: Option<u64>,
@@ -490,17 +504,121 @@ fn tray_machine_menu(node: &TrayNodeSnapshot) -> TrayMachineMenu {
                         node.memory_total_bytes,
                     ),
                 },
+                swap_gauge(node),
                 TrayGauge {
-                    text: format!("Disk {}", disk_percentage_label(node)),
+                    // Named, because the figure is the fullest filesystem out
+                    // of several and the alert an operator saw names a mount.
+                    text: match node.disk_mount.as_deref() {
+                        Some(mount) => format!("Disk {} {mount}", disk_percentage_label(node)),
+                        None => format!("Disk {}", disk_percentage_label(node)),
+                    },
                     fill_basis_points: ratio_basis_points(
                         node.disk_used_bytes,
                         node.disk_total_bytes,
                     ),
                 },
                 temperature_gauge(node),
+                // No bar: a transfer rate and a boot time have no ceiling to
+                // fill against, and inventing one would imply a limit the
+                // machine never reported. They are here because the tray is
+                // where an operator looks first, and "is it moving traffic?"
+                // and "did it reboot?" are read at a glance.
+                TrayGauge {
+                    text: format!("Net {}", network_label(node)),
+                    fill_basis_points: None,
+                },
+                TrayGauge {
+                    text: format!("Uptime {}", uptime_label(node.uptime_seconds)),
+                    fill_basis_points: None,
+                },
             ],
             link: link_label(node),
         },
+    }
+}
+
+/// Received and sent rates, or an em dash for a machine that reported neither.
+fn network_label(node: &TrayNodeSnapshot) -> String {
+    match (
+        node.network_received_bytes_per_second,
+        node.network_sent_bytes_per_second,
+    ) {
+        (None, None) => String::from("—"),
+        (received, sent) => format!("↓{} ↑{}", rate_label(received), rate_label(sent)),
+    }
+}
+
+fn rate_label(bytes_per_second: Option<u64>) -> String {
+    bytes_per_second.map_or_else(
+        || String::from("—"),
+        |rate| format!("{}/s", byte_label(rate)),
+    )
+}
+
+/// Binary units, matching `format.ts` exactly — one decimal from MiB up, whole
+/// units below — so the tray and the dashboard cannot disagree about the same
+/// machine. Integer arithmetic throughout: a float conversion would lose
+/// precision on a large enough byte count.
+fn byte_label(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes;
+    let mut remainder = 0;
+    let mut unit = 0;
+    while value >= 1024 && unit + 1 < UNITS.len() {
+        remainder = value % 1024;
+        value /= 1024;
+        unit += 1;
+    }
+    if unit > 1 {
+        let mut tenths = (remainder * 10 + 512) / 1024;
+        if tenths >= 10 {
+            value += 1;
+            tenths = 0;
+        }
+        return format!("{value}.{tenths} {}", UNITS[unit]);
+    }
+    if remainder * 2 >= 1024 {
+        value += 1;
+    }
+    format!("{value} {}", UNITS[unit])
+}
+
+/// Two units at most, matching the dashboard: an operator reads uptime to tell
+/// a machine that recovered from one that never restarted, and seconds of
+/// precision serve neither. An unknown uptime is an em dash, never a zero that
+/// would read as a machine that just booted.
+fn uptime_label(seconds: Option<u64>) -> String {
+    let Some(seconds) = seconds else {
+        return String::from("—");
+    };
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if days > 0 {
+        return format!("{days}d {hours}h");
+    }
+    if hours > 0 {
+        return format!("{hours}h {minutes}m");
+    }
+    if minutes > 0 {
+        return format!("{minutes}m {}s", seconds % 60);
+    }
+    format!("{seconds}s")
+}
+
+/// Swap, distinguishing the two machines that both have no percentage: one has
+/// no swap device at all, the other did not report a reading. An operator acts
+/// differently on each, and a bar drawn at zero would claim idle swap on a
+/// machine that has none.
+fn swap_gauge(node: &TrayNodeSnapshot) -> TrayGauge {
+    let text = match (node.swap_used_bytes, node.swap_total_bytes) {
+        (_, Some(0)) => String::from("Swap none"),
+        (Some(_), Some(_)) => format!("Swap {}", swap_percentage_label(node)),
+        _ => String::from("Swap —"),
+    };
+    TrayGauge {
+        text,
+        fill_basis_points: ratio_basis_points(node.swap_used_bytes, node.swap_total_bytes),
     }
 }
 
@@ -587,6 +705,13 @@ fn disk_percentage_label(node: &TrayNodeSnapshot) -> String {
     basis_points_label(ratio_basis_points(
         node.disk_used_bytes,
         node.disk_total_bytes,
+    ))
+}
+
+fn swap_percentage_label(node: &TrayNodeSnapshot) -> String {
+    basis_points_label(ratio_basis_points(
+        node.swap_used_bytes,
+        node.swap_total_bytes,
     ))
 }
 
@@ -777,8 +902,14 @@ mod tests {
             cpu_percent: Some(60.0),
             memory_used_bytes: Some(30),
             memory_total_bytes: Some(100),
+            swap_used_bytes: Some(10),
+            swap_total_bytes: Some(100),
             disk_used_bytes: Some(45),
             disk_total_bytes: Some(100),
+            disk_mount: Some(String::from("/data")),
+            network_received_bytes_per_second: Some(6_144),
+            network_sent_bytes_per_second: Some(1_536),
+            uptime_seconds: Some(12 * 86_400 + 4 * 3_600),
             temperature: Some(TrayTemperature {
                 label: String::from("CPU die"),
                 celsius: 72.4,
@@ -800,8 +931,11 @@ mod tests {
                     gauges: vec![
                         gauge("CPU 60%", Some(6_000)),
                         gauge("Memory 30%", Some(3_000)),
-                        gauge("Disk 45%", Some(4_500)),
+                        gauge("Swap 10%", Some(1_000)),
+                        gauge("Disk 45% /data", Some(4_500)),
                         gauge("Temperature 72 °C CPU die", Some(7_240)),
+                        gauge("Net ↓6 KiB/s ↑2 KiB/s", None),
+                        gauge("Uptime 12d 4h", None),
                     ],
                     link: String::from("Relayed"),
                 },
@@ -816,8 +950,14 @@ mod tests {
             cpu_percent: None,
             memory_used_bytes: None,
             memory_total_bytes: None,
+            swap_used_bytes: None,
+            swap_total_bytes: None,
             disk_used_bytes: None,
             disk_total_bytes: None,
+            disk_mount: None,
+            network_received_bytes_per_second: None,
+            network_sent_bytes_per_second: None,
+            uptime_seconds: None,
             temperature: None,
             rtt_ms: Some(8),
         };
@@ -829,14 +969,83 @@ mod tests {
             vec![
                 gauge("CPU —", None),
                 gauge("Memory —", None),
+                gauge("Swap —", None),
                 gauge("Disk —", None),
                 gauge("Temperature —", None),
+                gauge("Net —", None),
+                gauge("Uptime —", None),
             ]
         );
         assert_eq!(
             fleet_tray_status(&[node, steamdeck]),
             "Server ▲ · steamdeck ●"
         );
+    }
+
+    #[test]
+    fn byte_labels_match_the_dashboards_own_rounding() {
+        // `format.ts` shows whole units through KiB and one decimal from MiB
+        // up. Two surfaces reporting the same machine differently is a bug an
+        // operator has no way to resolve.
+        assert_eq!(super::byte_label(0), "0 B");
+        assert_eq!(super::byte_label(6_144), "6 KiB");
+        assert_eq!(super::byte_label(1_536), "2 KiB");
+        assert_eq!(super::byte_label(2_097_152), "2.0 MiB");
+        assert_eq!(super::byte_label(3_355_443), "3.2 MiB");
+        // A remainder that rounds to a full unit carries instead of printing
+        // the impossible "x.10".
+        assert_eq!(super::byte_label(2_097_152 - 20), "2.0 MiB");
+        // TiB is the largest unit either surface uses, so a huge count keeps
+        // growing the number rather than inventing a PiB label.
+        assert_eq!(super::byte_label(u64::MAX), "16777216.0 TiB");
+    }
+
+    #[test]
+    fn the_tray_reports_the_same_metrics_the_dashboard_card_does() {
+        // The tray is where an operator looks first. A metric the card shows
+        // and the tray withholds is a metric they only find by opening the
+        // window, which is the trip the tray exists to save.
+        let node = TrayNodeSnapshot {
+            id: String::from("id"),
+            name: String::from("Server"),
+            state: String::from("healthy"),
+            path: String::from("lan_direct"),
+            cpu_percent: Some(10.0),
+            memory_used_bytes: Some(1),
+            memory_total_bytes: Some(4),
+            swap_used_bytes: Some(1),
+            swap_total_bytes: Some(2),
+            disk_used_bytes: Some(1),
+            disk_total_bytes: Some(4),
+            disk_mount: Some(String::from("/")),
+            network_received_bytes_per_second: Some(0),
+            network_sent_bytes_per_second: Some(2_097_152),
+            uptime_seconds: Some(3_600 * 5 + 120),
+            temperature: None,
+            rtt_ms: None,
+        };
+
+        let gauges = tray_machine_menu(&node).section.gauges;
+        let labels: Vec<&str> = gauges
+            .iter()
+            .map(|gauge| gauge.text.split_whitespace().next().unwrap_or_default())
+            .collect();
+
+        assert_eq!(
+            labels,
+            vec![
+                "CPU",
+                "Memory",
+                "Swap",
+                "Disk",
+                "Temperature",
+                "Net",
+                "Uptime"
+            ]
+        );
+        // A genuine zero rate is a reading, not a missing one.
+        assert_eq!(gauges[5], gauge("Net ↓0 B/s ↑2.0 MiB/s", None));
+        assert_eq!(gauges[6], gauge("Uptime 5h 2m", None));
     }
 
     #[test]
@@ -852,13 +1061,31 @@ mod tests {
             cpu_percent: Some(51.0),
             memory_used_bytes: Some(88),
             memory_total_bytes: Some(100),
+            swap_used_bytes: Some(0),
+            swap_total_bytes: Some(0),
             disk_used_bytes: Some(94),
             disk_total_bytes: Some(100),
+            disk_mount: Some(String::from("/")),
+            network_received_bytes_per_second: None,
+            network_sent_bytes_per_second: None,
+            uptime_seconds: Some(90),
             temperature: None,
             rtt_ms: None,
         };
         assert_eq!(link_label(&local), "—");
         assert_eq!(tray_machine_menu(&local).section.header, "● Mac — Healthy");
+        // A machine with no swap device is not a machine with idle swap: it
+        // says so in words and draws no bar.
+        assert_eq!(
+            tray_machine_menu(&local).section.gauges[2],
+            gauge("Swap none", None)
+        );
+        // Under a day, uptime keeps its minutes: a machine that rebooted 90
+        // seconds ago must be distinguishable from one that has been up a week.
+        assert_eq!(
+            tray_machine_menu(&local).section.gauges[6],
+            gauge("Uptime 1m 30s", None)
+        );
     }
 
     #[test]

@@ -35,10 +35,21 @@ enum Command {
         #[command(subcommand)]
         command: RelayCommand,
     },
+    /// Inspect and change this machine's local health thresholds.
+    Alerts {
+        #[command(subcommand)]
+        command: AlertCommand,
+    },
     /// Control the fixed UDP port this machine listens on.
     ListenPort {
         #[command(subcommand)]
         command: ListenPortCommand,
+    },
+    /// Manage addresses this machine cannot observe itself, such as a
+    /// router's forwarded address.
+    AdvertiseAddress {
+        #[command(subcommand)]
+        command: AdvertiseAddressCommand,
     },
     Doctor,
 }
@@ -56,6 +67,42 @@ enum PeerCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum AlertCommand {
+    /// Show every effective rule, including the ones switched off.
+    List,
+    /// Change one rule. Omitted options keep their current value, and a rule
+    /// Rackio does not ship needs `--metric`, `--comparison`, `--threshold`
+    /// and `--severity` the first time it is defined.
+    Set {
+        id: String,
+        #[arg(long, value_parser = finite_threshold)]
+        threshold: Option<f64>,
+        /// How many two-second samples in a row the condition must hold.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        samples: Option<u32>,
+        #[arg(long, value_parser = ["warning", "critical"])]
+        severity: Option<String>,
+        #[arg(long, value_parser = rackio_core::ALERT_METRICS)]
+        metric: Option<String>,
+        #[arg(long, value_parser = ["at-or-above", "at-or-below"])]
+        comparison: Option<String>,
+    },
+    /// Switch one rule off without losing its level.
+    Disable { id: String },
+    /// Switch one rule back on.
+    Enable { id: String },
+    /// Drop changes to one rule, or to every rule, restoring shipped levels.
+    Reset {
+        /// Omit to reset every rule on this machine.
+        id: Option<String>,
+    },
+    /// Stop evaluating local thresholds on this machine entirely.
+    Off,
+    /// Evaluate local thresholds again.
+    On,
+}
+
+#[derive(Debug, Subcommand)]
 enum ListenPortCommand {
     /// Set a fixed listen port, or pass `ephemeral` to let the OS choose one.
     ///
@@ -65,9 +112,41 @@ enum ListenPortCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum AdvertiseAddressCommand {
+    /// Advertise `IP:PORT` to viewers paired from now on.
+    ///
+    /// Use it for an address this machine cannot see on its own interfaces,
+    /// such as the address a router forwards to it. Rackio stores the value as
+    /// given: it never probes, resolves or corrects it, so an address that is
+    /// wrong is simply an unreachable candidate.
+    Add { address: String },
+    /// Stop advertising `IP:PORT`. Already paired viewers keep the addresses
+    /// they were given.
+    Remove { address: String },
+    /// List the advertised addresses this machine is configured with.
+    List,
+}
+
+#[derive(Debug, Subcommand)]
 enum RelayCommand {
     /// Set a self-hosted relay URL, or pass `direct-only` to remove it.
-    Set { url: String },
+    Set {
+        url: String,
+        /// PEM file holding the certificate authority that signs the relay's
+        /// TLS certificate.
+        ///
+        /// Use it for a relay on an internal network, whose certificate no
+        /// public authority would ever issue. It *replaces* the public root
+        /// set for relay connections, so the relay must present a certificate
+        /// this authority signed. Without it the relay must present a publicly
+        /// trusted certificate.
+        ///
+        /// Give an absolute path: the daemon reads the file, and it does so
+        /// from its own working directory, not the shell's. `direct-only`
+        /// clears the relay and this anchor together.
+        #[arg(long, value_name = "PATH")]
+        ca_certificate: Option<std::path::PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -112,10 +191,26 @@ async fn main() -> anyhow::Result<()> {
             print_response(request_local(&paths, LocalCommand::PeerRevoke { endpoint_id }).await?)?;
         }
         Command::Relay {
-            command: RelayCommand::Set { url },
+            command:
+                RelayCommand::Set {
+                    url,
+                    ca_certificate,
+                },
         } => {
             let relay_url = (url != "direct-only").then_some(url);
-            print_response(request_local(&paths, LocalCommand::RelaySet { relay_url }).await?)?;
+            // A CA passed alongside `direct-only` is forwarded rather than
+            // dropped here, so the daemon refuses it by name. Discarding it
+            // quietly would report success for a pin that was never stored.
+            print_response(
+                request_local(
+                    &paths,
+                    LocalCommand::RelaySet {
+                        relay_url,
+                        ca_certificate,
+                    },
+                )
+                .await?,
+            )?;
         }
         Command::ListenPort {
             command: ListenPortCommand::Set { port },
@@ -129,9 +224,86 @@ async fn main() -> anyhow::Result<()> {
             };
             print_response(request_local(&paths, LocalCommand::BindPortSet { bind_port }).await?)?;
         }
+        Command::Alerts { command } => {
+            let alert = alert_request(command);
+            print_response(request_local(&paths, LocalCommand::Alerts { alert }).await?)?;
+        }
+        Command::AdvertiseAddress { command } => {
+            let command = match command {
+                AdvertiseAddressCommand::Add { address } => {
+                    LocalCommand::AdvertiseAddressAdd { address }
+                }
+                AdvertiseAddressCommand::Remove { address } => {
+                    LocalCommand::AdvertiseAddressRemove { address }
+                }
+                AdvertiseAddressCommand::List => LocalCommand::AdvertiseAddressList,
+            };
+            print_response(request_local(&paths, command).await?)?;
+        }
         Command::Doctor => print_response(request_local(&paths, LocalCommand::Doctor).await?)?,
     }
     Ok(())
+}
+
+/// Translate the operator's wording into the daemon's threshold command.
+fn alert_request(command: AlertCommand) -> runtime::AlertCommand {
+    match command {
+        AlertCommand::List => runtime::AlertCommand::List,
+        AlertCommand::Set {
+            id,
+            threshold,
+            samples,
+            severity,
+            metric,
+            comparison,
+        } => runtime::AlertCommand::Set {
+            id,
+            metric,
+            comparison: comparison.as_deref().map(comparison_from),
+            threshold,
+            consecutive_samples: samples,
+            severity: severity.as_deref().map(severity_from),
+        },
+        AlertCommand::Disable { id } => runtime::AlertCommand::RuleEnabled { id, enabled: false },
+        AlertCommand::Enable { id } => runtime::AlertCommand::RuleEnabled { id, enabled: true },
+        AlertCommand::Reset { id } => runtime::AlertCommand::Reset { id },
+        AlertCommand::Off => runtime::AlertCommand::Enabled { enabled: false },
+        AlertCommand::On => runtime::AlertCommand::Enabled { enabled: true },
+    }
+}
+
+/// Reject `nan` and `inf` here, at the boundary that can still explain itself.
+///
+/// JSON has no way to carry them, so a non-finite threshold would reach the
+/// daemon as an absent field and be reported as a successful change that
+/// changed nothing.
+fn finite_threshold(value: &str) -> Result<f64, String> {
+    let parsed: f64 = value
+        .parse()
+        .map_err(|_| format!("`{value}` is not a number"))?;
+    if parsed.is_finite() {
+        Ok(parsed)
+    } else {
+        Err(format!("`{value}` is not a finite threshold"))
+    }
+}
+
+/// The CLI spells the comparison the way an operator reads a threshold; clap
+/// has already rejected anything else.
+fn comparison_from(value: &str) -> rackio_core::Comparison {
+    if value == "at-or-below" {
+        rackio_core::Comparison::LessThanOrEqual
+    } else {
+        rackio_core::Comparison::GreaterThanOrEqual
+    }
+}
+
+fn severity_from(value: &str) -> rackio_core::NodeState {
+    if value == "critical" {
+        rackio_core::NodeState::Critical
+    } else {
+        rackio_core::NodeState::Warning
+    }
 }
 
 fn print_response(response: runtime::LocalResponse) -> anyhow::Result<()> {
