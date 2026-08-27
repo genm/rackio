@@ -1,8 +1,8 @@
 import { useState } from "react";
 
-import { bytes, celsius, percent, timeOfDay } from "../format";
-import { temperatureDetail } from "../machine-presentation";
-import { connectionPathRegistry, nodeStateRegistry } from "../state-model";
+import { bytes, celsius, percent, timeOfDay, uptime } from "../format";
+import { swapDetail, temperatureDetail } from "../machine-presentation";
+import { connectionPathRegistry, isLiveNodeState, nodeStateRegistry } from "../state-model";
 import { type TrendMetric, trendLines, trendMetricRegistry, trendScale } from "../trend-series";
 import type { HistoryRange, MachineDetailState } from "../types";
 import { useModalDialog } from "../useModalDialog";
@@ -10,12 +10,16 @@ import { TrendChart } from "./TrendChart";
 
 /**
  * The history query reads the peer's one-minute buckets, which aggregate CPU,
- * memory, disk and temperature. Network stays out until the schema aggregates
- * it; RTT stays out for good, being the viewer's own connection measurement
- * and never written to the peer's storage. The card's live trend covers the
- * full metric registry either way.
+ * memory, swap, disk and temperature. Network stays out until the schema
+ * aggregates it; RTT stays out for good, being the viewer's own connection
+ * measurement and never written to the peer's storage. The card's live trend
+ * covers the full metric registry either way.
+ *
+ * A metric belongs here only once the buckets actually carry it: offering one
+ * the peer cannot aggregate would draw an empty chart, or worse, a stale spot
+ * reading presented as a minute average.
  */
-const historyMetrics: TrendMetric[] = ["cpu", "memory", "disk", "temp"];
+const historyMetrics: TrendMetric[] = ["cpu", "memory", "swap", "disk", "temp"];
 
 const historyRanges: { hours: HistoryRange; label: string }[] = [
   { hours: 1, label: "1h" },
@@ -52,6 +56,8 @@ function MachineDetailDialog({
 }) {
   const dialogRef = useModalDialog<HTMLElement>(onClose);
   const { node } = detail;
+  const live = isLiveNodeState(node.state);
+  const filesystems = node.filesystems ?? [];
   const [metric, setMetric] = useState<TrendMetric>("cpu");
   const series =
     detail.state === "ready"
@@ -85,7 +91,9 @@ function MachineDetailDialog({
           <span className={`badge path-${node.path}`}>
             {connectionPathRegistry[node.path].label}
           </span>
-          <span className="badge">{node.rttMs == null ? "RTT —" : `${node.rttMs} ms`}</span>
+          <span className="badge">
+            {!live || node.rttMs == null ? "RTT —" : `${node.rttMs} ms`}
+          </span>
           <div className="chart-toggle detail-range" aria-label="History range">
             {historyRanges.map((range) => (
               <button
@@ -154,20 +162,38 @@ function MachineDetailDialog({
             <dl className="detail-metrics">
               <div>
                 <dt>Latest CPU</dt>
-                <dd>{node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`}</dd>
+                <dd>
+                  {!live || node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`}
+                </dd>
               </div>
               <div>
                 <dt>Memory</dt>
-                <dd>{percent(node.memoryUsedBytes, node.memoryTotalBytes)}</dd>
+                <dd>{live ? percent(node.memoryUsedBytes, node.memoryTotalBytes) : "—"}</dd>
               </div>
               <div>
                 <dt>Memory used</dt>
-                <dd>{bytes(node.memoryUsedBytes)}</dd>
+                <dd>{live ? bytes(node.memoryUsedBytes) : "—"}</dd>
+              </div>
+              <div>
+                <dt>Swap</dt>
+                {/* A machine with no swap device has no percentage to show;
+                    the title says which kind of "—" this is. */}
+                <dd title={swapDetail(node)}>
+                  {live ? percent(node.swapUsedBytes, node.swapTotalBytes) : "—"}
+                </dd>
+              </div>
+              <div>
+                <dt>Uptime</dt>
+                {/* Not a trend line, deliberately: uptime is a rendering of one
+                    fixed instant (the boot time) rather than a sampled level,
+                    so the carve-out in `trend-series.ts` applies and plotting
+                    it would only draw a straight ramp. */}
+                <dd>{live ? uptime(node.uptimeSeconds) : "—"}</dd>
               </div>
               <div>
                 <dt>Temperature</dt>
                 <dd title={temperatureDetail(node.temperature)}>
-                  {celsius(node.temperature?.celsius)}
+                  {live ? celsius(node.temperature?.celsius) : "—"}
                 </dd>
               </div>
               <div>
@@ -181,6 +207,35 @@ function MachineDetailDialog({
                 <dd>{connectionPathRegistry[node.path].label}</dd>
               </div>
             </dl>
+            {/* The metric tiles above report the fullest filesystem only. A
+                machine has several, an alert names one of them by mount, and
+                the answer to "which disk do I clear?" has to be readable
+                somewhere in the viewer. */}
+            <section className="detail-filesystems" aria-label="Filesystems">
+              <h3>Filesystems</h3>
+              {live && filesystems.length > 0 ? (
+                <ul>
+                  {filesystems.map((filesystem) => (
+                    <li key={filesystem.mount}>
+                      <span className="filesystem-mount">{filesystem.mount}</span>
+                      <span className="filesystem-usage">
+                        {percent(filesystem.usedBytes, filesystem.totalBytes)} ·{" "}
+                        {bytes(filesystem.usedBytes)} of {bytes(filesystem.totalBytes)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                /* Distinct facts: an unreachable machine has filesystems we
+                   cannot currently read, a live one that reported none has
+                   nothing mounted we can measure. Neither is an empty disk. */
+                <p className="filesystem-empty">
+                  {live
+                    ? "This machine reported no measurable filesystem"
+                    : "No current filesystem reading from this machine"}
+                </p>
+              )}
+            </section>
           </>
         )}
       </section>

@@ -14,7 +14,7 @@ targets = [
 unmaintained = "workspace"
 yanked = "deny"
 ignore = [
-  { id = "RUSTSEC-2024-0429", reason = "Tauri 2.11.5's Linux GTK backend still pins glib 0.18; Linux release remains blocked in docs/release-checklist.md until upstream removes it" },
+  { id = "RUSTSEC-2024-0429", reason = "glib 0.18 enters only through gtk 0.18, which tauri, tauri-runtime, tauri-runtime-wry, tao, wry, muda and tray-icon each require independently on Linux; the fix exists only in glib 0.20, so no version bump removes it. The Linux desktop stays unpublished per docs/release-checklist.md; the headless agent archive has no glib in its graph. Tracked in https://github.com/genm/rackio/issues/14" },
 ]
 
 [licenses]

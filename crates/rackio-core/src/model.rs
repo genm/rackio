@@ -164,8 +164,10 @@ pub struct MetricSample {
 /// A projection of [`MetricSample`], not the sample itself: the trend window
 /// holds up to [`TrendWindow::CAPACITY`] of these per machine in memory and in
 /// the persisted registry, so it carries only the fields a trend can plot.
-/// Every periodically displayed metric is carried here — a number the viewer
-/// shows on a cadence must also be plottable, without exception. The timestamp
+/// Every periodically *sampled* metric is carried here — a level the viewer
+/// shows on a cadence must also be plottable. Uptime is deliberately not one:
+/// it is a rendering of a single fixed instant (the boot time), so plotting it
+/// would only redraw the clock as a straight ramp. The timestamp
 /// is the sample's own — a viewer must label its time axis from the data
 /// rather than assuming a sampling cadence.
 ///
@@ -178,6 +180,14 @@ pub struct TrendSample {
     pub cpu_percent: Option<f32>,
     pub memory_used_bytes: Option<u64>,
     pub memory_total_bytes: Option<u64>,
+    /// Swap pressure is a level sampled on the same cadence as memory, so it is
+    /// a trend metric rather than a static tile. A machine with swap disabled
+    /// reports a genuine zero total; the viewer reads that as "no swap device"
+    /// rather than as 0 %, so absence is never manufactured here.
+    #[serde(default)]
+    pub swap_used_bytes: Option<u64>,
+    #[serde(default)]
+    pub swap_total_bytes: Option<u64>,
     #[serde(default)]
     pub disk_used_bytes: Option<u64>,
     #[serde(default)]
@@ -216,6 +226,8 @@ impl From<&MetricSample> for TrendSample {
             cpu_percent: sample.cpu_percent,
             memory_used_bytes: sample.memory_used_bytes,
             memory_total_bytes: sample.memory_total_bytes,
+            swap_used_bytes: sample.swap_used_bytes,
+            swap_total_bytes: sample.swap_total_bytes,
             disk_used_bytes: worst_disk.map(|disk| disk.used_bytes),
             disk_total_bytes: worst_disk.map(|disk| disk.total_bytes),
             temperature_celsius: sample
@@ -269,12 +281,18 @@ impl TrendWindow {
     /// enough to see a spike develop, small enough to ship in every snapshot.
     pub const CAPACITY: usize = 120;
 
+    /// Append one sample and restore the capacity bound, however far the
+    /// window started beyond it.
+    ///
+    /// The trim is unconditional rather than guarded by a length comparison: a
+    /// guard that only differs from this at exactly `CAPACITY`, where the trim
+    /// is already a no-op, is a branch no test can distinguish. Draining a
+    /// saturating overshoot says the same thing with one behaviour instead of
+    /// two.
     pub fn push(&mut self, sample: TrendSample) {
         self.samples.push(sample);
-        if self.samples.len() > Self::CAPACITY {
-            let excess = self.samples.len() - Self::CAPACITY;
-            self.samples.drain(..excess);
-        }
+        let excess = self.samples.len().saturating_sub(Self::CAPACITY);
+        self.samples.drain(..excess);
     }
 
     #[must_use]
@@ -340,6 +358,47 @@ mod trend_sample_tests {
             point.rtt_ms, None,
             "RTT is stamped by the stream loop, not the sample"
         );
+        assert_eq!(
+            (point.swap_used_bytes, point.swap_total_bytes),
+            (None, None),
+            "an unreported swap reading stays absent instead of becoming zero"
+        );
+    }
+
+    #[test]
+    fn projects_swap_as_a_trend_metric() {
+        let point = TrendSample::from(&swap_sample(Some(2_048), Some(8_192)));
+        assert_eq!(point.swap_used_bytes, Some(2_048));
+        assert_eq!(point.swap_total_bytes, Some(8_192));
+    }
+
+    #[test]
+    fn keeps_a_swapless_machine_at_a_zero_total_rather_than_absent() {
+        // A machine with swap disabled genuinely reports a zero total, which is
+        // a reading rather than a gap. Carrying it through as `Some(0)` is what
+        // lets the viewer say "no swap device" instead of "0 %": collapsing it
+        // to `None` here would make it indistinguishable from an unreadable
+        // sample, and inventing a used fraction against it would be worse.
+        let point = TrendSample::from(&swap_sample(Some(0), Some(0)));
+        assert_eq!(point.swap_used_bytes, Some(0));
+        assert_eq!(point.swap_total_bytes, Some(0));
+    }
+
+    fn swap_sample(used: Option<u64>, total: Option<u64>) -> MetricSample {
+        MetricSample {
+            timestamp_ms: 1,
+            sequence: 0,
+            cpu_percent: None,
+            memory_used_bytes: None,
+            memory_total_bytes: None,
+            swap_used_bytes: used,
+            swap_total_bytes: total,
+            disks: Vec::new(),
+            network: None,
+            temperature: None,
+            uptime_seconds: 0,
+            errors: Vec::new(),
+        }
     }
 
     #[test]
@@ -353,6 +412,8 @@ mod trend_sample_tests {
         }))
         .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(point.disk_used_bytes, None);
+        assert_eq!(point.swap_used_bytes, None);
+        assert_eq!(point.swap_total_bytes, None);
         assert_eq!(point.rtt_ms, None);
     }
 }
@@ -367,6 +428,8 @@ mod trend_window_tests {
             cpu_percent: Some(10.0),
             memory_used_bytes: Some(1_000),
             memory_total_bytes: Some(2_000),
+            swap_used_bytes: Some(100),
+            swap_total_bytes: Some(400),
             disk_used_bytes: Some(90),
             disk_total_bytes: Some(100),
             temperature_celsius: Some(61.5),

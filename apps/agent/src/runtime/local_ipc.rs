@@ -1,8 +1,8 @@
 //! Authorized OS-local IPC transport, command dispatch, and CLI client.
 
 #[cfg(unix)]
-use std::{fs, path::PathBuf, time::Instant};
-use std::{sync::Arc, time::Duration};
+use std::{fs, time::Instant};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 #[cfg(windows)]
 use anyhow::Context as _;
@@ -11,10 +11,15 @@ use rackio_core::{HealthSnapshot, HistoryResolution, NodeInfo};
 use rackio_iroh::NodeRuntime;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
+use tokio::sync::watch;
 
 use crate::remote::{RemoteFleet, RemoteHistoryResolution, RemoteMachineSnapshot};
 
-use super::config::{AppPaths, load_config, save_config, validate_relay_url};
+use super::config::{
+    AppPaths, add_advertise_address, load_config, parse_advertise_address,
+    remove_advertise_address, save_config, validate_bind_port, validate_relay_ca_certificate,
+    validate_relay_url,
+};
 
 // The Windows local IPC listener has its own connect loop, so these bound the
 // Unix accept loop only.
@@ -49,8 +54,93 @@ pub enum LocalCommand {
     },
     RelaySet {
         relay_url: Option<String>,
+        /// The PEM file whose certificate authority signs the relay's TLS
+        /// certificate, for a relay a public CA would never issue for. Absent
+        /// keeps the public root set, which is the default.
+        ///
+        /// This is set with the relay and cleared with it: it is part of the
+        /// same decision, not an independent one.
+        ca_certificate: Option<PathBuf>,
     },
+    BindPortSet {
+        bind_port: Option<u16>,
+    },
+    /// Inspect and change this machine's local health thresholds.
+    Alerts {
+        #[serde(flatten)]
+        alert: AlertCommand,
+    },
+    AdvertiseAddressAdd {
+        address: String,
+    },
+    AdvertiseAddressRemove {
+        address: String,
+    },
+    AdvertiseAddressList,
     Doctor,
+}
+
+/// The threshold operations, mirroring `rackio alerts` so one shape describes
+/// the CLI, the IPC contract and the daemon handler.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "alerts", rename_all = "snake_case")]
+pub enum AlertCommand {
+    /// Every effective rule, including the ones switched off.
+    List,
+    /// Change one rule. Absent fields keep whatever the rule has now, so
+    /// retuning a level never restates the rest of the rule.
+    Set {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metric: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        comparison: Option<rackio_core::Comparison>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        threshold: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        consecutive_samples: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        severity: Option<rackio_core::NodeState>,
+    },
+    /// Switch one rule on or off without losing its level.
+    RuleEnabled { id: String, enabled: bool },
+    /// Drop the operator's changes to one rule, or to all of them, restoring
+    /// the shipped levels.
+    Reset {
+        /// `None` resets every rule on this machine.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+    /// Switch local threshold evaluation on or off for this machine.
+    Enabled { enabled: bool },
+}
+
+/// One effective rule as an operator surface reports it.
+#[derive(Debug, Serialize)]
+struct AlertRuleView {
+    id: String,
+    metric: String,
+    comparison: rackio_core::Comparison,
+    threshold: f64,
+    consecutive_samples: u32,
+    severity: rackio_core::NodeState,
+    enabled: bool,
+    source: rackio_core::AlertRuleSource,
+}
+
+impl From<rackio_core::ResolvedAlertRule> for AlertRuleView {
+    fn from(resolved: rackio_core::ResolvedAlertRule) -> Self {
+        Self {
+            id: resolved.rule.id,
+            metric: resolved.rule.metric,
+            comparison: resolved.rule.comparison,
+            threshold: resolved.rule.threshold,
+            consecutive_samples: resolved.rule.consecutive_samples,
+            severity: resolved.rule.severity,
+            enabled: resolved.enabled,
+            source: resolved.source,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +193,9 @@ struct StatusPayload {
     endpoint_id: String,
     direct_addresses: Vec<String>,
     relay_url: Option<String>,
+    /// The configured fixed listen port, or `None` when this machine takes an
+    /// ephemeral port that a restart will change.
+    bind_port: Option<u16>,
     latest: Option<rackio_core::MetricSample>,
     health: HealthSnapshot,
     /// The local machine's live trend, in the same shape a remote snapshot
@@ -116,29 +209,55 @@ struct FleetPayload {
     remotes: Vec<RemoteMachineSnapshot>,
 }
 
-#[cfg(unix)]
-pub(super) async fn run_local_server(
+/// Everything a local command may act on.
+///
+/// Bundled rather than threaded through each platform listener: three listener
+/// variants and two stream helpers all carry the same handles, so every new
+/// daemon-side capability would otherwise mean five identical signature edits.
+pub(super) struct LocalContext {
     paths: AppPaths,
     endpoint: iroh::Endpoint,
     runtime: Arc<NodeRuntime>,
     remote_fleet: RemoteFleet,
-) -> anyhow::Result<()> {
+    /// The live rule set the sampler evaluates. Publishing here is what makes a
+    /// threshold change take effect without restarting the daemon.
+    alert_rules: watch::Sender<Vec<rackio_core::AlertRule>>,
+}
+
+impl LocalContext {
+    pub(super) fn new(
+        paths: AppPaths,
+        endpoint: iroh::Endpoint,
+        runtime: Arc<NodeRuntime>,
+        remote_fleet: RemoteFleet,
+        alert_rules: watch::Sender<Vec<rackio_core::AlertRule>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            paths,
+            endpoint,
+            runtime,
+            remote_fleet,
+            alert_rules,
+        })
+    }
+}
+
+#[cfg(unix)]
+pub(super) async fn run_local_server(context: Arc<LocalContext>) -> anyhow::Result<()> {
     use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
     use tokio::net::UnixListener;
 
-    match fs::symlink_metadata(&paths.local_socket) {
-        Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(&paths.local_socket)?,
-        Ok(_) => anyhow::bail!(
-            "refusing to replace non-socket path {}",
-            paths.local_socket.display()
-        ),
+    let socket = &context.paths.local_socket;
+    match fs::symlink_metadata(socket) {
+        Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(socket)?,
+        Ok(_) => anyhow::bail!("refusing to replace non-socket path {}", socket.display()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    let listener = UnixListener::bind(&paths.local_socket)?;
+    let listener = UnixListener::bind(socket)?;
     let shared = std::env::var_os("RACKIO_SHARED_SOCKET").is_some();
     fs::set_permissions(
-        &paths.local_socket,
+        socket,
         fs::Permissions::from_mode(if shared { 0o660 } else { 0o600 }),
     )?;
     // A per-connection accept failure (an aborted client, a momentary fd
@@ -169,27 +288,12 @@ pub(super) async fn run_local_server(
             tracing::warn!(error = %error, "local IPC caller credentials unavailable");
             continue;
         }
-        let paths = paths.clone();
-        let endpoint = endpoint.clone();
-        let runtime = Arc::clone(&runtime);
-        let remote_fleet = remote_fleet.clone();
-        tokio::spawn(serve_local_stream(
-            stream,
-            paths,
-            endpoint,
-            runtime,
-            remote_fleet,
-        ));
+        tokio::spawn(serve_local_stream(stream, Arc::clone(&context)));
     }
 }
 
 #[cfg(windows)]
-pub(super) async fn run_local_server(
-    paths: AppPaths,
-    endpoint: iroh::Endpoint,
-    runtime: Arc<NodeRuntime>,
-    remote_fleet: RemoteFleet,
-) -> anyhow::Result<()> {
+pub(super) async fn run_local_server(context: Arc<LocalContext>) -> anyhow::Result<()> {
     use rackio_windows_ipc::{PipeSecurity, VIEWER_GROUP_NAME, configured_pipe_name};
     use tokio::net::windows::named_pipe::ServerOptions;
 
@@ -229,22 +333,14 @@ pub(super) async fn run_local_server(
         tokio::spawn(serve_local_stream_prefixed(
             server,
             first_byte.to_vec(),
-            paths.clone(),
-            endpoint.clone(),
-            Arc::clone(&runtime),
-            remote_fleet.clone(),
+            Arc::clone(&context),
         ));
         server = next;
     }
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(super) async fn run_local_server(
-    _paths: AppPaths,
-    _endpoint: iroh::Endpoint,
-    _runtime: Arc<NodeRuntime>,
-    _remote_fleet: RemoteFleet,
-) -> anyhow::Result<()> {
+pub(super) async fn run_local_server(_context: Arc<LocalContext>) -> anyhow::Result<()> {
     anyhow::bail!("local IPC is unsupported on this platform")
 }
 
@@ -281,26 +377,15 @@ where
 // Only the Unix listener hands a bare stream over; the Windows listener has
 // already consumed its first byte and uses the prefixed form.
 #[cfg(unix)]
-async fn serve_local_stream<S>(
-    stream: S,
-    paths: AppPaths,
-    endpoint: iroh::Endpoint,
-    runtime: Arc<NodeRuntime>,
-    remote_fleet: RemoteFleet,
-) where
+async fn serve_local_stream<S>(stream: S, context: Arc<LocalContext>)
+where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    serve_local_stream_prefixed(stream, Vec::new(), paths, endpoint, runtime, remote_fleet).await;
+    serve_local_stream_prefixed(stream, Vec::new(), context).await;
 }
 
-async fn serve_local_stream_prefixed<S>(
-    stream: S,
-    prefix: Vec<u8>,
-    paths: AppPaths,
-    endpoint: iroh::Endpoint,
-    runtime: Arc<NodeRuntime>,
-    remote_fleet: RemoteFleet,
-) where
+async fn serve_local_stream_prefixed<S>(stream: S, prefix: Vec<u8>, context: Arc<LocalContext>)
+where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (read, mut write) = tokio::io::split(stream);
@@ -314,7 +399,7 @@ async fn serve_local_stream_prefixed<S>(
             .take(MAX_LOCAL_REQUEST_BYTES),
     );
     let response = match read_local_request(&mut reader).await {
-        Ok(command) => handle_local(&paths, &endpoint, &runtime, &remote_fleet, command).await,
+        Ok(command) => handle_local(&context, command).await,
         Err(response) => response,
     };
     if let Ok(mut bytes) = serde_json::to_vec(&response) {
@@ -323,62 +408,28 @@ async fn serve_local_stream_prefixed<S>(
     }
 }
 
-async fn handle_local(
-    paths: &AppPaths,
-    endpoint: &iroh::Endpoint,
-    runtime: &Arc<NodeRuntime>,
-    remote_fleet: &RemoteFleet,
-    command: LocalCommand,
-) -> LocalResponse {
+async fn handle_local(context: &LocalContext, command: LocalCommand) -> LocalResponse {
+    let LocalContext {
+        paths,
+        endpoint,
+        runtime,
+        remote_fleet,
+        alert_rules,
+    } = context;
     match command {
         LocalCommand::Status | LocalCommand::Doctor => {
-            let relay_url = match load_config(paths) {
-                Ok(config) => config.relay_url,
-                Err(error) => return LocalResponse::failure(error),
-            };
-            let latest = runtime.latest.borrow().clone();
-            let health = runtime.health.read().await.clone();
-            let trend = runtime.trend.read().await.clone();
-            LocalResponse::success(StatusPayload {
-                node: runtime.info.clone(),
-                endpoint_id: endpoint.id().to_string(),
-                direct_addresses: endpoint
-                    .addr()
-                    .ip_addrs()
-                    .map(std::string::ToString::to_string)
-                    .collect(),
-                relay_url,
-                latest,
-                health,
-                trend,
-            })
+            match local_status(paths, endpoint, runtime).await {
+                Ok(local) => LocalResponse::success(local),
+                Err(error) => LocalResponse::failure(error),
+            }
         }
-        LocalCommand::FleetSnapshot => {
-            let relay_url = match load_config(paths) {
-                Ok(config) => config.relay_url,
-                Err(error) => return LocalResponse::failure(error),
-            };
-            let latest = runtime.latest.borrow().clone();
-            let health = runtime.health.read().await.clone();
-            let trend = runtime.trend.read().await.clone();
-            let local = StatusPayload {
-                node: runtime.info.clone(),
-                endpoint_id: endpoint.id().to_string(),
-                direct_addresses: endpoint
-                    .addr()
-                    .ip_addrs()
-                    .map(std::string::ToString::to_string)
-                    .collect(),
-                relay_url,
-                latest,
-                health,
-                trend,
-            };
-            LocalResponse::success(FleetPayload {
+        LocalCommand::FleetSnapshot => match local_status(paths, endpoint, runtime).await {
+            Ok(local) => LocalResponse::success(FleetPayload {
                 local,
                 remotes: remote_fleet.snapshots().await,
-            })
-        }
+            }),
+            Err(error) => LocalResponse::failure(error),
+        },
         LocalCommand::PairingCreate => create_pairing_bundle(paths, endpoint, runtime).await,
         LocalCommand::PairingImport { bundle } => {
             match remote_fleet.import_pairing(&bundle).await {
@@ -406,18 +457,18 @@ async fn handle_local(
             Ok(removed) => LocalResponse::success(serde_json::json!({ "revoked": removed })),
             Err(error) => LocalResponse::failure(error),
         },
-        LocalCommand::RelaySet { relay_url } => {
-            if let Err(error) = validate_relay_url(relay_url.as_deref()) {
+        LocalCommand::Alerts { alert } => handle_alerts(paths, alert_rules, alert),
+        LocalCommand::BindPortSet { bind_port } => {
+            if let Err(error) = validate_bind_port(bind_port) {
                 return LocalResponse::failure(error);
             }
-            // Preserve every other configured value. Rebuilding the struct
-            // from one field would silently discard the operator's alert
-            // thresholds on the next relay change.
+            // Preserve every other configured value for the same reason the
+            // relay setting does: one field must not discard the rest.
             let mut config = match load_config(paths) {
                 Ok(config) => config,
                 Err(error) => return LocalResponse::failure(error),
             };
-            config.relay_url = relay_url;
+            config.bind_port = bind_port;
             match save_config(paths, &config) {
                 Ok(()) => LocalResponse::success(serde_json::json!({
                     "saved": true,
@@ -426,7 +477,270 @@ async fn handle_local(
                 Err(error) => LocalResponse::failure(error),
             }
         }
+        LocalCommand::AdvertiseAddressAdd { address } => {
+            update_advertise_addresses(paths, &address, add_advertise_address)
+        }
+        LocalCommand::AdvertiseAddressRemove { address } => {
+            update_advertise_addresses(paths, &address, remove_advertise_address)
+        }
+        LocalCommand::AdvertiseAddressList => match load_config(paths) {
+            Ok(config) => LocalResponse::success(serde_json::json!({
+                "advertise_addresses": config.advertise_addresses
+            })),
+            Err(error) => LocalResponse::failure(error),
+        },
+        LocalCommand::RelaySet {
+            relay_url,
+            ca_certificate,
+        } => set_relay(paths, relay_url, ca_certificate),
     }
+}
+
+/// Apply one operator change to the relay and its trust anchor, and persist it.
+///
+/// The URL and the CA are one decision, so they are validated together and
+/// written together: clearing or replacing the relay clears or replaces the
+/// anchor with it, and a stale CA is never left trusting an authority for a
+/// relay nobody chose.
+///
+/// Everything is checked before anything is loaded or written. A CA that cannot
+/// anchor the relay would otherwise be stored as accepted and only surface at
+/// the next daemon start — by which time the working relay the operator already
+/// had would be gone.
+///
+/// Nothing is contacted. The URL is parsed and the CA file read from this
+/// machine's own filesystem; no name is resolved and no relay is dialled.
+///
+/// A restart is reported as required because the endpoint reads both values
+/// when it binds.
+fn set_relay(
+    paths: &AppPaths,
+    relay_url: Option<String>,
+    ca_certificate: Option<PathBuf>,
+) -> LocalResponse {
+    if let Err(error) = validate_relay_url(relay_url.as_deref()) {
+        return LocalResponse::failure(error);
+    }
+    if let Err(error) =
+        validate_relay_ca_certificate(relay_url.as_deref(), ca_certificate.as_deref())
+    {
+        return LocalResponse::failure(error);
+    }
+    // Preserve every other configured value. Rebuilding the struct from these
+    // fields would silently discard the operator's alert thresholds on the next
+    // relay change.
+    let mut config = match load_config(paths) {
+        Ok(config) => config,
+        Err(error) => return LocalResponse::failure(error),
+    };
+    config.relay_url = relay_url;
+    config.relay_ca_certificate = ca_certificate;
+    match save_config(paths, &config) {
+        Ok(()) => LocalResponse::success(serde_json::json!({
+            "saved": true,
+            "restart_required": true,
+            "relay_url": config.relay_url,
+            "relay_ca_certificate": config.relay_ca_certificate
+        })),
+        Err(error) => LocalResponse::failure(error),
+    }
+}
+
+/// The operator's entry for `id`, created empty if this is their first change
+/// to it. An override carrying only an id is a no-op, so an unused entry
+/// changes nothing.
+fn alert_entry<'a>(
+    config: &'a mut super::config::AgentConfig,
+    id: &str,
+) -> &'a mut rackio_core::AlertRuleConfig {
+    if let Some(index) = config.alerts.iter().position(|entry| entry.id == id) {
+        return &mut config.alerts[index];
+    }
+    config.alerts.push(rackio_core::AlertRuleConfig::new(id));
+    config
+        .alerts
+        .last_mut()
+        .unwrap_or_else(|| unreachable!("the entry was just pushed"))
+}
+
+fn alert_listing(config: &super::config::AgentConfig) -> LocalResponse {
+    match config.resolved_alert_rules() {
+        Ok(rules) => LocalResponse::success(serde_json::json!({
+            "alerts_enabled": config.alerts_enabled,
+            "rules": rules.into_iter().map(AlertRuleView::from).collect::<Vec<_>>(),
+        })),
+        Err(error) => LocalResponse::failure(error),
+    }
+}
+
+/// Apply a threshold change: validate, persist, then publish to the running
+/// sampler.
+///
+/// Validation happens before the file is written, so a rejected change leaves
+/// both the configuration and the running rules exactly as they were — a
+/// daemon that refused to start on its own saved configuration would be a
+/// machine an operator silenced by accident.
+fn update_alerts(
+    paths: &AppPaths,
+    alert_rules: &watch::Sender<Vec<rackio_core::AlertRule>>,
+    change: impl FnOnce(&mut super::config::AgentConfig),
+) -> LocalResponse {
+    let mut config = match load_config(paths) {
+        Ok(config) => config,
+        Err(error) => return LocalResponse::failure(error),
+    };
+    change(&mut config);
+    let effective = match config.alert_rules() {
+        Ok(rules) => rules,
+        Err(error) => return LocalResponse::failure(error),
+    };
+    if let Err(error) = save_config(paths, &config) {
+        return LocalResponse::failure(error);
+    }
+    if alert_rules.send(effective).is_err() {
+        // The sampler is gone, so the saved rules are not the running ones.
+        // Reporting success here would tell an operator their machine is
+        // watching a threshold that nothing is evaluating.
+        return LocalResponse::failure(
+            "thresholds were saved but the sampler is not running; restart the daemon",
+        );
+    }
+    tracing::info!(
+        rules = alert_rules.borrow().len(),
+        alerts_enabled = config.alerts_enabled,
+        "local health thresholds changed"
+    );
+    alert_listing(&config)
+}
+
+fn handle_alerts(
+    paths: &AppPaths,
+    alert_rules: &watch::Sender<Vec<rackio_core::AlertRule>>,
+    command: AlertCommand,
+) -> LocalResponse {
+    match command {
+        AlertCommand::List => match load_config(paths) {
+            Ok(config) => alert_listing(&config),
+            Err(error) => LocalResponse::failure(error),
+        },
+        AlertCommand::Set {
+            id,
+            metric,
+            comparison,
+            threshold,
+            consecutive_samples,
+            severity,
+        } => update_alerts(paths, alert_rules, |config| {
+            let entry = alert_entry(config, &id);
+            // Absent means "leave as is": an operator raising a threshold must
+            // not silently reset the sample window along with it.
+            if metric.is_some() {
+                entry.metric = metric;
+            }
+            if comparison.is_some() {
+                entry.comparison = comparison;
+            }
+            if threshold.is_some() {
+                entry.threshold = threshold;
+            }
+            if consecutive_samples.is_some() {
+                entry.consecutive_samples = consecutive_samples;
+            }
+            if severity.is_some() {
+                entry.severity = severity;
+            }
+        }),
+        AlertCommand::RuleEnabled { id, enabled } => update_alerts(paths, alert_rules, |config| {
+            alert_entry(config, &id).enabled = Some(enabled);
+        }),
+        AlertCommand::Reset { id } => update_alerts(paths, alert_rules, |config| match id {
+            Some(id) => config.alerts.retain(|entry| entry.id != id),
+            None => config.alerts.clear(),
+        }),
+        AlertCommand::Enabled { enabled } => update_alerts(paths, alert_rules, |config| {
+            config.alerts_enabled = enabled;
+        }),
+    }
+}
+
+/// Apply one operator change to the advertised addresses and persist it.
+///
+/// The address is parsed and the change applied entirely locally: nothing is
+/// resolved, probed or connected to. An address that turns out to be wrong is
+/// an ordinary unreachable candidate and surfaces as the existing
+/// unreachable-machine state, never as a silent correction.
+///
+/// A restart is reported as required because the endpoint reads these
+/// addresses when it binds: until then the change reaches new pairing bundles
+/// but not `status.direct_addresses` and not path selection.
+fn update_advertise_addresses(
+    paths: &AppPaths,
+    address: &str,
+    update: fn(&mut Vec<SocketAddr>, SocketAddr) -> Result<(), String>,
+) -> LocalResponse {
+    let address = match parse_advertise_address(address) {
+        Ok(address) => address,
+        Err(error) => return LocalResponse::failure(error),
+    };
+    // Preserve every other configured value, for the same reason the relay and
+    // listen-port commands do.
+    let mut config = match load_config(paths) {
+        Ok(config) => config,
+        Err(error) => return LocalResponse::failure(error),
+    };
+    if let Err(error) = update(&mut config.advertise_addresses, address) {
+        return LocalResponse::failure(error);
+    }
+    match save_config(paths, &config) {
+        Ok(()) => LocalResponse::success(serde_json::json!({
+            "saved": true,
+            "restart_required": true,
+            "advertise_addresses": config.advertise_addresses
+        })),
+        Err(error) => LocalResponse::failure(error),
+    }
+}
+
+/// The direct candidates a pairing bundle carries: the addresses this machine
+/// observes on its own interfaces, then the operator-configured ones it cannot
+/// observe, such as a router's forwarded address.
+///
+/// Order is stable and duplicates are dropped, so a machine whose forwarded
+/// address happens to match an interface address is offered once.
+fn bundle_direct_addresses(observed: &[SocketAddr], advertised: &[SocketAddr]) -> Vec<SocketAddr> {
+    let mut addresses: Vec<SocketAddr> = Vec::with_capacity(observed.len() + advertised.len());
+    for address in observed.iter().chain(advertised.iter()) {
+        if !addresses.contains(address) {
+            addresses.push(*address);
+        }
+    }
+    addresses
+}
+
+async fn local_status(
+    paths: &AppPaths,
+    endpoint: &iroh::Endpoint,
+    runtime: &Arc<NodeRuntime>,
+) -> anyhow::Result<StatusPayload> {
+    let config = load_config(paths)?;
+    // Read the watch channel into an owned value before the first await: its
+    // guard is not `Send`, and holding it across one makes this whole task
+    // unspawnable.
+    let latest = runtime.latest.borrow().clone();
+    Ok(StatusPayload {
+        node: runtime.info.clone(),
+        endpoint_id: endpoint.id().to_string(),
+        direct_addresses: endpoint
+            .addr()
+            .ip_addrs()
+            .map(std::string::ToString::to_string)
+            .collect(),
+        relay_url: config.relay_url,
+        bind_port: config.bind_port,
+        latest,
+        health: runtime.health.read().await.clone(),
+        trend: runtime.trend.read().await.clone(),
+    })
 }
 
 async fn create_pairing_bundle(
@@ -434,11 +748,13 @@ async fn create_pairing_bundle(
     endpoint: &iroh::Endpoint,
     runtime: &Arc<NodeRuntime>,
 ) -> LocalResponse {
-    let addresses = endpoint.addr().ip_addrs().copied().collect();
-    let relay_urls = match load_config(paths) {
-        Ok(config) => config.relay_url.into_iter().collect(),
+    let config = match load_config(paths) {
+        Ok(config) => config,
         Err(error) => return LocalResponse::failure(error),
     };
+    let observed: Vec<SocketAddr> = endpoint.addr().ip_addrs().copied().collect();
+    let addresses = bundle_direct_addresses(&observed, &config.advertise_addresses);
+    let relay_urls = config.relay_url.into_iter().collect();
     let encoded = match runtime.pairing.lock() {
         Ok(mut pairing) => {
             let bundle = pairing.open(runtime.info.node_id, endpoint.id(), addresses, relay_urls);
@@ -542,18 +858,40 @@ pub async fn request_local(
 
 #[cfg(unix)]
 fn local_socket_candidates(paths: &AppPaths, explicit: bool) -> Vec<PathBuf> {
+    #[cfg(target_os = "linux")]
+    let user_runtime_socket = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .map(|runtime_dir| runtime_dir.join("rackio/agent.sock"));
+    #[cfg(not(target_os = "linux"))]
+    let user_runtime_socket = None;
+
+    local_socket_candidates_with_runtime_socket(paths, explicit, user_runtime_socket)
+}
+
+#[cfg(unix)]
+fn local_socket_candidates_with_runtime_socket(
+    paths: &AppPaths,
+    explicit: bool,
+    user_runtime_socket: Option<PathBuf>,
+) -> Vec<PathBuf> {
     if explicit {
         return vec![paths.local_socket.clone()];
     }
     let mut candidates = Vec::new();
-    // Installed services use a machine-wide socket; developer daemons retain
-    // their per-user socket as a fallback.
+    // Installed services use a machine-wide socket. A user-level systemd
+    // service uses XDG_RUNTIME_DIR, while developer daemons retain their
+    // per-user state socket as a fallback.
     #[cfg(target_os = "linux")]
     candidates.push(PathBuf::from("/run/rackio/agent.sock"));
     #[cfg(target_os = "macos")]
     candidates.push(PathBuf::from(
         "/Library/Application Support/Rackio/run/agent.sock",
     ));
+    if let Some(user_runtime_socket) = user_runtime_socket.filter(|socket| socket.is_absolute())
+        && !candidates.contains(&user_runtime_socket)
+    {
+        candidates.push(user_runtime_socket);
+    }
     if !candidates.contains(&paths.local_socket) {
         candidates.push(paths.local_socket.clone());
     }
@@ -592,7 +930,66 @@ mod tests {
     #[cfg(unix)]
     use std::path::PathBuf;
 
-    use super::{MAX_LOCAL_REQUEST_BYTES, read_local_request};
+    use std::net::SocketAddr;
+
+    use super::{MAX_LOCAL_REQUEST_BYTES, bundle_direct_addresses, read_local_request};
+
+    fn address(value: &str) -> SocketAddr {
+        value.parse().unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    #[test]
+    fn a_bundle_offers_interface_and_advertised_addresses_once_each() {
+        let observed = [address("192.168.102.10:41641"), address("10.0.0.4:41641")];
+        // The operator configured the router's forwarded address and, by
+        // mistake, one address the machine already observes.
+        let advertised = [
+            address("198.51.100.7:41641"),
+            address("192.168.102.10:41641"),
+        ];
+
+        let addresses = bundle_direct_addresses(&observed, &advertised);
+
+        assert_eq!(
+            addresses,
+            vec![
+                address("192.168.102.10:41641"),
+                address("10.0.0.4:41641"),
+                address("198.51.100.7:41641"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_address_the_endpoint_already_publishes_is_still_offered_once() {
+        // The configured addresses reach the endpoint as external addresses,
+        // so the endpoint's own advertised set contains them too. The overlap
+        // is now the normal case rather than an operator mistake, and the
+        // bundle must not list the same candidate twice because of it.
+        let observed = [
+            address("192.168.102.10:41641"),
+            address("198.51.100.7:41641"),
+        ];
+        let advertised = [address("198.51.100.7:41641")];
+
+        assert_eq!(
+            bundle_direct_addresses(&observed, &advertised),
+            vec![
+                address("192.168.102.10:41641"),
+                address("198.51.100.7:41641"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bundle_without_advertised_addresses_is_unchanged() {
+        let observed = [address("192.168.102.10:41641")];
+
+        assert_eq!(
+            bundle_direct_addresses(&observed, &[]),
+            vec![address("192.168.102.10:41641")]
+        );
+    }
 
     async fn read_request(payload: &[u8]) -> Result<super::LocalCommand, super::LocalResponse> {
         let mut reader = tokio::io::BufReader::new(tokio::io::AsyncReadExt::take(
@@ -600,6 +997,167 @@ mod tests {
             MAX_LOCAL_REQUEST_BYTES,
         ));
         read_local_request(&mut reader).await
+    }
+
+    fn context_paths(root: &std::path::Path) -> super::AppPaths {
+        super::AppPaths {
+            config: root.join("config"),
+            data: root.join("data"),
+            state: root.join("state"),
+            log: root.join("log"),
+            #[cfg(unix)]
+            local_socket: root.join("agent.sock"),
+        }
+    }
+
+    fn rule_named<'a>(
+        response: &'a super::LocalResponse,
+        id: &str,
+    ) -> &'a serde_json::Map<String, serde_json::Value> {
+        response
+            .data
+            .as_ref()
+            .and_then(|data| data.get("rules"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|rules| {
+                rules.iter().find_map(|rule| {
+                    let rule = rule.as_object()?;
+                    (rule.get("id")?.as_str()? == id).then_some(rule)
+                })
+            })
+            .unwrap_or_else(|| panic!("{id} is missing from {response:?}"))
+    }
+
+    #[test]
+    fn a_threshold_change_is_saved_and_handed_to_the_running_sampler() {
+        // Thresholds are changed while watching a machine misbehave. A change
+        // that only lands in a file the sampler already read would leave the
+        // operator watching a level nothing is evaluating.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = context_paths(directory.path());
+        let (rules, _receiver) = super::watch::channel(Vec::new());
+
+        let response = super::handle_alerts(
+            &paths,
+            &rules,
+            super::AlertCommand::Set {
+                id: String::from("disk-capacity-warning"),
+                metric: None,
+                comparison: None,
+                threshold: Some(80.0),
+                consecutive_samples: None,
+                severity: None,
+            },
+        );
+
+        assert!(response.ok, "{response:?}");
+        assert_eq!(
+            rule_named(&response, "disk-capacity-warning").get("threshold"),
+            Some(&serde_json::json!(80.0))
+        );
+        let running = rules.borrow();
+        let applied = running
+            .iter()
+            .find(|rule| rule.id == "disk-capacity-warning")
+            .unwrap_or_else(|| panic!("the sampler did not receive the rule"));
+        assert!((applied.threshold - 80.0).abs() < f64::EPSILON);
+        // Only the change is persisted, so later releases still reach the
+        // levels this operator never touched.
+        let saved = std::fs::read_to_string(paths.config.join("config.json"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(saved.contains("disk-capacity-warning"), "{saved}");
+        assert!(!saved.contains("disk-capacity-critical"), "{saved}");
+    }
+
+    #[test]
+    fn a_rejected_change_leaves_both_the_file_and_the_running_rules_alone() {
+        // Saving first and validating later would let one bad command wedge the
+        // daemon out of starting, silencing the machine.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = context_paths(directory.path());
+        let (rules, _receiver) = super::watch::channel(Vec::new());
+
+        let response = super::handle_alerts(
+            &paths,
+            &rules,
+            super::AlertCommand::Set {
+                id: String::from("disk-capacity-warning"),
+                metric: Some(String::from("gpu_percent")),
+                comparison: None,
+                threshold: None,
+                consecutive_samples: None,
+                severity: None,
+            },
+        );
+
+        assert!(!response.ok);
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("gpu_percent")),
+            "{response:?}"
+        );
+        assert!(rules.borrow().is_empty(), "nothing may reach the sampler");
+        assert!(!paths.config.join("config.json").exists());
+    }
+
+    #[test]
+    fn switching_alerting_off_hands_the_sampler_an_empty_rule_set() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = context_paths(directory.path());
+        let (rules, _receiver) = super::watch::channel(rackio_core::default_alert_rules());
+
+        let off = super::handle_alerts(
+            &paths,
+            &rules,
+            super::AlertCommand::Enabled { enabled: false },
+        );
+
+        assert!(off.ok, "{off:?}");
+        assert!(rules.borrow().is_empty());
+        // The rules stay listed, or an operator could not turn them back on.
+        assert!(
+            rule_named(&off, "disk-capacity-warning")
+                .get("enabled")
+                .is_some()
+        );
+
+        let on = super::handle_alerts(
+            &paths,
+            &rules,
+            super::AlertCommand::Enabled { enabled: true },
+        );
+        assert!(on.ok, "{on:?}");
+        assert_eq!(
+            rules.borrow().len(),
+            rackio_core::default_alert_rules().len()
+        );
+    }
+
+    #[test]
+    fn a_change_that_cannot_reach_the_sampler_is_not_reported_as_applied() {
+        // The sampler task is gone: the file now says something the machine is
+        // not doing, and the operator has to hear that.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = context_paths(directory.path());
+        let (rules, receiver) = super::watch::channel(Vec::new());
+        drop(receiver);
+
+        let response = super::handle_alerts(
+            &paths,
+            &rules,
+            super::AlertCommand::Enabled { enabled: false },
+        );
+
+        assert!(!response.ok);
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("restart")),
+            "{response:?}"
+        );
     }
 
     #[tokio::test]
@@ -636,6 +1194,8 @@ mod tests {
         assert!(!response.ok);
     }
 
+    #[cfg(target_os = "linux")]
+    use super::local_socket_candidates_with_runtime_socket;
     #[cfg(unix)]
     use super::{AppPaths, local_socket_candidates};
 
@@ -656,5 +1216,80 @@ mod tests {
         let candidates = local_socket_candidates(&paths, true);
 
         assert_eq!(candidates, vec![explicit]);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn discovers_a_user_systemd_socket_before_the_state_socket() {
+        let paths = AppPaths {
+            config: PathBuf::from("/unused/config"),
+            data: PathBuf::from("/unused/data"),
+            state: PathBuf::from("/unused/state"),
+            log: PathBuf::from("/unused/log"),
+            local_socket: PathBuf::from("/home/genm/.local/state/rackio/agent.sock"),
+        };
+        let user_runtime_socket = PathBuf::from("/run/user/1000/rackio/agent.sock");
+
+        let candidates = local_socket_candidates_with_runtime_socket(
+            &paths,
+            false,
+            Some(user_runtime_socket.clone()),
+        );
+
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from("/run/rackio/agent.sock"),
+                user_runtime_socket,
+                paths.local_socket,
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn does_not_duplicate_a_user_runtime_socket_used_as_the_state_socket() {
+        let user_runtime_socket = PathBuf::from("/run/user/1000/rackio/agent.sock");
+        let paths = AppPaths {
+            config: PathBuf::from("/unused/config"),
+            data: PathBuf::from("/unused/data"),
+            state: PathBuf::from("/unused/state"),
+            log: PathBuf::from("/unused/log"),
+            local_socket: user_runtime_socket.clone(),
+        };
+
+        let candidates = local_socket_candidates_with_runtime_socket(
+            &paths,
+            false,
+            Some(user_runtime_socket.clone()),
+        );
+
+        assert_eq!(
+            candidates,
+            vec![PathBuf::from("/run/rackio/agent.sock"), user_runtime_socket]
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn ignores_a_relative_user_runtime_socket() {
+        let paths = AppPaths {
+            config: PathBuf::from("/unused/config"),
+            data: PathBuf::from("/unused/data"),
+            state: PathBuf::from("/unused/state"),
+            log: PathBuf::from("/unused/log"),
+            local_socket: PathBuf::from("/home/genm/.local/state/rackio/agent.sock"),
+        };
+
+        let candidates = local_socket_candidates_with_runtime_socket(
+            &paths,
+            false,
+            Some(PathBuf::from("relative/runtime")),
+        );
+
+        assert_eq!(
+            candidates,
+            vec![PathBuf::from("/run/rackio/agent.sock"), paths.local_socket,]
+        );
     }
 }

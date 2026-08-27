@@ -19,12 +19,12 @@ use tokio::sync::{RwLock, watch};
 use uuid::Uuid;
 
 use crate::remote::RemoteFleet;
-use config::{create_directories, init_logging, load_config, load_or_create_node_id};
-use local_ipc::run_local_server;
+use config::{AgentConfig, create_directories, init_logging, load_config, load_or_create_node_id};
+use local_ipc::{LocalContext, run_local_server};
 use sampling::sample_loop;
 
 pub use config::{AppPaths, app_paths};
-pub use local_ipc::{LocalCommand, LocalResponse, request_local};
+pub use local_ipc::{AlertCommand, LocalCommand, LocalResponse, request_local};
 
 const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 /// How far back a restart reads to refill the local trend. Generous enough to
@@ -51,6 +51,25 @@ async fn shutdown_signal() -> anyhow::Result<()> {
     }
 }
 
+/// The rules the sampler starts with.
+///
+/// Fails closed: a machine that cannot resolve its thresholds would run
+/// silently, which reads exactly like a healthy one. The effective rules are
+/// logged because "why did this machine never warn me?" is answerable only if
+/// what the daemon actually runs is on the record.
+fn load_alert_rules(config: &AgentConfig) -> anyhow::Result<Vec<rackio_core::AlertRule>> {
+    let rules = config
+        .alert_rules()
+        .map_err(|error| anyhow!("local health thresholds are unusable: {error}"))?;
+    tracing::info!(
+        rules = ?rules.iter().map(|rule| rule.id.as_str()).collect::<Vec<_>>(),
+        alerts_enabled = config.alerts_enabled,
+        overrides = config.alerts.len(),
+        "local health thresholds loaded"
+    );
+    Ok(rules)
+}
+
 pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     create_directories(&paths)?;
     init_logging(&paths)?;
@@ -61,6 +80,9 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         secret,
         &EndpointConfig {
             relay_urls: config.relay_url.clone().into_iter().collect(),
+            bind_port: config.bind_port,
+            advertise_addresses: config.advertise_addresses.clone(),
+            relay_ca_certificate: config.relay_ca_certificate.clone(),
         },
     )
     .await?;
@@ -72,22 +94,7 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     let info = node_info(node_id, collector.capabilities());
     let (latest_tx, latest_rx) = watch::channel(None);
     let store = MetricStore::open(paths.data.join("metrics.sqlite3"))?;
-    // Resume this machine's own trend from storage. Without it a restart shows
-    // a blank chart for the local machine while every remote keeps the window
-    // its registry persisted. A failed read degrades to an empty window — the
-    // chart then says it is collecting, which is true.
-    let seed_now_ms = rackio_core::Clock::new().now_ms();
-    let trend = match store.query(
-        seed_now_ms.saturating_sub(LOCAL_TREND_SEED_MS),
-        seed_now_ms,
-        HistoryResolution::Raw,
-    ) {
-        Ok(samples) => rackio_core::TrendWindow::from_samples(&samples),
-        Err(error) => {
-            tracing::warn!(error = %error, "local trend could not be resumed from storage");
-            rackio_core::TrendWindow::default()
-        }
-    };
+    let trend = resume_local_trend(&store);
     let runtime = Arc::new(NodeRuntime {
         info,
         health: RwLock::new(healthy()),
@@ -107,24 +114,34 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     tracing::info!(
         endpoint_id = %endpoint.id(),
         relay_mode = if config.relay_url.is_some() { "self_hosted" } else { "direct_only" },
+        // Which anchor verifies the relay, not the anchor itself: the
+        // certificate is not a secret, but a log line is no place for a PEM.
+        relay_trust_anchor = if config.relay_ca_certificate.is_some() { "pinned_ca" } else { "webpki" },
+        listen_port = listen_port_label(config.bind_port),
         "agent started"
     );
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let alert_rules = load_alert_rules(&config)?;
+    // Thresholds are the one setting an operator changes while watching a
+    // machine misbehave, so `rackio alerts` applies them to the running sampler
+    // instead of asking for a restart that would blind every paired viewer.
+    let (alert_rules_tx, alert_rules_rx) = watch::channel(alert_rules);
     let mut sampler = tokio::spawn(sample_loop(
         Arc::clone(&runtime),
         collector,
-        config.alerts.clone(),
+        alert_rules_rx,
         latest_tx,
         shutdown_rx,
     ));
     let mut remote = tokio::spawn(server.run());
-    let mut local = tokio::spawn(run_local_server(
+    let mut local = tokio::spawn(run_local_server(LocalContext::new(
         paths.clone(),
         endpoint.clone(),
         runtime,
         remote_fleet,
-    ));
+        alert_rules_tx,
+    )));
 
     // Polling a `JoinHandle` that already resolved panics, so remember whether
     // the sampler is the branch that ended the select.
@@ -165,6 +182,32 @@ pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
         tracing::info!("agent stopped");
     }
     result
+}
+
+/// Resume this machine's own trend from storage. Without it a restart shows a
+/// blank chart for the local machine while every remote keeps the window its
+/// registry persisted. A failed read degrades to an empty window — the chart
+/// then says it is collecting, which is true.
+fn resume_local_trend(store: &MetricStore) -> rackio_core::TrendWindow {
+    let seed_now_ms = rackio_core::Clock::new().now_ms();
+    match store.query(
+        seed_now_ms.saturating_sub(LOCAL_TREND_SEED_MS),
+        seed_now_ms,
+        HistoryResolution::Raw,
+    ) {
+        Ok(samples) => rackio_core::TrendWindow::from_samples(&samples),
+        Err(error) => {
+            tracing::warn!(error = %error, "local trend could not be resumed from storage");
+            rackio_core::TrendWindow::default()
+        }
+    }
+}
+
+/// Describe the configured listen port for the startup log. An ephemeral port
+/// is named as such: it is the difference between a restart that already paired
+/// viewers survive and one that strands them.
+fn listen_port_label(bind_port: Option<u16>) -> String {
+    bind_port.map_or_else(|| String::from("ephemeral"), |port| port.to_string())
 }
 
 /// Build the advertised node information from what this host can actually

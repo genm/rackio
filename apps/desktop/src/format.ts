@@ -19,6 +19,27 @@ export function shortDuration(seconds: number): string {
   return `${Math.round(seconds / 60)} min`;
 }
 
+/**
+ * How long a machine has been up, e.g. "12d 4h", "3h 20m", "45s".
+ *
+ * Two units at most: an operator reads uptime to tell a machine that recovered
+ * from one that never restarted, and seconds of precision on a twelve-day
+ * uptime serves neither. An unknown uptime is an em dash — the agent withholds
+ * the wire's non-optional zero precisely so this cannot render as "0s" on a
+ * machine that never reported one.
+ */
+export function uptime(seconds?: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—";
+  const whole = Math.floor(seconds);
+  const days = Math.floor(whole / 86_400);
+  const hours = Math.floor((whole % 86_400) / 3_600);
+  const minutes = Math.floor((whole % 3_600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${whole}s`;
+}
+
 /** Wall-clock label for a history axis, e.g. "09:30". */
 export function timeOfDay(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, {

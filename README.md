@@ -39,6 +39,9 @@ are defined in [`SUPPORT.md`](SUPPORT.md) and [`GOVERNANCE.md`](GOVERNANCE.md).
 
 - CPU, memory, swap, disk, network rate, hottest-sensor temperature, uptime,
   OS and architecture collection
+- built-in disk, memory, CPU and hardware-relative temperature alert levels,
+  retunable per rule with `rackio alerts` while the daemon runs, with OS
+  notifications that name what crossed
 - 2-second live sampling, 10-second SQLite WAL batches, 24-hour raw and 7-day
   minute history, capped at 64 MiB
 - iroh QUIC/TLS 1.3 transport with pinned endpoint identities

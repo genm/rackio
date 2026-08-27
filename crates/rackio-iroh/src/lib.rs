@@ -12,8 +12,9 @@ pub use pairing::{
 };
 pub use server::{NodeRuntime, RemoteServer, ServerError};
 pub use transport::{
-    ClientConnection, ConnectionDetails, EndpointConfig, ResponseStream, TransportError,
-    bind_endpoint, classify_connection,
+    ClientConnection, ConnectionDetails, EndpointConfig, RelayCaError, ResponseStream,
+    TransportError, bind_endpoint, classify_connection, observed_direct_addresses,
+    validate_relay_ca_certificate,
 };
 
 pub use rackio_protocol::ALPN;

@@ -2,11 +2,18 @@ import { bytesPerSecond } from "./format";
 import type { TrendPoint } from "./types";
 
 /**
- * Every periodically displayed metric is a trend metric — a number the UI
- * shows on a cadence must also be plottable, without exception. Adding a tile
- * to the card means adding an entry here, never a static tile.
+ * Every periodically *sampled* quantity is a trend metric — a level the UI
+ * shows on a cadence must also be plottable, without exception. Adding a
+ * metric tile to the card means adding an entry here, never a static tile.
+ *
+ * The rule is about sampled quantities, and that carves out one case rather
+ * than being broken by it: uptime is a card field, not a series. It is not
+ * sampled — it is a rendering of one fixed instant, the boot time — so a chart
+ * of it would draw the clock as a straight ramp and say nothing the single
+ * number does not. Anything the machine actually re-measures each cycle
+ * belongs here.
  */
-export type TrendMetric = "cpu" | "memory" | "disk" | "temp" | "network" | "rtt";
+export type TrendMetric = "cpu" | "memory" | "swap" | "disk" | "temp" | "network" | "rtt";
 
 export type TrendScaleKind = "percent" | "celsius" | "milliseconds" | "bytesPerSecond";
 
@@ -42,6 +49,15 @@ export const trendMetricRegistry: Record<
     series: [
       { name: "Memory", read: (point) => ratio(point.memoryUsedBytes, point.memoryTotalBytes) },
     ],
+  },
+  swap: {
+    label: "Swap",
+    chartTitle: "Swap usage",
+    scale: "percent",
+    // A machine with swap disabled reports a zero total, and `ratio` reads
+    // that as unreadable rather than as 0 %: the chart says the machine has no
+    // swap to plot instead of drawing a flat, healthy-looking floor.
+    series: [{ name: "Swap", read: (point) => ratio(point.swapUsedBytes, point.swapTotalBytes) }],
   },
   disk: {
     label: "Disk",
