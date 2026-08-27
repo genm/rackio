@@ -162,6 +162,19 @@ the artifact scan above guards against regression.
         streams metrics between them and writes
         `test-results/resource-benchmark-active-peer.json`. The
         `idle_direct_only` profile does not cover network traffic
+  - CPU is gated on `cpu_measurement.window_cpu_percent`, a delta of the
+    process's own cumulative CPU time over the sampling window.
+    `average_cpu_percent` (`ps -o %cpu`) is still in the report for
+    continuity with older evidence, but does not gate: on macOS it is a
+    process-lifetime average dominated by startup and was measured to move
+    twenty-fold (1.250% to 0.060%) from warm-up length alone while the
+    window figure held steady. See `scripts/benchmark-agent-resources.sh`.
+  - only verified on macOS. `window_cpu_percent` reads the same `cputime`
+    field on GNU/Linux `ps`, so the Linux run is expected to gate the same
+    way, but this has not been checked on a Linux host. The script needs
+    bash, `ps`, `awk` and `jq`, none of which Windows ships natively; the
+    Windows leg of "each supported OS" needs its own measurement path
+    before this row can be checked off there
 - [ ] normal traffic below 2 KiB/s per active peer
   - measured by the `active_peer` profile as
     `traffic.bytes_per_second_per_active_peer`. The report names the method it
