@@ -145,7 +145,11 @@ Scenarios:
 - UDP blocked;
 - relay absent, stopped, and restarted;
 - direct-to-relay and relay-to-direct migration;
-- address change and stale address.
+- address change and stale address, in both direct-only and configured-relay
+  mode. The direct-only address-change recovery and failure paths are covered by
+  `scripts/test-two-daemon-address-change.sh`; this matrix still owns the
+  relay-mode case, where a viewer reconnects through the relay and refreshes the
+  peer's direct address without re-pairing.
 
 Evidence required for every scenario:
 

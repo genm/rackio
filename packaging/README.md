@@ -78,7 +78,7 @@ must match it exactly:
 
 ```sh
 packaging/linux/package-release.sh \
-  target/release/rackio \
+  "${CARGO_TARGET_DIR:-target}/release/rackio" \
   <VERSION> \
   x86_64-unknown-linux-gnu
 ```
@@ -165,7 +165,7 @@ RACKIO_APPLICATION_IDENTITY="Developer ID Application: Example (TEAMID)" \
 RACKIO_INSTALLER_IDENTITY="Developer ID Installer: Example (TEAMID)" \
 RACKIO_NOTARY_PROFILE=rackio-notary \
   packaging/macos/package-release.sh \
-  target/aarch64-apple-darwin/release/rackio \
+  "${CARGO_TARGET_DIR:-target}/aarch64-apple-darwin/release/rackio" \
   0.1.0 \
   aarch64-apple-darwin
 ```

@@ -34,6 +34,13 @@ export interface TrendPoint {
   cpuPercent?: number | null;
   memoryUsedBytes?: number | null;
   memoryTotalBytes?: number | null;
+  /**
+   * Swap pressure at sample time. A machine with swap disabled reports a real
+   * zero total, which reads as "no swap device" rather than as 0 % — absent
+   * means the reading could not be taken at all.
+   */
+  swapUsedBytes?: number | null;
+  swapTotalBytes?: number | null;
   /** The fullest disk at sample time, chosen by the agent's domain rule. */
   diskUsedBytes?: number | null;
   diskTotalBytes?: number | null;
@@ -42,6 +49,17 @@ export interface TrendPoint {
   networkSentBytesPerSecond?: number | null;
   /** The viewer's own connection measurement; absent for the local machine. */
   rttMs?: number | null;
+}
+
+/**
+ * One mounted filesystem. A machine has several, and the headline disk figure
+ * is only the fullest of them; naming the mount is what makes an alert such as
+ * "Disk /data 93%" answerable in the viewer.
+ */
+export interface FilesystemUsage {
+  mount: string;
+  usedBytes: number;
+  totalBytes: number;
 }
 
 export interface FleetNode {
@@ -54,16 +72,33 @@ export interface FleetNode {
   cpuPercent?: number | null;
   memoryUsedBytes?: number | null;
   memoryTotalBytes?: number | null;
+  swapUsedBytes?: number | null;
+  swapTotalBytes?: number | null;
   diskUsedBytes?: number | null;
   diskTotalBytes?: number | null;
+  /** Which filesystem the headline disk figure belongs to. */
+  diskMount?: string | null;
+  /**
+   * Every filesystem the machine reported, fullest first. Empty when the
+   * machine reported none — never padded with a placeholder, which would read
+   * as an empty disk.
+   */
+  filesystems?: FilesystemUsage[];
   /** Absent or null on a machine with no readable sensor. */
   temperature?: TemperatureReading | null;
   networkReceivedBytesPerSecond?: number | null;
   networkSentBytesPerSecond?: number | null;
   rttMs?: number | null;
+  /**
+   * Seconds since the machine booted, absent when unknown. Not a trend point:
+   * see the carve-out in `trend-series.ts`. The agent withholds the wire's
+   * non-optional zero, which cannot be told apart from an unreported uptime.
+   */
+  uptimeSeconds?: number | null;
   lastSeenMs?: number;
   trend: TrendPoint[];
-  detail?: string;
+  /** The reporting machine's own explanation; absent or null when it has none. */
+  detail?: string | null;
 }
 
 export type HistoryPoint = TrendPoint;

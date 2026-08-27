@@ -19,11 +19,24 @@ just = "1.57.0"
 actionlint = "1.7.12"
 trivy = "0.72.0"
 
+[env]
+# One build directory for every checkout of this repository, rather than one
+# per checkout. A full `mise run check` leaves roughly 5 GB in `target/`, so a
+# handful of Git worktrees recompiles and re-stores the same dependency graph
+# several times over. It also covers the nested `fuzz/` workspace, which would
+# otherwise build the same graph a second time into `fuzz/target/`.
+#
+# The fallback chain resolves without `$HOME`, which Windows hosts do not set.
+# An explicit `CARGO_TARGET_DIR` still wins, so a caller that needs an isolated
+# build directory — `measure:desktop-build` does — can still ask for one.
+#
+# Cargo takes an exclusive lock on this directory, so builds started from two
+# worktrees at the same time run one after the other instead of in parallel.
+CARGO_TARGET_DIR = "{{ get_env(name='CARGO_TARGET_DIR', default=get_env(name='XDG_CACHE_HOME', default=get_env(name='HOME', default=get_env(name='LOCALAPPDATA', default='.')) ~ '/.cache') ~ '/rackio/target') }}"
+
 [tasks.check]
 description = "Run repository quality gates"
-# The fuzz crate is a nested workspace; sharing this target avoids compiling
-# the same Rust graph into both `target/` and `fuzz/target/` during one gate.
-env = { CARGO_INCREMENTAL = "0", CARGO_TARGET_DIR = "target", RUSTDOCFLAGS = "-D warnings" }
+env = { CARGO_INCREMENTAL = "0", RUSTDOCFLAGS = "-D warnings" }
 run = [
   "actionlint",
   "zizmor --no-progress .github/workflows/",
@@ -35,6 +48,7 @@ run = [
   "cargo check --manifest-path fuzz/Cargo.toml --all-targets",
   "scripts/test-two-daemon-cleanup.sh",
   "scripts/test-two-daemon-pairing.sh",
+  "scripts/test-two-daemon-address-change.sh",
   "packaging/linux/install.test.sh",
   "pnpm format:check",
   "pnpm typecheck",
@@ -75,15 +89,23 @@ run = "pnpm --filter @rackio/desktop dev"
 description = "Measure a clean desktop debug build and enforce its disk budget"
 run = "node scripts/measure-desktop-build.mjs"
 
+[tasks."test:nat-lab"]
+description = "Run the container NAT matrix and write per-scenario evidence to test-results/nat-matrix"
+# Deliberately absent from `tasks.check`: this builds a container image and runs
+# real daemons for minutes. It is opt-in release evidence, not a per-change gate.
+# Needs Docker with the compose plugin. Pass scenario ids to run a subset.
+run = "scripts/nat-lab/run.sh"
+
 [tasks."test:installer"]
 description = "Verify Linux release packaging, install, and checksum rejection"
 run = "packaging/linux/install.test.sh"
 
 [tasks."test:pairing"]
-description = "Verify two-daemon pairing, live metrics, reuse rejection, and reconnect"
+description = "Verify two-daemon pairing, live metrics, reuse rejection, reconnect, and address-change recovery"
 run = [
   "scripts/test-two-daemon-cleanup.sh",
   "scripts/test-two-daemon-pairing.sh",
+  "scripts/test-two-daemon-address-change.sh",
 ]
 
 [tasks."check:windows-cross"]
@@ -98,10 +120,17 @@ run = [
 ]
 
 [tasks."benchmark:agent"]
-description = "Enforce the release agent CPU and RSS budgets"
+description = "Enforce the release agent CPU and RSS budgets while idle and direct-only"
 run = [
   "cargo build --release -p rackio-agent",
   "scripts/benchmark-agent-resources.sh",
+]
+
+[tasks."benchmark:agent-active-peer"]
+description = "Enforce the release agent CPU, RSS and per-peer traffic budgets with a peer actively streaming"
+run = [
+  "cargo build --release -p rackio-agent",
+  "RACKIO_BENCHMARK_PROFILE=active_peer scripts/benchmark-agent-resources.sh",
 ]
 
 [tasks."licenses:check"]

@@ -4,7 +4,10 @@ mod collector;
 mod model;
 mod storage;
 
-pub use alert::{AlertEvaluator, AlertRule, AlertSignal, Comparison};
+pub use alert::{
+    ALERT_METRICS, AlertEvaluator, AlertRule, AlertRuleConfig, AlertRuleSource, AlertSignal,
+    Comparison, ResolvedAlertRule, default_alert_rules, resolve_alert_rules,
+};
 pub use clock::Clock;
 pub use collector::SystemCollector;
 pub use model::{

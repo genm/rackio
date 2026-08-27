@@ -173,6 +173,138 @@ sudo systemctl restart rackio.service
 not make the relay an identity authority and does not make a relayed path
 direct.
 
+### Reach a relay signed by an internal certificate authority
+
+The command above expects the relay to present a publicly trusted TLS
+certificate: the agent verifies it against a compiled-in WebPKI root set. A
+relay on an internal network usually cannot have one — no public authority
+issues for an internal-only name — while the organisation running that network
+usually does operate its own CA.
+
+Pin that CA on each monitored machine, alongside the relay URL:
+
+```sh
+sudo install -o root -g root -m 0644 relay-ca.pem /etc/rackio/relay-ca.pem
+sudo rackio relay set https://relay.internal.example.test \
+  --ca-certificate /etc/rackio/relay-ca.pem
+sudo systemctl restart rackio.service
+sudo rackio status   # the machine reaches the relay, or reports why it cannot
+```
+
+Points to get right:
+
+- **Supply the issuing authority's certificate**, PEM encoded — not the relay's
+  own certificate, not a private key. Include intermediates the relay does not
+  send; every `CERTIFICATE` block in the file is used, which is also how you
+  keep the old and new anchors valid across a CA rotation.
+- **Give an absolute path.** The daemon reads the file, from its own working
+  directory rather than your shell's, at every start.
+- **Make the relay's certificate match the URL.** Its Subject Alternative Name
+  must contain the exact host in the relay URL. Pinning the CA does not relax
+  hostname verification.
+- **Protect the file's integrity, not its secrecy.** A CA certificate is
+  public. Whoever can write this file chooses what the agent trusts for the
+  relay, so keep it root-owned and not writable by unprivileged users. The
+  trade this makes is stated in [`threat-model.md`](threat-model.md).
+
+The pin **replaces** the public root set for relay connections rather than
+adding to it, so a pinned relay is not also accepted on a publicly issued
+certificate.
+
+`rackio relay set` refuses a CA file that is missing, unreadable, or not a
+usable certificate authority, naming the file and the correction; the relay
+configuration you already had is left exactly as it was. If the file later
+becomes unusable the daemon refuses to start rather than falling back to the
+public root set — an unusable relay is visibly unusable, never a quietly
+widened trust anchor. The startup log records which anchor is in use as
+`relay_trust_anchor=pinned_ca` or `relay_trust_anchor=webpki`; the certificate
+itself is never logged.
+
+Setting up the relay side is described in
+[`../relay-package/README.md`](../relay-package/README.md).
+`sudo rackio relay set direct-only` clears the relay and its pinned CA
+together.
+
+## Keep a monitored machine reachable across restarts
+
+By default an agent listens on an ephemeral UDP port, which the OS reassigns on
+every restart. Viewers hold the direct addresses they were paired on, so a
+restarted machine that moves to another port is unreachable to them until it is
+paired again. On any machine other operators monitor over a direct path,
+configure a fixed listen port:
+
+```sh
+sudo rackio listen-port set 7777
+sudo systemctl restart rackio.service
+sudo rackio status   # `bind_port` and every direct address show the fixed port
+```
+
+The setting takes effect on the next start. If the port is already in use the
+daemon fails to start and says so; it never falls back to an ephemeral port,
+because that would silently strand the viewers this setting exists to protect.
+`sudo rackio listen-port set ephemeral` returns to an OS-assigned port.
+
+A viewer whose stored addresses stop answering reports the machine as `offline`
+with a message naming this command. It keeps the last known values and never
+reports the machine as healthy. Recovering means putting the machine back on an
+address the viewer knows — by restoring the port or forwarding rule — or pairing
+again; do not hand-edit `monitored-machines.json`.
+
+When a relay is configured, viewers also reconnect through the relay and learn
+the machine's current direct address from that authenticated session, so a
+direct path is restored without re-pairing.
+
+## Pair a machine behind NAT
+
+A machine behind a router only sees its own LAN addresses, so a bundle it
+creates carries `192.168.x.y:PORT` — an address no viewer outside that LAN can
+use. Rackio does not discover the router's external address: nothing is probed
+and no discovery service is contacted. Tell the agent the address you already
+know instead.
+
+On the monitored machine, fix the listen port, forward that same UDP port on the
+router to this machine, then advertise the forwarded address:
+
+```sh
+sudo rackio listen-port set 41641
+sudo systemctl restart rackio.service
+sudo rackio advertise-address add 198.51.100.7:41641   # the router's forwarded address
+sudo systemctl restart rackio.service
+sudo rackio advertise-address list
+sudo rackio pairing create
+```
+
+The bundle then carries the machine's own interface addresses *and* the
+advertised ones, so the same bundle pairs from inside the LAN and from outside
+it. Advertised addresses take effect for bundles created afterwards; already
+paired viewers keep the addresses they were given.
+
+The restart above is what hands the address to the endpoint itself, which is
+why `advertise-address add` and `remove` report `restart_required`. After it,
+`rackio status` lists the advertised address among its `direct_addresses` — the
+way to confirm from the machine that the setting took effect — and the address
+is a candidate for path selection, so a session that fell back to a relay can
+return to a direct path without waiting for the next connection. Up to eight
+addresses are
+kept — adding a ninth is refused, naming the address to remove first, rather
+than dropping one silently. `sudo rackio advertise-address remove
+198.51.100.7:41641` stops advertising one.
+
+Rackio stores the address exactly as given. It never resolves a hostname,
+probes the address, or asks anything on the internet to confirm it, so a typo or
+a forwarding rule that is not in place is not corrected: it behaves as an
+ordinary unreachable candidate, and the viewer reports the machine as `offline`
+with its recovery hint. Verify the forwarding rule on the router itself.
+
+Nothing here discovers an address for you. It works when the operator knows a
+stable UDP address for the machine — a forwarded port, or the address an
+endpoint-independent ("cone") NAT maps it to. With a self-hosted relay
+configured on both sides to carry the address exchange, two such machines can
+open a direct path between them without any port forward. A machine behind
+carrier-grade NAT or a symmetric NAT, whose mapped port changes per
+destination, has no stable address to advertise and is reached through the
+relay.
+
 ## SSH-assisted Linux bootstrap
 
 The desktop’s **Pair machine → SSH** path is for a trusted operator who already
@@ -185,6 +317,10 @@ normal P2P pairing path. The server does not download Rackio from the internet.
 Before using it, prepare:
 
 - a Linux systemd host with `x86_64` or `aarch64` architecture;
+- an SSH server listening on a reachable TCP port. The flow begins with
+  `ssh-keyscan`, which needs a real network endpoint: a host reached only
+  through a local `ProxyCommand` — as some container and VM managers provide —
+  cannot be bootstrapped this way, because there is no key to scan;
 - key or SSH-agent authentication (optionally choose a local identity file);
 - either `root` login or passwordless `sudo` for the SSH user;
 - the exact local `.tar.gz` release archive and its matching `.sha256` file;
@@ -205,6 +341,19 @@ configuration so later SSH/SCP calls stay pinned. If a connection drops before
 cleanup, inspect and remove only the matching `/tmp/rackio-bootstrap.*`
 directory on the target after confirming it belongs to this operation.
 
+An SSH bootstrap leaves the `rackio-viewers` group empty. The installer enrols
+the user it is told about — `RACKIO_VIEWER_USER`, or the invoking user — and
+over SSH it runs under `sudo`, so that user is `root` and no enrolment happens.
+That is correct for the case this path serves, where the machine is monitored
+from the desktop over P2P and nobody logs into it to read metrics locally. If an
+operator will also use the CLI on that server, add them afterwards:
+
+```sh
+sudo usermod --append --groups rackio-viewers <user>
+```
+
+Until then, `rackio status` on that server works only through `sudo`.
+
 SSH is solely the first-install transport. Once pairing succeeds, monitoring
 uses Rackio’s pinned-endpoint QUIC connection and follows the direct-first,
 self-hosted-relay-fallback policy. Do not interpret a successful SSH session as
@@ -216,46 +365,132 @@ actual P2P path separately.
 | UI state | Meaning | First operator action |
 | --- | --- | --- |
 | `healthy` | Fresh metrics and no active health warning | None |
-| `warning` / `critical` | A configured local health threshold was crossed | Open the machine detail and inspect the affected resource |
+| `warning` / `critical` | A local health threshold was crossed | Read the detail line on the card, which names the resource, its value and the threshold |
 | `stale` | No metric or heartbeat for 10 seconds | Check path, RTT and local agent logs; preserve last known values |
-| `offline` | No metric or heartbeat for 30 seconds | Check agent process, network reachability and relay availability if shown as relayed |
+| `offline` | No metric or heartbeat for 30 seconds | Check agent process, network reachability and relay availability if shown as relayed; if the machine restarted on a new port, give it a fixed listen port |
 | `auth_error` | The remote agent rejected this viewer | Confirm endpoint pairing and allowlist; do not retry with a reused bundle |
 | `incompatible` | Protocol major versions differ | Upgrade or roll back a machine to a compatible release |
 | `degraded` | A collector, storage, notification or local dependency failed | Read the displayed error and structured agent logs; values are not silently zeroed |
 
-### Configuring local health thresholds
+### Local health thresholds
 
-`warning` and `critical` are only reachable when an operator defines a
-threshold. Rackio ships none: it has no basis for deciding what CPU or disk
-level matters on a machine it knows nothing about. Add rules to the `alerts`
-array in the daemon's `config.json`:
+Rackio ships the levels that are generally worth acting on, so an untouched
+machine still reports trouble:
+
+| Rule | Condition | Sustained for | State |
+| --- | --- | --- | --- |
+| `disk-capacity-warning` | fullest filesystem at or above 90 % | 6 s | `warning` |
+| `disk-capacity-critical` | fullest filesystem at or above 95 % | 6 s | `critical` |
+| `memory-pressure-warning` | memory in use at or above 90 % | 1 min | `warning` |
+| `memory-pressure-critical` | memory in use at or above 97 % | 1 min | `critical` |
+| `cpu-saturation-warning` | CPU at or above 90 % | 5 min | `warning` |
+| `temperature-headroom-warning` | within 5 °C of the hardware's own limit | 30 s | `warning` |
+| `temperature-critical` | at or past the hardware's own limit | 30 s | `critical` |
+
+The sustained window is what separates a busy machine from one in trouble: a
+compile pins the CPU, a backup fills a cache, and neither should page anyone.
+Temperature is measured against the limit the hardware itself publishes, never
+a number Rackio picked — a machine whose OS publishes no limit resolves neither
+temperature rule instead of being judged against a guess. `disk_percent` is the
+fullest mounted filesystem, and every alert publishes a line naming what
+crossed, for example `Disk /data 93% is at or above the warning threshold of
+90%`, which is what the desktop shows on the card and sends in the OS
+notification.
+
+CPU saturation is the rule build, render and simulation machines most often
+switch off; that is what `rackio alerts disable` is for.
+
+#### Changing the levels
+
+```bash
+rackio alerts list
+```
+
+```bash
+sudo rackio alerts set disk-capacity-warning --threshold 80
+```
+
+`set` accepts `--threshold`, `--samples` (two-second samples in a row),
+`--severity warning|critical`, and — when defining a rule Rackio does not ship —
+`--metric` and `--comparison at-or-above|at-or-below`. Omitted options keep
+their current value, so retuning a level never restates the rest of the rule.
+
+| Command | Effect |
+| --- | --- |
+| `rackio alerts list` | every effective rule, with `built_in` or `configured` as its source |
+| `sudo rackio alerts set <id> …` | change one rule, or define a new one |
+| `sudo rackio alerts disable <id>` / `enable <id>` | switch one rule off or on without losing its level |
+| `sudo rackio alerts reset [<id>]` | drop changes to one rule, or to all of them |
+| `sudo rackio alerts off` / `on` | stop or resume evaluating thresholds on this machine |
+
+The reading command needs no privilege beyond viewer-group membership; the
+changing ones write the daemon's configuration and run as the daemon's owner,
+the same as `rackio relay set`.
+
+Changes apply to the running daemon immediately — no restart, and no gap in
+what paired viewers see. A change that cannot be applied is rejected before
+anything is written, and the reason is reported rather than saved.
+
+Turning alerting off silences only thresholds. `stale`, `offline`,
+`auth_error`, `incompatible` and `degraded` come from evidence rather than from
+a level, and are still reported.
+
+#### Metrics a rule may name
+
+`cpu_percent`, `memory_percent`, `swap_percent`, `disk_percent` and
+`temperature_headroom_celsius` (degrees remaining before the hardware's own
+limit). A rule naming anything else is rejected: a metric that never resolves
+would leave the machine silent in exactly the way a healthy one is. A source
+the host cannot read — no swap, no published sensor limit — leaves its rule
+inactive rather than reading as zero, and a rule whose metric becomes
+unreadable clears instead of staying latched. A degraded collector or storage
+subsystem still reports `degraded` in preference to a threshold state, because
+the underlying values are no longer trustworthy.
+
+The daemon's `config.json` is the same setting seen from the other side: an
+`alerts` array of partial overrides keyed by rule `id`, plus `alerts_enabled`.
+Overrides are merged over the shipped rules, so a machine that only ever
+retuned one level still receives later releases' defaults for the rest.
 
 ```json
 {
+  "alerts_enabled": true,
   "alerts": [
+    { "id": "disk-capacity-warning", "threshold": 80.0 },
+    { "id": "cpu-saturation-warning", "enabled": false },
     {
-      "id": "disk-critical",
-      "metric": "disk_percent",
+      "id": "swap-warning",
+      "metric": "swap_percent",
       "comparison": "greater_than_or_equal",
-      "threshold": 90.0,
-      "consecutive_samples": 3,
-      "severity": "critical"
+      "threshold": 50.0,
+      "consecutive_samples": 30,
+      "severity": "warning"
     }
   ]
 }
 ```
 
-`metric` accepts `cpu_percent`, `memory_percent`, `disk_percent` and
-`temperature_celsius` (`disk_percent` uses the fullest mounted filesystem, and
-`temperature_celsius` the hottest readable sensor). A machine whose
-`temperature` capability is `unsupported` never resolves a
-`temperature_celsius` rule, so the rule stays inactive there rather than
-reading as a cold machine. `consecutive_samples`
-requires that many two-second samples in a row before the state changes, which
-suppresses flapping. A rule whose metric becomes unreadable clears rather than
-staying latched, and a degraded collector or storage subsystem still reports
-`degraded` in preference to a threshold state, because the underlying values
-are no longer trustworthy. Restart the daemon after editing the file.
+Edit the file directly only while the daemon is stopped; a running daemon owns
+it, and `rackio alerts` is the interface that keeps the file and the running
+rules in step.
+
+#### Where a breach is visible
+
+The machine card shows the fullest filesystem; its disk tile names the mount,
+and **View history** opens a per-filesystem list of every mount the machine
+reported, fullest first. The tray submenu carries the same metrics as the card
+— CPU, memory, swap, the fullest filesystem by name, temperature, network rate
+and uptime — so the machine that raised an alert can be read without opening
+the window. A reading a machine cannot report is an em dash with no bar, never
+a zero.
+
+#### Notifications in the desktop
+
+Which state raises an OS notification, and whether notifications are sent at
+all, is the viewer's own setting: **Notify at** (Warning / Degraded / Critical /
+Offline) and the notifications toggle in the desktop header. It is stored per
+viewer, so one operator can watch at `warning` while another is paged only at
+`critical`, without changing what any machine evaluates.
 
 When storage is degraded, live sampling continues in memory but history may not
 persist. When a relay is unavailable, a direct peer may stay connected while a

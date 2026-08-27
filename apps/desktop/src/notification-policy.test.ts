@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { machineNotificationTransitions } from "./notification-policy";
 import type { FleetNode, NodeState, NotificationThreshold } from "./types";
 
-function machine(id: string, name: string, state: NodeState): FleetNode {
+function machine(id: string, name: string, state: NodeState, detail?: string | null): FleetNode {
   return {
     id,
     name,
@@ -11,6 +11,7 @@ function machine(id: string, name: string, state: NodeState): FleetNode {
     state,
     path: "lan_direct",
     trend: [],
+    detail,
   };
 }
 
@@ -94,6 +95,43 @@ describe("machine notification transitions", () => {
         body: "Web is Healthy again.",
       },
     ]);
+  });
+
+  it("carries the machine's own explanation into the alert body", () => {
+    // "Build Server is Warning" does not say which disk to clear. The detail
+    // the reporting machine published is the actionable half of the message.
+    expect(
+      machineNotificationTransitions(
+        new Map([["machine-1", "healthy"]]),
+        [
+          machine(
+            "machine-1",
+            "Build Server",
+            "warning",
+            "Disk /data 93% is at or above the warning threshold of 90%",
+          ),
+        ],
+        "warning",
+      ),
+    ).toEqual([
+      {
+        title: "Rackio · Build Server is Warning",
+        body: "Build Server changed from Healthy to Warning. Disk /data 93% is at or above the warning threshold of 90%",
+      },
+    ]);
+  });
+
+  it.each([undefined, null])("still announces a machine whose detail is %s", (detail) => {
+    // Offline and stale are derived from silence, so no detail exists to add,
+    // and the daemon sends `null` rather than omitting the field. Neither may
+    // reach the notification text.
+    expect(
+      machineNotificationTransitions(
+        new Map([["machine-1", "healthy"]]),
+        [machine("machine-1", "Build Server", "offline", detail)],
+        "warning",
+      )[0]?.body,
+    ).toBe("Build Server changed from Healthy to Offline.");
   });
 
   it("preserves the existing last-value rule for a duplicate machine id", () => {

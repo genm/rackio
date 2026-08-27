@@ -565,6 +565,11 @@ mod tests {
         runtime: Arc<NodeRuntime>,
         endpoint: iroh::Endpoint,
         server_task: tokio::task::JoinHandle<()>,
+        /// Closed when the accept loop returns. A server that stopped
+        /// accepting is a failure the harness can report immediately, instead
+        /// of every connecting test separately waiting out `REPLY_TIMEOUT`
+        /// until the whole suite looks hung rather than broken.
+        accepting: watch::Receiver<()>,
         latest_tx: watch::Sender<Option<MetricSample>>,
         /// Client endpoints outlive their connections. Dropping one as soon as
         /// its connection closes can discard the close frame before it is sent,
@@ -609,11 +614,16 @@ mod tests {
                 active_connections: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             });
             let server = RemoteServer::new(endpoint.clone(), Arc::clone(&runtime));
-            let server_task = tokio::spawn(server.run());
+            let (accepting_tx, accepting) = watch::channel(());
+            let server_task = tokio::spawn(async move {
+                server.run().await;
+                drop(accepting_tx);
+            });
             Self {
                 runtime,
                 endpoint,
                 server_task,
+                accepting,
                 latest_tx,
                 client_endpoints: std::sync::Mutex::new(Vec::new()),
                 _directory: directory,
@@ -647,13 +657,24 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|error| panic!("{error}"))
                 .push(client_endpoint.clone());
-            tokio::time::timeout(
-                REPLY_TIMEOUT,
-                ClientConnection::connect(client_endpoint, address),
-            )
-            .await
-            .unwrap_or_else(|_| panic!("the server never accepted the connection"))
-            .unwrap_or_else(|error| panic!("{error}"))
+            let mut accepting = self.accepting.clone();
+            tokio::select! {
+                // `changed()` resolves with an error once the sender is
+                // dropped, which happens only when `RemoteServer::run`
+                // returned. Nothing can arrive on a connection after that, so
+                // waiting for the timeout would only delay the same failure.
+                _ = accepting.changed() => {
+                    panic!("the accept loop exited instead of accepting the connection")
+                }
+                result = tokio::time::timeout(
+                    REPLY_TIMEOUT,
+                    ClientConnection::connect(client_endpoint, address),
+                ) => {
+                    result
+                        .unwrap_or_else(|_| panic!("the server never accepted the connection"))
+                        .unwrap_or_else(|error| panic!("{error}"))
+                }
+            }
         }
 
         /// Connect and authorize in one step, for the tests whose subject is

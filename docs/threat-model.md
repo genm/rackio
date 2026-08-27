@@ -44,20 +44,75 @@ payloads. It can observe endpoint IDs involved in relay connections, connection
 times, source network addresses, duration and byte counts. Traffic analysis is
 out of scope for v1. Operators must document retention of relay access logs.
 
+## Relay trust anchor
+
+By default the agent verifies a relay's TLS certificate against iroh's
+compiled-in WebPKI root set, so a relay must present a certificate issued by a
+publicly trusted authority. `rackio relay set <URL> --ca-certificate <PATH>`
+replaces that root set, for relay connections only, with the certificates in
+the named PEM file. It is a replacement, not an addition: a pinned relay is not
+also accepted on a publicly issued certificate.
+
+This is a deliberate trade, made so that an organisation self-hosting a relay on
+an internal network — the fallback this product supports — can use the internal
+CA it already runs. What it moves:
+
+- **Before:** the relay's identity is vouched for by the public CA system.
+  Compromise requires a publicly trusted authority to issue in error.
+- **After:** the relay's identity is vouched for by one file on the monitored
+  machine. Whoever can write that file chooses the authority the agent trusts
+  for the relay.
+
+Consequences of that shift:
+
+- An attacker who can write the pinned PEM, and who can also intercept the
+  relay's network path, can present a relay of their own that the agent
+  accepts. They then see what any relay operator sees: endpoint IDs, timing,
+  addresses and byte counts. They do **not** gain metric or history payloads —
+  those stay inside the QUIC session between the two endpoints, which is
+  authenticated by endpoint public keys and is unaffected by relay TLS — and
+  they cannot become an authorized peer, because peer authorization is the
+  local allowlist, not the relay.
+- The pinned file therefore needs the protection of a trust anchor, not of a
+  secret. Its contents are public; its *integrity* is what matters. Store it
+  root-owned and not writable by unprivileged users, on the same footing as the
+  daemon's own configuration.
+- The path is stored, not the certificate. Replacing the file's contents changes
+  what the agent trusts at the next daemon start, with no further operator
+  action. That is what makes CA rotation possible and what makes write access to
+  the file security-relevant.
+
+The trust anchor is configuration, not a secret: its path is recorded in the
+daemon's configuration and its use is reported in the startup log as
+`relay_trust_anchor=pinned_ca`. The certificate's contents are never logged.
+
+A missing, unreadable or unusable pinned CA fails closed. The configuration is
+refused when it is set, and if the file becomes unusable later the daemon
+refuses to start rather than falling back to the public root set — falling back
+would silently restore the anchor the operator deliberately replaced. Pinning
+does not make the relay an identity authority and does not make a relayed path
+direct; both remain as described above.
+
 ## Known release limitations
 
-- Unix local IPC requires OS peer credentials and a mode-0600 or viewer-group
-  socket. Windows local IPC rejects remote pipe clients, grants access only to
-  LocalSystem, administrators and the `Rackio Viewers` local group, then
-  independently verifies the connected process token.
+- Unix local IPC is protected by filesystem permissions, not by a credential
+  comparison: the socket is mode 0600, or 0660 and group-owned by the viewer
+  group, inside a directory the viewer group can traverse but not write. The
+  daemon reads the caller's credentials and refuses a connection that has none,
+  but it does not compare the uid or gid against a list — the socket's mode and
+  ownership are what decide who may connect. Windows local IPC is stronger: it
+  rejects remote pipe clients, grants access only to LocalSystem, administrators
+  and the `Rackio Viewers` local group, and then independently verifies the
+  connected process token.
 - OS keystore integration is not complete. The private key is always stored in
-  a daemon-owned 0600 file on Unix. The daemon narrows a directory to 0700
-  only when it creates that directory itself (Linux's systemd-managed
-  `/var/lib/rackio` state directory); it never narrows a directory an
-  installer already provisioned. On macOS the installer provisions the shared
-  data directory as 0750 `_rackio:_rackio-viewers` so the viewer group can
-  keep traversing it to reach the adjacent runtime socket — the file mode is
-  the guarantee there, not the directory mode.
+  a daemon-owned 0600 file on Unix, and that file mode is the daemon's own
+  guarantee. Directory modes are the service manager's or the installer's:
+  systemd's `StateDirectoryMode=0700` for `/var/lib/rackio`, re-applied on every
+  start, and the macOS installer's 0750 `_rackio:_rackio-viewers` on the shared
+  data directory so the viewer group can traverse it to reach the adjacent
+  runtime socket. The daemon narrows a directory it creates itself, which on a
+  packaged install is never the case; do not read that branch as an active
+  control.
 - Relay endpoint allowlisting and token delivery need an operator-facing secret
   workflow before internet exposure.
 - `ssh-keyscan` cannot authenticate a host key by itself. A mistaken fingerprint

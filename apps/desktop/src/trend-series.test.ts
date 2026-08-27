@@ -57,6 +57,37 @@ describe("trendLines", () => {
     expect(network.lines[1].points[0].value).toBe(512);
   });
 
+  it("plots swap as a percentage series with its own gaps", () => {
+    // A sampled level, so it is a line rather than a static tile. The middle
+    // point has no reading at all and must be skipped rather than plotted as
+    // zero, and the range must not claim time the line does not cover.
+    const swapPoints = [
+      { timestampMs: 1_000, swapUsedBytes: 1_024, swapTotalBytes: 4_096 },
+      { timestampMs: 3_000 },
+      { timestampMs: 5_000, swapUsedBytes: 3_072, swapTotalBytes: 4_096 },
+      { timestampMs: 7_000, swapUsedBytes: null, swapTotalBytes: 4_096 },
+    ];
+    const swap = trendLines(swapPoints, "swap");
+    expect(swap.lines).toEqual([
+      {
+        name: "Swap",
+        points: [
+          { timestampMs: 1_000, value: 25 },
+          { timestampMs: 5_000, value: 75 },
+        ],
+      },
+    ]);
+    expect(swap.firstMs).toBe(1_000);
+    expect(swap.lastMs).toBe(5_000);
+  });
+
+  it("treats a machine with no swap device as unplottable rather than at 0%", () => {
+    // Swap disabled reports a genuine zero total. Drawing a flat 0% line would
+    // present a machine with no swap as a machine with idle swap.
+    const swapless = [{ timestampMs: 1_000, swapUsedBytes: 0, swapTotalBytes: 0 }];
+    expect(trendLines(swapless, "swap").values).toEqual([]);
+  });
+
   it("projects disk, temperature, and RTT like any other metric", () => {
     const rich = [
       {
