@@ -77,32 +77,37 @@ jobs:
       RUN_CODEQL: >-
         ${{
           needs.plan.result != 'success' ||
-          needs.plan.outputs[matrix.gate] != 'false'
+          matrix.gate != 'false'
         }}
     strategy:
       fail-fast: false
       matrix:
+        # The gate is resolved here rather than indexed out of
+        # `needs.plan.outputs` by a matrix variable. A dynamic lookup is opaque
+        # to actionlint and, when it fails, yields an empty string that reads as
+        # "run" — so a typo would scan everything forever and look healthy.
+        # These static references are checked before the workflow ever runs.
         include:
           - language: actions
-            gate: codeql_actions
+            gate: ${{ needs.plan.outputs.codeql_actions }}
           - language: javascript-typescript
-            gate: codeql_javascript
+            gate: ${{ needs.plan.outputs.codeql_javascript }}
           - language: rust
-            gate: codeql_rust
+            gate: ${{ needs.plan.outputs.codeql_rust }}
             # Rust analysis is no-build; there is nothing for autobuild to do
             # and a cargo build here would only duplicate the CI Rust job.
             build-mode: none
     steps:
-      # An unresolvable gate lookup would yield an empty string, which
-      # `!= 'false'` reads as "run" — the safe direction, but silently so.
-      # Printing the resolved value makes a mis-wired gate visible in the log
-      # instead of quietly scanning everything forever.
+      # A gate that resolves to nothing is read as "run" by `!= 'false'` — the
+      # safe direction, but a silent one. That is the live state on any pull
+      # request that adds a gate, because the planner is deliberately read from
+      # the protected base, which does not know the new output yet. Printing the
+      # value distinguishes "unaffected" from "never resolved" in the log.
       - name: Report resolved CodeQL gate
         env:
-          GATE_NAME: ${{ matrix.gate }}
-          GATE_VALUE: ${{ needs.plan.outputs[matrix.gate] }}
+          GATE_VALUE: ${{ matrix.gate }}
         run: |
-          echo "language=${{ matrix.language }} gate=${GATE_NAME} value=${GATE_VALUE:-<unresolved>} run=${RUN_CODEQL}"
+          echo "language=${{ matrix.language }} gate=${GATE_VALUE:-<unresolved>} run=${RUN_CODEQL}"
       # Skipping a language uploads nothing, which is what keeps its existing
       # alerts intact: code scanning only reconciles a category against a run
       # that actually reports on it, so an unaffected language's findings are

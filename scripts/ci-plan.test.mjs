@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { classifyChangedFiles, parseChangedFiles, planForEvent } from "./ci-plan-lib.mjs";
+import { classifyChangedFiles, fullPlan, parseChangedFiles, planForEvent } from "./ci-plan-lib.mjs";
 
 const plannerPath = resolve("scripts/ci-plan.mjs");
 
@@ -238,6 +238,30 @@ test("CodeQL analysis never uploads for an unaffected language", () => {
   assert.equal(guarded.length, 2);
   for (const step of guarded) {
     assert.match(step, /if: env\.RUN_CODEQL == 'true'/);
+  }
+});
+
+test("every CodeQL language gate is a statically checkable planner output", () => {
+  // A dynamic `needs.plan.outputs[matrix.gate]` lookup is invisible to
+  // actionlint and resolves to an empty string when it is wrong, which
+  // `!= 'false'` reads as "run" — so a typo would scan every language forever
+  // and still look healthy. Static references are validated before the workflow
+  // runs, and this pins them to the planner keys that actually exist.
+  const codeqlWorkflow = readFileSync(resolve(".github/workflows/codeql.yml"), "utf8");
+  const plannerKeys = Object.keys(fullPlan("test")).filter((key) => key.startsWith("codeql_"));
+
+  assert.deepEqual(plannerKeys.sort(), ["codeql_actions", "codeql_javascript", "codeql_rust"]);
+  assert.doesNotMatch(codeqlWorkflow, /needs\.plan\.outputs\[/);
+  for (const key of plannerKeys) {
+    // Declared as a job output, and consumed as the matrix gate.
+    assert.match(
+      codeqlWorkflow,
+      new RegExp(`^ {6}${key}: \\$\\{\\{ steps\\.plan\\.outputs\\.${key} \\}\\}$`, "m"),
+    );
+    assert.match(
+      codeqlWorkflow,
+      new RegExp(`^ {12}gate: \\$\\{\\{ needs\\.plan\\.outputs\\.${key} \\}\\}$`, "m"),
+    );
   }
 });
 
