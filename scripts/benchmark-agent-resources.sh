@@ -185,25 +185,39 @@ average_cpu_of() {
   awk '{ total += $1 } END { printf "%.3f", total / NR }' "$1"
 }
 
-# `ps -o %cpu` is the gating number because it is what this script has always
-# used, and it is not a measurement of steady-state CPU.
+# `window_cpu_percent` (derived from this function) is the gating number.
+# `ps -o %cpu` no longer gates; it is still recorded as `average_cpu_percent`
+# for continuity with old reports, but it does not decide pass/fail.
 #
-# The BSD manual calls it a decaying average over up to a minute of previous
-# real time. On macOS it behaves as a *lifetime* average — total CPU time
-# divided by elapsed time since the process started — and startup dominates it.
-# Measured on this binary, changing nothing but how long the script waits before
-# sampling:
+# The BSD manual calls `ps -o %cpu` a decaying average over up to a minute of
+# previous real time. On macOS it behaves as a *lifetime* average — total CPU
+# time divided by elapsed time since the process started — and startup
+# dominates it. Measured on this binary, changing nothing but how long the
+# script waits before sampling:
 #
 #   warm-up   5 s  ->  ps 1.250%   window 0.818%
 #   warm-up 120 s  ->  ps 0.060%   window 1.000%
 #
 # Twenty-fold movement in the gating number from waiting, while the real
 # steady-state figure did not move. A budget cannot rest on that, and a warm-up
-# cannot be tuned until it passes. So both numbers are recorded in every
-# profile, the window-scoped one derived from the process's own cumulative CPU
-# time over exactly the sampling window, and the profiles use the same warm-up
-# so neither is tuned. Which of the two should gate the release budget is a
-# decision for whoever owns the checklist, not for this script to make quietly.
+# cannot be tuned until it passes, so `cputime` — the process's own cumulative
+# CPU time — is read directly instead and turned into a percentage by dividing
+# its delta over the sampling window by the window's wall-clock length in
+# `window_cpu_percent()` below.
+#
+# `cputime` is not a macOS-only escape hatch: it is the same `[DD-]hh:mm:ss`
+# field on GNU/Linux `ps` (procps documents it as a standard format specifier,
+# aliased to `time`), so this profile's gating computation is expected to carry
+# over to the Linux benchmark run the release checklist also requires,
+# unverified in this session for lack of a Linux host. This script itself has
+# no Windows path: it needs bash, ps, awk and jq, none of which ship with
+# Windows, and a POSIX layer's `ps` (WSL, MSYS/Git-Bash) has not been checked
+# for whether it reports real CPU/RSS numbers for a native Win32 process.
+# scripts/benchmark-agent-resources.ps1 is the Windows-native counterpart —
+# same `mise run benchmark:agent` entrypoint via mise's `run_windows`, same
+# delta-over-window CPU gate computed from `Get-Process TotalProcessorTime`
+# instead of `cputime` — and is what proves the Windows leg of "passes on
+# each supported OS" in docs/release-checklist.md.
 cpu_seconds_of() {
   ps -p "$1" -o cputime= | awk 'NR == 1 {
     n = split($1, part, ":")
@@ -223,7 +237,13 @@ peak_rss_of() {
   awk 'BEGIN { max = 0 } { if ($2 > max) max = $2 } END { print max }' "$1"
 }
 
-sample_count="${RACKIO_BENCHMARK_SAMPLES:-10}"
+# Thirty one-second samples, not ten: `window_cpu_percent` divides a CPU-time
+# delta by a wall-clock delta that is only accurate to the second (`date +%s`),
+# so a ten-second window carries about ten percent relative error from that
+# rounding alone — enough to make a steady-state figure that sits near the 1%
+# budget look like it crossed the line on a given run. Tripling the window
+# cuts that error to roughly three percent without touching the budget itself.
+sample_count="${RACKIO_BENCHMARK_SAMPLES:-30}"
 # One warm-up for both profiles, and it is the one the idle profile has always
 # used. The active-peer profile was tried at sixty seconds while it was being
 # built, on the theory that its pairing and history burst needed to decay out of
@@ -322,7 +342,7 @@ run_idle_direct_only() {
     '{
       check: "agent_resources",
       status: (
-        if $average_cpu_percent < $cpu_limit_percent and $peak_rss_kib < $rss_limit_kib
+        if $window_cpu_percent < $cpu_limit_percent and $peak_rss_kib < $rss_limit_kib
         then "passed"
         else "failed"
         end
@@ -334,16 +354,17 @@ run_idle_direct_only() {
       average_cpu_percent: $average_cpu_percent,
       peak_rss_kib: $peak_rss_kib,
       cpu_measurement: {
-        gating_source: "ps -o %cpu, which on macOS is a process-lifetime average dominated by startup, not a measurement of steady-state CPU",
+        gating_source: "window_cpu_percent below: delta of the process cumulative CPU time over the sampling window, scoped to the window and to nothing else",
         window_cpu_percent: $window_cpu_percent,
-        window_source: "delta of the process cumulative CPU time over the sampling window, scoped to the window and to nothing else",
+        average_cpu_percent_note: "ps -o %cpu, recorded above for continuity with older reports; on macOS it is a process-lifetime average dominated by startup, not steady-state CPU, and does not gate this check",
         cpu_seconds_consumed: $cpu_seconds_consumed,
         wall_seconds: $wall_seconds,
-        finding: "the gating number moved from 1.250% to 0.060% on this binary by changing the warm-up from 5s to 120s and nothing else, while window_cpu_percent stayed near 1%. Read window_cpu_percent as the steady-state figure; the gating source is kept unchanged rather than quietly reinterpreted.",
-        note: "wall_seconds has one-second resolution, so window_cpu_percent carries about ten percent of relative error over a ten-second window"
+        finding: "on this binary, average_cpu_percent moved from 1.250% to 0.060% by changing the warm-up from 5s to 120s and nothing else, while window_cpu_percent stayed near 1%. That instability is why window_cpu_percent, not average_cpu_percent, gates this check.",
+        note: "wall_seconds has one-second resolution, so window_cpu_percent carries roughly one-over-samples relative error; see the sample_count comment in this script"
       },
       limits: {
-        average_cpu_percent_exclusive: $cpu_limit_percent,
+        cpu_percent_exclusive: $cpu_limit_percent,
+        cpu_percent_gated_on: "cpu_measurement.window_cpu_percent",
         peak_rss_kib_exclusive: $rss_limit_kib
       }
     }'
@@ -470,6 +491,9 @@ run_active_peer() {
     # and each daemon keeps its own number beside it.
     ($viewer_cpu | if . > $monitored_cpu then . else $monitored_cpu end) as $cpu
     | ($viewer_rss | if . > $monitored_rss then . else $monitored_rss end) as $rss
+    # Same "worse of the two" rule applied to the gating figure. See
+    # `cpu_seconds_of` for why window_cpu_percent gates instead of $cpu (ps).
+    | ($viewer_window_cpu | if . > $monitored_window_cpu then . else $monitored_window_cpu end) as $window_cpu
     # Bytes on the wire between the pair, counted once. The viewer sockets see
     # every byte of the session in both directions; the monitored daemons
     # counters are the same bytes seen from the other end and are recorded for
@@ -478,7 +502,7 @@ run_active_peer() {
     | {
       check: "agent_resources",
       status: (
-        if $cpu < $cpu_limit_percent and $rss < $rss_limit_kib and $rate < $traffic_limit
+        if $window_cpu < $cpu_limit_percent and $rss < $rss_limit_kib and $rate < $traffic_limit
         then "passed"
         else "failed"
         end
@@ -507,12 +531,12 @@ run_active_peer() {
                     bytes_in: $monitored_in, bytes_out: $monitored_out}
       },
       cpu_measurement: {
-        gating_source: "ps -o %cpu, which on macOS is a process-lifetime average dominated by startup, not a measurement of steady-state CPU",
-        window_cpu_percent: ($viewer_window_cpu | if . > $monitored_window_cpu then . else $monitored_window_cpu end),
-        window_source: "delta of each process cumulative CPU time over the sampling window, scoped to the window and to nothing else",
+        gating_source: "window_cpu_percent below (max of viewer/monitored): delta of each process cumulative CPU time over the sampling window, scoped to the window and to nothing else",
+        window_cpu_percent: $window_cpu,
+        average_cpu_percent_note: "ps -o %cpu (daemons.*.average_cpu_percent above), recorded for continuity with older reports; on macOS it is a process-lifetime average dominated by startup and does not gate this check",
         wall_seconds: $wall_seconds,
-        finding: "the two sources disagree on this profile and both are reported rather than the flattering one being chosen. On the idle profile the gating number moved from 1.250% to 0.060% by changing the warm-up alone, while the window figure stayed near 1%. Read window_cpu_percent as the steady-state figure.",
-        note: "wall_seconds has one-second resolution, so window_cpu_percent carries about ten percent of relative error over a ten-second window"
+        finding: "the two sources disagree on this profile. On the idle profile average_cpu_percent moved from 1.250% to 0.060% by changing the warm-up alone, while window_cpu_percent stayed near 1%. That instability is why window_cpu_percent, not average_cpu_percent, gates this check.",
+        note: "wall_seconds has one-second resolution, so window_cpu_percent carries roughly one-over-samples relative error; see the sample_count comment in this script"
       },
       traffic: {
         method: "nettop -P -x -J bytes_in,bytes_out -d -s 1, per-process byte deltas read from the daemons own sockets",
@@ -537,7 +561,8 @@ run_active_peer() {
         }
       },
       limits: {
-        average_cpu_percent_exclusive: $cpu_limit_percent,
+        cpu_percent_exclusive: $cpu_limit_percent,
+        cpu_percent_gated_on: "cpu_measurement.window_cpu_percent",
         peak_rss_kib_exclusive: $rss_limit_kib,
         traffic_bytes_per_second_per_active_peer_exclusive: $traffic_limit
       }
