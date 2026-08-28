@@ -55,6 +55,29 @@ const SECURITY_POLICY_PATHS = [
 
 const SECURITY_SOURCE_PATHS = [/^(?:apps|crates)\//];
 
+// CodeQL builds a whole-program database per language, so these sets answer
+// "does this change contain any of that language's source at all", not "which
+// files should be analysed" — a CodeQL database is never partial. They are
+// deliberately narrower than the Rust and frontend gates above, which also own
+// shell installers and packaging metadata that hold no CodeQL-analysable source.
+const CODEQL_RUST_PATHS = [
+  /^Cargo\.(?:toml|lock)$/,
+  /^rust-toolchain\.toml$/,
+  /^(?:apps\/agent|crates|proto)\//,
+  /^apps\/desktop\/src-tauri\//,
+  /^fuzz\/(?!corpus\/)/,
+];
+
+const CODEQL_JAVASCRIPT_PATHS = [
+  /^(?:package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|commitlint\.config\.mjs)$/,
+  /^apps\/desktop\/(?!src-tauri\/)/,
+  /^scripts\/.*\.mjs$/,
+];
+
+// The `actions` CodeQL language analyses workflow and composite-action
+// definitions themselves, so everything under .github/ is in scope for it.
+const CODEQL_ACTIONS_PATHS = [/^\.github\//];
+
 function matchesAny(path, patterns) {
   return patterns.some((pattern) => pattern.test(path));
 }
@@ -80,6 +103,9 @@ export function fullPlan(reason) {
     frontend: true,
     security_policy: true,
     security_source: true,
+    codeql_actions: true,
+    codeql_javascript: true,
+    codeql_rust: true,
     reason,
   };
 }
@@ -105,6 +131,9 @@ export function classifyChangedFiles(files) {
     frontend: files.some((path) => matchesAny(path, FRONTEND_PATHS)),
     security_policy: files.some((path) => matchesAny(path, SECURITY_POLICY_PATHS)),
     security_source: files.some((path) => matchesAny(path, SECURITY_SOURCE_PATHS)),
+    codeql_actions: files.some((path) => matchesAny(path, CODEQL_ACTIONS_PATHS)),
+    codeql_javascript: files.some((path) => matchesAny(path, CODEQL_JAVASCRIPT_PATHS)),
+    codeql_rust: files.some((path) => matchesAny(path, CODEQL_RUST_PATHS)),
     reason: files.length === 0 ? "no_changes" : "affected",
   };
 }
