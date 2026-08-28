@@ -203,6 +203,7 @@ jobs:
         run: |
           @(
             "scripts/test-windows-named-pipe.ps1",
+            "scripts/benchmark-agent-resources.ps1",
             "packaging/windows/install.ps1",
             "packaging/windows/uninstall.ps1",
             "packaging/windows/package-release.ps1"

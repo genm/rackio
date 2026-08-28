@@ -125,6 +125,19 @@ run = [
   "cargo build --release -p rackio-agent",
   "scripts/benchmark-agent-resources.sh",
 ]
+# scripts/benchmark-agent-resources.sh needs bash, ps, awk and jq, none of
+# which Windows ships natively, so this OS gets its own implementation
+# instead of trying to run the same script under a POSIX-compatibility
+# layer (WSL, MSYS/Git-Bash) whose `ps` output for a native Win32 process is
+# unverified. `run_windows` is mise's own mechanism for this: it replaces
+# `run` on a Windows host and is ignored elsewhere, so `mise run
+# benchmark:agent` stays the one entrypoint the release checklist references
+# on every OS. See scripts/benchmark-agent-resources.ps1's header for what
+# it does and does not measure.
+run_windows = [
+  "cargo build --release -p rackio-agent",
+  "pwsh -NoProfile -File scripts/benchmark-agent-resources.ps1",
+]
 
 [tasks."benchmark:agent-active-peer"]
 description = "Enforce the release agent CPU, RSS and per-peer traffic budgets with a peer actively streaming"
@@ -132,6 +145,12 @@ run = [
   "cargo build --release -p rackio-agent",
   "RACKIO_BENCHMARK_PROFILE=active_peer scripts/benchmark-agent-resources.sh",
 ]
+# No `run_windows` here on purpose: the traffic figure this profile exists
+# for is measured with `nettop -P`, which is macOS-only, and Windows has no
+# equivalent per-process UDP byte counter without a packet capture. Running
+# this task on Windows falls back to `run` above and fails closed with the
+# script's own missing_command error rather than reporting an unmeasured
+# number. See docs/release-checklist.md for how that gap is tracked.
 
 [tasks."licenses:check"]
 description = "Verify bundled Rust third-party license notices match the locked dependency graph"
