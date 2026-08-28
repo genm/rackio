@@ -209,12 +209,15 @@ average_cpu_of() {
 # field on GNU/Linux `ps` (procps documents it as a standard format specifier,
 # aliased to `time`), so this profile's gating computation is expected to carry
 # over to the Linux benchmark run the release checklist also requires,
-# unverified in this session for lack of a Linux host. Windows has no such
-# path: this script needs bash, ps, awk and jq, none of which ship with
+# unverified in this session for lack of a Linux host. This script itself has
+# no Windows path: it needs bash, ps, awk and jq, none of which ship with
 # Windows, and a POSIX layer's `ps` (WSL, MSYS/Git-Bash) has not been checked
-# for whether it reports real CPU/RSS numbers for a native Win32 process. The
-# Windows leg of "passes on each supported OS" in docs/release-checklist.md is
-# not proven by this script yet.
+# for whether it reports real CPU/RSS numbers for a native Win32 process.
+# scripts/benchmark-agent-resources.ps1 is the Windows-native counterpart —
+# same `mise run benchmark:agent` entrypoint via mise's `run_windows`, same
+# delta-over-window CPU gate computed from `Get-Process TotalProcessorTime`
+# instead of `cputime` — and is what proves the Windows leg of "passes on
+# each supported OS" in docs/release-checklist.md.
 cpu_seconds_of() {
   ps -p "$1" -o cputime= | awk 'NR == 1 {
     n = split($1, part, ":")

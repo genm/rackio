@@ -155,26 +155,44 @@ the artifact scan above guards against regression.
 - [ ] normal metric freshness stays below 3 seconds
 - [ ] stale at 10 seconds and offline at 30 seconds
 - [ ] average daemon CPU below 1% and RSS below 40 MiB
-  - [ ] `mise run benchmark:agent` passes on each supported OS and its
-        `test-results/resource-benchmark.json` evidence is attached
-  - [ ] the active-peer profile is also measured;
+  - [ ] `mise run benchmark:agent` passes on each supported OS. On macOS and
+        Linux this runs `scripts/benchmark-agent-resources.sh` and attaches
+        `test-results/resource-benchmark.json`; on Windows the same task
+        runs `scripts/benchmark-agent-resources.ps1` (mise's `run_windows`
+        override on the same task, so the entrypoint the checklist names is
+        unchanged) and attaches `test-results/resource-benchmark-windows.json`
+        — a separate default path, so a run from more than one OS can sit in
+        `test-results/` at once instead of one overwriting another
+  - [ ] the active-peer profile is also measured on macOS and Linux;
         `mise run benchmark:agent-active-peer` pairs two daemons on the host,
         streams metrics between them and writes
         `test-results/resource-benchmark-active-peer.json`. The
         `idle_direct_only` profile does not cover network traffic
-  - CPU is gated on `cpu_measurement.window_cpu_percent`, a delta of the
-    process's own cumulative CPU time over the sampling window.
+  - CPU is gated on `cpu_measurement.window_cpu_percent` on every OS: a delta
+    of the process's own cumulative CPU time over the sampling window, not an
+    instantaneous or decaying %CPU-style figure. On macOS and Linux,
     `average_cpu_percent` (`ps -o %cpu`) is still in the report for
     continuity with older evidence, but does not gate: on macOS it is a
     process-lifetime average dominated by startup and was measured to move
     twenty-fold (1.250% to 0.060%) from warm-up length alone while the
     window figure held steady. See `scripts/benchmark-agent-resources.sh`.
+    The Windows script computes no such figure at all rather than inventing
+    a Windows-only one that would carry the same flaw; see
+    `scripts/benchmark-agent-resources.ps1`'s header and its
+    `cpu_measurement.average_cpu_percent_note`
   - only verified on macOS. `window_cpu_percent` reads the same `cputime`
     field on GNU/Linux `ps`, so the Linux run is expected to gate the same
-    way, but this has not been checked on a Linux host. The script needs
-    bash, `ps`, `awk` and `jq`, none of which Windows ships natively; the
-    Windows leg of "each supported OS" needs its own measurement path
-    before this row can be checked off there
+    way, but this has not been checked on a Linux host. The Windows script's
+    equivalent (`Get-Process` `TotalProcessorTime`) is likewise unverified on
+    a real Windows host — it has been syntax-checked and its JSON-building
+    and error-handling logic exercised standalone under `pwsh` on macOS, but
+    not run end to end against a live `rackio.exe daemon` on Windows
+  - the active-peer profile's traffic figure
+    (`traffic.bytes_per_second_per_active_peer`, measured with macOS's
+    `nettop -P`) has no Windows implementation. Windows exposes no
+    equivalent per-process UDP byte counter without a packet capture, which
+    a developer-run benchmark cannot assume has the required privilege; this
+    remains open and is not covered by `scripts/benchmark-agent-resources.ps1`
 - [ ] normal traffic below 2 KiB/s per active peer
   - measured by the `active_peer` profile as
     `traffic.bytes_per_second_per_active_peer`. The report names the method it
