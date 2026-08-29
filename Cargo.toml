@@ -24,7 +24,7 @@ base64 = "0.23.0"
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.4", features = ["derive"] }
 directories = "6.0.0"
-iroh = { version = "=1.0.3", default-features = false, features = ["tls-ring"] }
+iroh = { version = "=1.1.0", default-features = false, features = ["tls-ring"] }
 prost = "0.14.4"
 qrcode = { version = "=0.14.1", default-features = false, features = ["svg"] }
 rand = "0.10.2"
