@@ -1,7 +1,5 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
-
-default:
-    just --list
+set default-list := true
 
 check:
     mise run check
