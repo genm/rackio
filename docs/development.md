@@ -115,6 +115,31 @@ binary resolve the directory from the same variable instead of assuming
 outside `mise` fall back to `target/` inside the checkout; `mise` shell
 activation or `mise exec --` keeps them together.
 
+## Refreshing dependency PR license notices
+
+For an open dependency PR in this repository, maintainers can regenerate both
+bundled notice files without changing the license drift checks:
+
+```sh
+gh workflow run refresh-license-notices.yml --ref main -f pr=PR_NUMBER
+```
+
+The workflow copies only changed, existing dependency manifests and lockfiles
+into the trusted default-branch checkout and runs its generators in a read-only
+job. Rebase the PR onto the current default branch first. PR scripts, toolchains,
+and package-manager configuration are never copied or executed; PRs changing
+those files or the pinned package manager require a manual refresh. A separate
+trusted publisher can update only `THIRDPARTY.html` and
+`THIRDPARTY-JAVASCRIPT.html`. It rejects forks, closed PRs, non-default bases,
+and a head that moved during generation; it never force-pushes or merges. An
+unchanged result creates no commit.
+
+A changed PR is left in Draft because commits made by `GITHUB_TOKEN` do not
+trigger PR CI. Review the notice diff and run `gh pr ready PR_NUMBER` to start
+the normal required checks. The existing Security comparisons still reject
+drift. Authentication comes from GitHub Actions' built-in job token; no added
+secret or local credential file is needed. Failed generation publishes nothing.
+
 ## Scheduled deep verification
 
 Three checks cost far more than a pull request should wait for, so they run in
