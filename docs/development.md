@@ -124,8 +124,12 @@ bundled notice files without changing the license drift checks:
 gh workflow run refresh-license-notices.yml --ref main -f pr=PR_NUMBER
 ```
 
-The workflow uses the PR's locked graphs and existing generators in a read-only
-job. A separate trusted publisher can update only `THIRDPARTY.html` and
+The workflow copies only changed, existing dependency manifests and lockfiles
+into the trusted default-branch checkout and runs its generators in a read-only
+job. Rebase the PR onto the current default branch first. PR scripts, toolchains,
+and package-manager configuration are never copied or executed; PRs changing
+those files or the pinned package manager require a manual refresh. A separate
+trusted publisher can update only `THIRDPARTY.html` and
 `THIRDPARTY-JAVASCRIPT.html`. It rejects forks, closed PRs, non-default bases,
 and a head that moved during generation; it never force-pushes or merges. An
 unchanged result creates no commit.

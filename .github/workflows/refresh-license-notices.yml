@@ -38,15 +38,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node automation/scripts/refresh-pr-license-notices.mjs resolve
-      - name: Check out dependency update without write authority
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ steps.target.outputs.head }}
-          path: dependency-pr
-          persist-credentials: false
-      - name: Select the PR Rust toolchain
-        working-directory: dependency-pr
+      - name: Select the trusted Rust toolchain
+        working-directory: automation
         run: rustup show
+      - name: Copy dependency data into the trusted checkout
+        working-directory: automation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ steps.target.outputs.head }}
+        run: node scripts/refresh-pr-license-notices.mjs prepare
       - name: Install pinned cargo-about
         uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2.86.8
         with:
@@ -57,7 +57,7 @@ jobs:
         with:
           node-version: 24.15.0
       - name: Generate notices from the locked PR graphs
-        working-directory: dependency-pr
+        working-directory: automation
         run: |
           corepack enable
           corepack install

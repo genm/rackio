@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -29,6 +29,21 @@ export function noticeEntries(read) {
   });
 }
 
+export function dependencyPaths(changed, tracked) {
+  const allowed = new Set(
+    tracked.filter(
+      (path) =>
+        /(^|\/)(Cargo\.toml|package\.json)$/u.test(path) ||
+        ["Cargo.lock", "pnpm-lock.yaml"].includes(path),
+    ),
+  );
+  const notices = new Set(["THIRDPARTY.html", "THIRDPARTY-JAVASCRIPT.html"]);
+  if (changed.some((path) => !allowed.has(path) && !notices.has(path))) {
+    throw new Error("Refresh requires a dependency-only PR using existing manifests");
+  }
+  return changed.filter((path) => allowed.has(path));
+}
+
 function main() {
   const {
     GITHUB_REPOSITORY: repository,
@@ -40,9 +55,11 @@ function main() {
     !repository ||
     !defaultBranch ||
     !/^[1-9][0-9]*$/u.test(number ?? "") ||
-    !["resolve", "publish"].includes(mode)
+    !["resolve", "prepare", "publish"].includes(mode)
   ) {
-    throw new Error("Require resolve/publish, GITHUB_REPOSITORY, DEFAULT_BRANCH, and a PR_NUMBER");
+    throw new Error(
+      "Require resolve/prepare/publish, GITHUB_REPOSITORY, DEFAULT_BRANCH, and a PR_NUMBER",
+    );
   }
   const api = (endpoint, method = "GET", body) =>
     JSON.parse(
@@ -59,7 +76,8 @@ function main() {
       ),
     );
   const pull = api(`pulls/${number}`);
-  const expectedHead = mode === "publish" ? process.env.EXPECTED_HEAD : undefined;
+  const expectedHead = mode !== "resolve" ? process.env.EXPECTED_HEAD : undefined;
+  if (mode !== "resolve" && !expectedHead) throw new Error("EXPECTED_HEAD is required");
   if (
     mode === "publish" &&
     (!expectedHead || !process.env.NOTICES_DIR || !process.env.GITHUB_STEP_SUMMARY)
@@ -71,6 +89,27 @@ function main() {
   const head = validateTarget(pull, repository, defaultBranch, expectedHead);
   if (mode === "resolve") {
     appendFileSync(process.env.GITHUB_OUTPUT, `head=${head}\n`);
+    return;
+  }
+
+  if (mode === "prepare") {
+    const git = (...args) => execFileSync("git", args, { encoding: "utf8" });
+    git("fetch", "--no-tags", "origin", head);
+    // Only dependency data crosses into the trusted checkout. PR scripts,
+    // toolchain files, hooks and package-manager configuration never execute.
+    git("merge-base", "--is-ancestor", "HEAD", head);
+    const paths = dependencyPaths(
+      git("diff", "--name-only", "-z", "HEAD", head).split("\0").filter(Boolean),
+      git("ls-files", "-z").split("\0").filter(Boolean),
+    );
+    const packageManager = JSON.parse(readFileSync("package.json", "utf8")).packageManager;
+    for (const path of paths) {
+      const content = git("show", `${head}:${path}`);
+      if (path === "package.json" && JSON.parse(content).packageManager !== packageManager) {
+        throw new Error("Update the trusted package manager before refreshing this PR");
+      }
+      writeFileSync(path, content);
+    }
     return;
   }
 

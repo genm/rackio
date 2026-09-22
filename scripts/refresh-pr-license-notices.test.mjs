@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { load } from "js-yaml";
-import { validateTarget, noticeEntries } from "./refresh-pr-license-notices.mjs";
+import { validateTarget, noticeEntries, dependencyPaths } from "./refresh-pr-license-notices.mjs";
 
 const repository = "owner/rackio";
 const head = "a".repeat(40);
@@ -64,8 +64,8 @@ test("generation has no write token and publication checks out trusted code", ()
   assert.deepEqual(workflow.permissions, { contents: "read", "pull-requests": "read" });
   assert.equal(workflow.jobs.generate.permissions, undefined);
   assert.equal(workflow.jobs.publish.needs, "generate");
-  for (const step of workflow.jobs.publish.steps.filter((step) =>
-    step.uses?.startsWith("actions/checkout@"),
+  for (const step of [...workflow.jobs.generate.steps, ...workflow.jobs.publish.steps].filter(
+    (step) => step.uses?.startsWith("actions/checkout@"),
   )) {
     assert.equal(step.with.ref, "${{ github.sha }}");
     assert.equal(step.with["persist-credentials"], false);
@@ -75,4 +75,19 @@ test("generation has no write token and publication checks out trusted code", ()
   );
   assert.equal(upload.with["retention-days"], 1);
   assert.equal(upload.with["if-no-files-found"], "error");
+});
+
+test("only existing dependency manifests and locks cross the execution boundary", () => {
+  const tracked = ["Cargo.toml", "Cargo.lock", "apps/desktop/package.json", "pnpm-lock.yaml"];
+  assert.deepEqual(dependencyPaths(["Cargo.lock", "THIRDPARTY.html"], tracked), ["Cargo.lock"]);
+  for (const path of [
+    "scripts/generate-third-party-licenses.sh",
+    "rust-toolchain.toml",
+    ".cargo/config.toml",
+    ".pnpmfile.cjs",
+    "pnpm-workspace.yaml",
+    "new/package.json",
+  ]) {
+    assert.throws(() => dependencyPaths([path], tracked));
+  }
 });
