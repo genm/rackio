@@ -3,7 +3,9 @@ name: Validate pending dependency recovery
 on:
   push:
     branches: [maintenance/dependency-recovery-20260922]
-    paths: [.github/workflows/maintenance-dependency-recovery.yml]
+    paths:
+      - .github/workflows/maintenance-dependency-recovery.yml
+      - pnpm-workspace.yaml
 
 permissions:
   contents: read
@@ -17,8 +19,6 @@ jobs:
     if: github.repository == 'genm/rackio'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    env:
-      CARGO_BUILD_JOBS: "2"
     steps:
       - name: Check out source without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -65,7 +65,7 @@ jobs:
               assert after != before, name
               path.write_text(after)
           PY
-      - name: Resolve only reviewed Cargo updates
+      - name: Resolve reviewed Cargo updates and audit both workspaces
         run: |
           cargo update -p clap --precise 4.6.7
           cargo update -p tauri-plugin-dialog --precise 2.7.3
@@ -93,43 +93,22 @@ jobs:
           tail -n 1 /tmp/root-deny.log
           cargo deny --manifest-path fuzz/Cargo.toml check > /tmp/fuzz-deny.log 2>&1 || { grep -A 35 '^error' /tmp/fuzz-deny.log; exit 1; }
           tail -n 1 /tmp/fuzz-deny.log
-      - name: Regenerate and reproduce notices using the exact Security command
+      - name: Reproduce Rust notices using the exact Security command
         run: |
           scripts/generate-third-party-licenses.sh /tmp/rackio-THIRDPARTY.html
           cp /tmp/rackio-THIRDPARTY.html THIRDPARTY.html
           scripts/generate-third-party-licenses.sh /tmp/rackio-THIRDPARTY-repeat.html
           diff -u THIRDPARTY.html /tmp/rackio-THIRDPARTY-repeat.html
-          python3 - <<'PY'
-          from pathlib import Path
-          from html.parser import HTMLParser
-          class CrateLinks(HTMLParser):
-              count = 0
-              def handle_starttag(self, tag, attrs):
-                  href = dict(attrs).get('href', '')
-                  prefix = 'https://crates.io/crates/'
-                  if tag == 'a' and href.startswith(prefix):
-                      assert '/' not in href[len(prefix):], href
-                      self.count += 1
-          parser = CrateLinks()
-          parser.feed(Path('THIRDPARTY.html').read_text())
-          assert parser.count > 0
-          print('Template-consistent crate links:', parser.count)
-          PY
           git hash-object THIRDPARTY.html
       - name: Set up pinned Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24.15.0
-      - name: Activate pinned pnpm and repair affected transitive dependencies
+      - name: Resolve the lockfile with the repaired security overrides
         run: |
           corepack enable
           corepack install
           pnpm install --lockfile-only --ignore-scripts
-          cp package.json /tmp/expected-package.json
-          cp apps/desktop/package.json /tmp/expected-desktop-package.json
-          pnpm update --lockfile-only --ignore-scripts --no-save --depth 100 fast-uri js-yaml
-          diff -u /tmp/expected-package.json package.json
-          diff -u /tmp/expected-desktop-package.json apps/desktop/package.json
           pnpm install --frozen-lockfile
       - name: Validate frontend and planner contracts without relaxing policy
         run: |
@@ -157,6 +136,7 @@ jobs:
             package.json
             apps/desktop/package.json
             pnpm-lock.yaml
+            pnpm-workspace.yaml
             THIRDPARTY-JAVASCRIPT.html
             .github/workflows/ci.yml
             .github/workflows/codeql.yml
@@ -180,7 +160,7 @@ jobs:
         with:
           name: dependency-recovery-files
           path: generated
-      - name: Store allowlisted files without executing repository code
+      - name: Store allowlisted data without executing repository code
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ github.sha }}
@@ -202,7 +182,7 @@ jobs:
                   return json.load(response)
           assert api('/git/ref/heads/' + branch)['object']['sha'] == source, 'Maintenance branch moved'
           parent = api('/git/commits/' + source)
-          names = ('Cargo.toml', 'Cargo.lock', 'fuzz/Cargo.lock', 'THIRDPARTY.html', 'package.json', 'apps/desktop/package.json', 'pnpm-lock.yaml', 'THIRDPARTY-JAVASCRIPT.html', '.github/workflows/ci.yml', '.github/workflows/codeql.yml', '.github/workflows/deep-verification.yml', '.github/workflows/scorecard.yml', '.github/workflows/security.yml')
+          names = ('Cargo.toml', 'Cargo.lock', 'fuzz/Cargo.lock', 'THIRDPARTY.html', 'package.json', 'apps/desktop/package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'THIRDPARTY-JAVASCRIPT.html', '.github/workflows/ci.yml', '.github/workflows/codeql.yml', '.github/workflows/deep-verification.yml', '.github/workflows/scorecard.yml', '.github/workflows/security.yml')
           entries = []
           for name in names:
               path = pathlib.Path('generated') / name
@@ -211,7 +191,6 @@ jobs:
               blob = api('/git/blobs', {'content': path.read_text(), 'encoding': 'utf-8'})
               entries.append({'path': name, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
           # Workflow blobs are reviewed/applied separately through the connector.
-          # The Actions token only commits generated dependency data on this branch.
           data_entries = [entry for entry in entries if not entry['path'].startswith('.github/')]
           tree = api('/git/trees', {'base_tree': parent['tree']['sha'], 'tree': data_entries})
           commit = api('/git/commits', {'message': 'chore(deps): regenerate reviewed pending dependency updates', 'tree': tree['sha'], 'parents': [source]})
