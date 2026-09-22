@@ -1,6 +1,6 @@
 [tools]
 node = "24.15.0"
-"github:pnpm/pnpm" = "11.17.0"
+"github:pnpm/pnpm" = "12.5.1"
 rust = "1.97.1"
 just = "1.57.0"
 "aqua:evilmartians/lefthook" = "2.1.10"
@@ -26,12 +26,12 @@ trivy = "0.72.0"
 # several times over. It also covers the nested `fuzz/` workspace, which would
 # otherwise build the same graph a second time into `fuzz/target/`.
 #
+# Cargo takes an exclusive lock on this directory, so builds started from two
+# worktrees at the same time run one after the other instead of in parallel.
+#
 # The fallback chain resolves without `$HOME`, which Windows hosts do not set.
 # An explicit `CARGO_TARGET_DIR` still wins, so a caller that needs an isolated
 # build directory — `measure:desktop-build` does — can still ask for one.
-#
-# Cargo takes an exclusive lock on this directory, so builds started from two
-# worktrees at the same time run one after the other instead of in parallel.
 CARGO_TARGET_DIR = "{{ get_env(name='CARGO_TARGET_DIR', default=get_env(name='XDG_CACHE_HOME', default=get_env(name='HOME', default=get_env(name='LOCALAPPDATA', default='.')) ~ '/.cache') ~ '/rackio/target') }}"
 
 [tasks.check]
