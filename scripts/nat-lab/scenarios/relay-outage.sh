@@ -91,6 +91,7 @@ relayed_cpu_before="$(lab_remote_field_of "$viewer" "$relayed_id" 'latest.cpu_pe
 relayed_memory_before="$(lab_remote_field_of "$viewer" "$relayed_id" 'latest.memory_used_bytes')"
 
 lab_relay_stop
+relay_stopped_at_ms="$(lab_exec "$viewer" date +%s%3N)"
 lab_assert_true "relay_is_really_stopped" \
   "the outage is a stopped container, not a configuration change" \
   "$(lab_relay_running && echo false || echo true)"
@@ -107,6 +108,17 @@ relayed_cpu_during="$(lab_remote_field_of "$viewer" "$relayed_id" 'latest.cpu_pe
 relayed_memory_during="$(lab_remote_field_of "$viewer" "$relayed_id" 'latest.memory_used_bytes')"
 relayed_sequence_during="$(lab_remote_field_of "$viewer" "$relayed_id" 'latest.sequence')"
 relayed_details="$(lab_remote_field_of "$viewer" "$relayed_id" 'details | join(" ")')"
+
+# As in udp-blocked.sh, both reads must occur after the path is gone. A
+# legitimate sample can arrive between the earlier observation and relay stop.
+relayed_latest_during="$(lab_remote_field_of "$viewer" "$relayed_id" 'latest')"
+lab_assert_true "last_sample_precedes_relay_shutdown" \
+  "the retained sample was collected while the relay could still carry it" \
+  "$(jq --argjson stopped "$relay_stopped_at_ms" '.timestamp_ms <= $stopped' <<<"$relayed_latest_during")"
+sleep 8
+relayed_latest_later="$(lab_remote_field_of "$viewer" "$relayed_id" 'latest')"
+lab_assert_equal "relayed_machine_stays_offline" "the stopped relay provides no recovery path" \
+  "$(lab_remote_field_of "$viewer" "$relayed_id" 'state')" "offline"
 
 # The direct machine has to still be healthy at the end of the outage too, not
 # only at the start of it.
@@ -185,8 +197,8 @@ lab_assert_true "relayed_machine_kept_its_last_known_values" \
   "$(jq -n --argjson cpu "$relayed_cpu_during" --argjson memory "$relayed_memory_during" \
     '($cpu != null) and ($memory != null) and ($memory > 0)')"
 lab_assert_equal "no_sample_was_invented_during_the_outage" \
-  "the frozen sample is the one that was last received, not a fresh one" \
-  "$relayed_sequence_during" "$relayed_sequence_before"
+  "the entire metric payload stays frozen across two reads during the outage" \
+  "$relayed_latest_later" "$relayed_latest_during"
 lab_assert_equal "relayed_machine_recovered" \
   "the machine came back when the relay did" \
   "$relayed_state_after" "healthy"

@@ -218,7 +218,8 @@ fleet="$(wait_for_remote_sample)"
 endpoint_id="$(jq -r '.data.remotes[0].endpoint_id' <<<"$fleet")"
 paired_sequence="$(jq -r '.data.remotes[0].latest.sequence' <<<"$fleet")"
 registry="$integration_root/viewer/data/monitored-machines.json"
-paired_registry="$(jq -S . "$registry")"
+# Last-known metrics refresh independently of the registered identity.
+paired_registry="$(jq -S 'map_values(del(.last_snapshot))' "$registry")"
 
 # 1. A monitored daemon restart on its configured port recovers on its own.
 stop_server
@@ -233,7 +234,7 @@ recovered_sequence="$(remote_field 'latest.sequence')"
 [[ "$recovered_path" == "lan_direct" ]]
 [[ "$recovered_rtt" != "null" ]]
 [[ "$recovered_last_seen" != "null" ]]
-[[ "$(jq -S . "$registry")" == "$paired_registry" ]]
+[[ "$(jq -S 'map_values(del(.last_snapshot))' "$registry")" == "$paired_registry" ]]
 
 # 2. An address this viewer cannot follow stays visibly offline, keeps the last
 #    known values, and says what to do about it.
@@ -241,6 +242,7 @@ recovered_sequence="$(remote_field 'latest.sequence')"
 # runs and takes effect on the next start.
 server listen-port set "$moved_port" >/dev/null
 stop_server
+stopped_at_ms="$(node -e 'process.stdout.write(String(Date.now()))')"
 start_server
 wait_for_command "monitored daemon on its new port" server status
 [[ "$(jq -r '.data.bind_port' <<<"$(server status)")" == "$moved_port" ]]
@@ -251,7 +253,14 @@ grep -q "listen-port set" <<<"$offline_details" || {
   exit 1
 }
 [[ "$(remote_field 'latest.cpu_percent')" != "null" ]]
-[[ "$(remote_field 'latest.sequence')" == "$recovered_sequence" ]]
+# Permit in-flight samples collected before shutdown, but never a new sample
+# after it. Observe stability while actually offline, not while still sampling.
+offline_latest="$(remote_field 'latest')"
+offline_sequence="$(jq -r '.sequence' <<<"$offline_latest")"
+jq -e --argjson stopped "$stopped_at_ms" '.timestamp_ms <= $stopped' <<<"$offline_latest" >/dev/null
+sleep 5
+[[ "$(remote_field 'latest')" == "$offline_latest" ]]
+[[ "$(remote_field 'state')" == "offline" ]]
 [[ "$(viewer peer list | jq -r '.data | length')" == "0" ]]
 [[ "$(server peer list | jq -r '.data | length')" == "1" ]]
 [[ "$(jq -r 'length' "$registry")" == "1" ]]
@@ -263,7 +272,7 @@ server listen-port set "$paired_port" >/dev/null
 stop_server
 start_server
 wait_for_command "monitored daemon back on its paired port" server status
-wait_for_sequence_beyond "$recovered_sequence" 60
+wait_for_sequence_beyond "$offline_sequence" 60
 returned_sequence="$(remote_field 'latest.sequence')"
 
 kill "$viewer_pid"
