@@ -2,11 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { classifyChangedFiles, planForEvent } from "./ci-plan-lib.mjs";
 
-for (const file of [
-  "fuzz/Cargo.toml",
-  "fuzz/Cargo.lock",
-  "fuzz/fuzz_targets/pairing_bundle.rs",
-]) {
+for (const file of ["fuzz/Cargo.toml", "fuzz/Cargo.lock", "fuzz/fuzz_targets/pairing_bundle.rs"]) {
   test(`${file} selects dependency policy and keeps Linux-only Rust coverage`, () => {
     const plan = classifyChangedFiles([file]);
     assert.equal(plan.full_run, false);
@@ -22,7 +18,7 @@ for (const file of [
   });
 }
 
-test("fuzz-only dependency updates select Security on every supported PR transition and push", () => {
+test("fuzz dependency updates select Security on PR transitions and push", () => {
   for (const event of [
     { eventName: "pull_request", eventAction: "opened" },
     { eventName: "pull_request", eventAction: "reopened" },
@@ -44,10 +40,7 @@ test("corpus-only input does not select dependency policy or CodeQL", () => {
 });
 
 test("a corpus change cannot hide a simultaneous fuzz dependency change", () => {
-  const plan = classifyChangedFiles([
-    "fuzz/corpus/pairing_bundle/crash-0000",
-    "fuzz/Cargo.lock",
-  ]);
+  const plan = classifyChangedFiles(["fuzz/corpus/pairing_bundle/crash-0000", "fuzz/Cargo.lock"]);
   assert.equal(plan.security_policy, true);
   assert.equal(plan.codeql_rust, true);
 });
