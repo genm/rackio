@@ -53,7 +53,7 @@ jobs:
         with:
           key: mutants-${{ matrix.package }}
       - name: Install mutation and test tools
-        uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
+        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2.86.8
         with:
           tool: cargo-mutants@27.1.0,cargo-nextest@0.9.140
           fallback: none
