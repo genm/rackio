@@ -1,0 +1,130 @@
+name: Regenerate security lockfiles
+
+on:
+  push:
+    branches: [maintenance/security-lockfiles-20260922]
+    paths: [.github/workflows/maintenance-security-lockfiles.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maintenance-security-lockfiles
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    if: github.repository == 'genm/rackio'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Check out reviewed source without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install the repository Rust toolchain
+        run: rustup toolchain install 1.97.1 --profile minimal
+      - name: Install pinned policy and license tools
+        uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f
+        with:
+          tool: cargo-deny@0.20.2,cargo-about@0.9.1
+          fallback: none
+      - name: Resolve the independent workspace and apply TLS fixes
+        run: |
+          cargo metadata --locked --format-version 1 > /tmp/root-metadata.json
+          cargo update --manifest-path fuzz/Cargo.toml --workspace
+          cargo update --manifest-path fuzz/Cargo.toml -p rustls --precise 0.23.45
+          cargo update --manifest-path fuzz/Cargo.toml -p rustls-webpki --precise 0.103.15
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import tomllib
+          versions = {}
+          for name in ('Cargo.lock', 'fuzz/Cargo.lock'):
+              packages = tomllib.loads(pathlib.Path(name).read_text())['package']
+              by_name = {p['name']: p['version'] for p in packages}
+              assert by_name['iroh'] == '1.0.3', (name, by_name.get('iroh'))
+              assert by_name['rustls'] == '0.23.45', (name, by_name.get('rustls'))
+              assert by_name['rustls-webpki'] == '0.103.15', (name, by_name.get('rustls-webpki'))
+              assert 'decrepit' not in by_name, name
+              assert by_name.get('lz4_flex') != '0.11.5', name
+              versions[name] = {k: by_name.get(k) for k in ('iroh', 'rustls', 'rustls-webpki', 'decrepit', 'lz4_flex')}
+          print(json.dumps(versions, indent=2))
+          PY
+      - name: Audit both workspaces with the unchanged policy
+        run: |
+          cargo deny check > /tmp/root-deny.log 2>&1 || { grep -A 35 '^error' /tmp/root-deny.log; exit 1; }
+          tail -n 1 /tmp/root-deny.log
+          cargo deny --manifest-path fuzz/Cargo.toml check > /tmp/fuzz-deny.log 2>&1 || { grep -A 35 '^error' /tmp/fuzz-deny.log; exit 1; }
+          tail -n 1 /tmp/fuzz-deny.log
+      - name: Regenerate third-party notices
+        run: scripts/generate-third-party-licenses.sh THIRDPARTY.html
+      - name: Check fuzz targets with the generated lockfile
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y protobuf-compiler
+          cargo check --manifest-path fuzz/Cargo.toml --all-targets --locked > /tmp/fuzz-check.log 2>&1 || { tail -n 100 /tmp/fuzz-check.log; exit 1; }
+          tail -n 5 /tmp/fuzz-check.log
+          git diff --check
+          git diff --stat
+      - name: Save only generated files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: regenerated-security-files
+          path: |
+            Cargo.lock
+            fuzz/Cargo.lock
+            THIRDPARTY.html
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: generate
+    if: github.repository == 'genm/rackio' && github.ref == 'refs/heads/maintenance/security-lockfiles-20260922'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      # This fresh job never installs or executes repository/dependency code.
+      - name: Download this run's validated generated files
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: regenerated-security-files
+          path: generated
+      - name: Commit allowlisted data to the isolated maintenance branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import urllib.request
+          base = 'https://api.github.com/repos/genm/rackio'
+          branch = 'maintenance/security-lockfiles-20260922'
+          source = os.environ['SOURCE_SHA']
+          def api(path, data=None, method=None):
+              request = urllib.request.Request(base + path, data=None if data is None else json.dumps(data).encode(), method=method)
+              request.add_header('Authorization', 'Bearer ' + os.environ['GH_TOKEN'])
+              request.add_header('Accept', 'application/vnd.github+json')
+              request.add_header('Content-Type', 'application/json')
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          assert api('/git/ref/heads/' + branch)['object']['sha'] == source, 'Maintenance branch moved; refusing to overwrite it'
+          parent = api('/git/commits/' + source)
+          entries = []
+          for name in ('Cargo.lock', 'fuzz/Cargo.lock', 'THIRDPARTY.html'):
+              path = pathlib.Path('generated') / name
+              assert path.is_file() and not path.is_symlink(), name
+              assert path.stat().st_size < 5000000, name
+              blob = api('/git/blobs', {'content': path.read_text(), 'encoding': 'utf-8'})
+              entries.append({'path': name, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+          tree = api('/git/trees', {'base_tree': parent['tree']['sha'], 'tree': entries})
+          commit = api('/git/commits', {'message': 'fix(security): regenerate fuzz dependencies and license notices', 'tree': tree['sha'], 'parents': [source]})
+          api('/git/refs/heads/' + branch, {'sha': commit['sha'], 'force': False}, 'PATCH')
+          print(json.dumps({'commit': commit['sha'], 'tree': tree['sha'], 'files': entries}, indent=2))
+          PY
