@@ -529,11 +529,7 @@ async fn write_error(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-        sync::Arc,
-        time::Duration,
-    };
+    use std::{net::Ipv4Addr, sync::Arc, time::Duration};
 
     use rackio_core::{
         ConnectionPath, HealthSnapshot, MetricSample, MetricStore, NodeInfo, NodeState,
@@ -549,8 +545,8 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
-        ClientConnection, EndpointConfig, PairingManager, PairingMdnsState, PeerPermissions,
-        PeerRegistry, bind_endpoint, transport::ConnectionDetails,
+        ClientConnection, PairingManager, PairingMdnsState, PeerPermissions, PeerRegistry,
+        transport::ConnectionDetails,
     };
 
     use super::{HISTORY_PAGE_SIZE, NodeRuntime, RemoteServer, settle};
@@ -578,12 +574,25 @@ mod tests {
         _directory: tempfile::TempDir,
     }
 
+    // Bind both ends to loopback: supplying a loopback candidate alone still
+    // lets iroh discover and select unrelated host interfaces after connecting.
+    async fn test_endpoint() -> iroh::Endpoint {
+        iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .alpns(vec![rackio_protocol::ALPN.to_vec()])
+            .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+            .clear_relay_transports()
+            .clear_ip_transports()
+            .bind_addr((Ipv4Addr::LOCALHOST, 0))
+            .unwrap_or_else(|error| panic!("{error}"))
+            .bind()
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
     impl TestRack {
         async fn start() -> Self {
             let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
-            let endpoint = bind_endpoint(iroh::SecretKey::generate(), &EndpointConfig::default())
-                .await
-                .unwrap_or_else(|error| panic!("{error}"));
+            let endpoint = test_endpoint().await;
             let (latest_tx, latest) = watch::channel(None);
             let runtime = Arc::new(NodeRuntime {
                 info: NodeInfo {
@@ -630,29 +639,9 @@ mod tests {
             }
         }
 
-        /// Restrict every test connection to loopback so unrelated host
-        /// interfaces cannot turn a same-host contract test into a WAN-path
-        /// selection race.
         async fn connect(&self) -> ClientConnection {
-            let advertised = self.endpoint.addr();
-            let advertised_ip = advertised
-                .ip_addrs()
-                .find(|address| address.is_ipv4())
-                .or_else(|| advertised.ip_addrs().next())
-                .copied()
-                .unwrap_or_else(|| panic!("test endpoint did not advertise a direct address"));
-            let loopback = SocketAddr::new(
-                match advertised_ip {
-                    SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
-                    SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
-                },
-                advertised_ip.port(),
-            );
-            let address = iroh::EndpointAddr::new(self.endpoint.id()).with_ip_addr(loopback);
-            let client_endpoint =
-                bind_endpoint(iroh::SecretKey::generate(), &EndpointConfig::default())
-                    .await
-                    .unwrap_or_else(|error| panic!("{error}"));
+            let address = self.endpoint.addr();
+            let client_endpoint = test_endpoint().await;
             self.client_endpoints
                 .lock()
                 .unwrap_or_else(|error| panic!("{error}"))
@@ -1081,24 +1070,9 @@ mod tests {
             response::Body::NodeInfo(ref info) if info.display_name == "Test node"
         ));
 
-        // iroh can briefly select a different direct candidate while its path
-        // state converges under concurrent test load. Require the same-host LAN
-        // result eventually without treating the first truthful snapshot as
-        // the final path.
         let lan_direct = rackio_protocol::v1::ConnectionPath::LanDirect as i32;
-        let mut connection_path =
+        let connection_path =
             ask(&client, request::Body::GetConnectionPath(current_version())).await;
-        for _ in 0..40 {
-            if matches!(
-                connection_path,
-                response::Body::ConnectionPath(ref details) if details.path == lan_direct
-            ) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            connection_path =
-                ask(&client, request::Body::GetConnectionPath(current_version())).await;
-        }
         assert!(matches!(
             connection_path,
             response::Body::ConnectionPath(ref details) if details.path == lan_direct
