@@ -1017,7 +1017,16 @@ aGVsbG8gcmFja2lv
             "a machine with no relay configured must advertise no relay address"
         );
 
-        let server_address = server.addr();
+        // A host may also advertise public IPv6 addresses, which correctly
+        // classify as WAN. Exercise the LAN assertion over loopback explicitly.
+        let port = server
+            .bound_sockets()
+            .iter()
+            .find(|address| address.is_ipv4())
+            .unwrap_or_else(|| panic!("the default endpoint must bind IPv4"))
+            .port();
+        let server_address = iroh::EndpointAddr::new(server.id())
+            .with_ip_addr(SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)));
         let accept = tokio::spawn({
             let server = server.clone();
             async move {
