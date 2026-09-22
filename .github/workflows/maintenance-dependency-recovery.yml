@@ -93,16 +93,43 @@ jobs:
           tail -n 1 /tmp/root-deny.log
           cargo deny --manifest-path fuzz/Cargo.toml check > /tmp/fuzz-deny.log 2>&1 || { grep -A 35 '^error' /tmp/fuzz-deny.log; exit 1; }
           tail -n 1 /tmp/fuzz-deny.log
-          scripts/generate-third-party-licenses.sh THIRDPARTY.html
+      - name: Regenerate and reproduce notices using the exact Security command
+        run: |
+          scripts/generate-third-party-licenses.sh /tmp/rackio-THIRDPARTY.html
+          cp /tmp/rackio-THIRDPARTY.html THIRDPARTY.html
+          scripts/generate-third-party-licenses.sh /tmp/rackio-THIRDPARTY-repeat.html
+          diff -u THIRDPARTY.html /tmp/rackio-THIRDPARTY-repeat.html
+          python3 - <<'PY'
+          from pathlib import Path
+          from html.parser import HTMLParser
+          class CrateLinks(HTMLParser):
+              count = 0
+              def handle_starttag(self, tag, attrs):
+                  href = dict(attrs).get('href', '')
+                  prefix = 'https://crates.io/crates/'
+                  if tag == 'a' and href.startswith(prefix):
+                      assert '/' not in href[len(prefix):], href
+                      self.count += 1
+          parser = CrateLinks()
+          parser.feed(Path('THIRDPARTY.html').read_text())
+          assert parser.count > 0
+          print('Template-consistent crate links:', parser.count)
+          PY
+          git hash-object THIRDPARTY.html
       - name: Set up pinned Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24.15.0
-      - name: Activate pinned pnpm and resolve JavaScript lockfile
+      - name: Activate pinned pnpm and repair affected transitive dependencies
         run: |
           corepack enable
           corepack install
           pnpm install --lockfile-only --ignore-scripts
+          cp package.json /tmp/expected-package.json
+          cp apps/desktop/package.json /tmp/expected-desktop-package.json
+          pnpm update --lockfile-only --ignore-scripts --no-save --depth 100 fast-uri js-yaml
+          diff -u /tmp/expected-package.json package.json
+          diff -u /tmp/expected-desktop-package.json apps/desktop/package.json
           pnpm install --frozen-lockfile
       - name: Validate frontend and planner contracts without relaxing policy
         run: |
@@ -114,6 +141,8 @@ jobs:
           pnpm build
           pnpm audit --audit-level=high
           node scripts/generate-javascript-licenses.mjs THIRDPARTY-JAVASCRIPT.html
+          node scripts/generate-javascript-licenses.mjs /tmp/rackio-THIRDPARTY-JAVASCRIPT.html
+          diff -u THIRDPARTY-JAVASCRIPT.html /tmp/rackio-THIRDPARTY-JAVASCRIPT.html
           git diff --check
           git diff --stat
       - name: Save reviewed data and workflow files only
@@ -181,8 +210,11 @@ jobs:
               assert path.stat().st_size < 5000000, name
               blob = api('/git/blobs', {'content': path.read_text(), 'encoding': 'utf-8'})
               entries.append({'path': name, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
-          tree = api('/git/trees', {'base_tree': parent['tree']['sha'], 'tree': entries})
+          # Workflow blobs are reviewed/applied separately through the connector.
+          # The Actions token only commits generated dependency data on this branch.
+          data_entries = [entry for entry in entries if not entry['path'].startswith('.github/')]
+          tree = api('/git/trees', {'base_tree': parent['tree']['sha'], 'tree': data_entries})
           commit = api('/git/commits', {'message': 'chore(deps): regenerate reviewed pending dependency updates', 'tree': tree['sha'], 'parents': [source]})
+          print(json.dumps({'commit': commit['sha'], 'tree': tree['sha'], 'files': entries}, indent=2), flush=True)
           api('/git/refs/heads/' + branch, {'sha': commit['sha'], 'force': False}, 'PATCH')
-          print(json.dumps({'commit': commit['sha'], 'tree': tree['sha'], 'files': entries}, indent=2))
           PY
