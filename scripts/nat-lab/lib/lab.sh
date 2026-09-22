@@ -191,8 +191,7 @@ lab_remote_field_of() {
   local viewer="$1" endpoint_id="$2" field="$3"
   lab_rackio "$viewer" fleet 2>/dev/null |
     jq -r --arg id "$endpoint_id" \
-      ".data.remotes[] | select(.endpoint_id == \$id) | .$field" |
-    head -n 1
+      "first(.data.remotes[] | select(.endpoint_id == \$id)) | .$field"
 }
 
 lab_wait_for_remote_sample_of() {
