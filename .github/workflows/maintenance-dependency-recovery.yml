@@ -1,0 +1,188 @@
+name: Validate pending dependency recovery
+
+on:
+  push:
+    branches: [maintenance/dependency-recovery-20260922]
+    paths: [.github/workflows/maintenance-dependency-recovery.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maintenance-dependency-recovery
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    if: github.repository == 'genm/rackio'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Check out source without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.97.1 --profile minimal
+      - name: Install pinned policy and license tools
+        uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f
+        with:
+          tool: cargo-deny@0.20.2,cargo-about@0.9.1
+          fallback: none
+      - name: Apply reviewed manifest versions and verified action commits
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('Cargo.toml')
+          text = path.read_text()
+          old = 'tauri-plugin-dialog = "=2.7.2"'
+          assert text.count(old) == 1
+          path.write_text(text.replace(old, 'tauri-plugin-dialog = "=2.7.3"'))
+          updates = {
+              'package.json': {'js-yaml': ('5.3.0', '5.4.1'), 'oxfmt': ('0.64.0', '0.65.0'), 'oxlint': ('1.79.0', '1.80.0')},
+              'apps/desktop/package.json': {'@testing-library/react': ('16.3.2', '16.3.3'), '@vitejs/plugin-react': ('6.1.0', '6.1.1'), 'happy-dom': ('20.11.6', '20.12.2')},
+          }
+          for name, dependencies in updates.items():
+              path = Path(name)
+              data = json.loads(path.read_text())
+              for package, (old, new) in dependencies.items():
+                  assert data['devDependencies'][package] == old, (name, package)
+                  data['devDependencies'][package] = new
+              path.write_text(json.dumps(data, indent=2) + '\n')
+          replacements = {
+              'a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4': 'fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2.86.8',
+              'ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7': 'cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9',
+          }
+          for name in ('ci.yml', 'codeql.yml', 'deep-verification.yml', 'scorecard.yml', 'security.yml'):
+              path = Path('.github/workflows') / name
+              before = path.read_text()
+              after = before
+              for old, new in replacements.items():
+                  after = after.replace(old, new)
+              assert after != before, name
+              path.write_text(after)
+          PY
+      - name: Resolve only reviewed Cargo updates
+        run: |
+          cargo update -p clap --precise 4.6.7
+          cargo update -p tauri-plugin-dialog --precise 2.7.3
+          cargo update -p tauri-plugin-notification --precise 2.4.0
+          cargo update -p uuid --precise 1.26.0
+          cargo update --manifest-path fuzz/Cargo.toml --workspace
+          cargo update --manifest-path fuzz/Cargo.toml -p uuid --precise 1.26.0
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import tomllib
+          for name in ('Cargo.lock', 'fuzz/Cargo.lock'):
+              packages = tomllib.loads(pathlib.Path(name).read_text())['package']
+              versions = {p['name']: p['version'] for p in packages}
+              expected = {'iroh': '1.0.3', 'rustls': '0.23.45', 'rustls-webpki': '0.103.15', 'uuid': '1.26.0'}
+              if name == 'Cargo.lock':
+                  expected.update({'clap': '4.6.7', 'tauri-plugin-dialog': '2.7.3', 'tauri-plugin-notification': '2.4.0'})
+              for package, version in expected.items():
+                  assert versions[package] == version, (name, package, versions.get(package))
+              assert 'decrepit' not in versions
+              assert versions.get('lz4_flex') != '0.11.5'
+              print(name, json.dumps(expected, sort_keys=True))
+          PY
+          cargo deny check > /tmp/root-deny.log 2>&1 || { grep -A 35 '^error' /tmp/root-deny.log; exit 1; }
+          tail -n 1 /tmp/root-deny.log
+          cargo deny --manifest-path fuzz/Cargo.toml check > /tmp/fuzz-deny.log 2>&1 || { grep -A 35 '^error' /tmp/fuzz-deny.log; exit 1; }
+          tail -n 1 /tmp/fuzz-deny.log
+          scripts/generate-third-party-licenses.sh THIRDPARTY.html
+      - name: Set up pinned Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.15.0
+      - name: Activate pinned pnpm and resolve JavaScript lockfile
+        run: |
+          corepack enable
+          corepack install
+          pnpm install --lockfile-only --ignore-scripts
+          pnpm install --frozen-lockfile
+      - name: Validate frontend and planner contracts without relaxing policy
+        run: |
+          pnpm format:check
+          pnpm lint
+          pnpm typecheck
+          pnpm test:ci-plan
+          pnpm test
+          pnpm build
+          pnpm audit --audit-level=high
+          node scripts/generate-javascript-licenses.mjs THIRDPARTY-JAVASCRIPT.html
+          git diff --check
+          git diff --stat
+      - name: Save reviewed data and workflow files only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: dependency-recovery-files
+          path: |
+            Cargo.toml
+            Cargo.lock
+            fuzz/Cargo.lock
+            THIRDPARTY.html
+            package.json
+            apps/desktop/package.json
+            pnpm-lock.yaml
+            THIRDPARTY-JAVASCRIPT.html
+            .github/workflows/ci.yml
+            .github/workflows/codeql.yml
+            .github/workflows/deep-verification.yml
+            .github/workflows/scorecard.yml
+            .github/workflows/security.yml
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: generate
+    if: github.repository == 'genm/rackio' && github.ref == 'refs/heads/maintenance/dependency-recovery-20260922'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download this run's generated files
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: dependency-recovery-files
+          path: generated
+      - name: Store allowlisted files without executing repository code
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import urllib.request
+          base = 'https://api.github.com/repos/genm/rackio'
+          branch = 'maintenance/dependency-recovery-20260922'
+          source = os.environ['SOURCE_SHA']
+          def api(path, data=None, method=None):
+              request = urllib.request.Request(base + path, data=None if data is None else json.dumps(data).encode(), method=method)
+              request.add_header('Authorization', 'Bearer ' + os.environ['GH_TOKEN'])
+              request.add_header('Accept', 'application/vnd.github+json')
+              request.add_header('Content-Type', 'application/json')
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          assert api('/git/ref/heads/' + branch)['object']['sha'] == source, 'Maintenance branch moved'
+          parent = api('/git/commits/' + source)
+          names = ('Cargo.toml', 'Cargo.lock', 'fuzz/Cargo.lock', 'THIRDPARTY.html', 'package.json', 'apps/desktop/package.json', 'pnpm-lock.yaml', 'THIRDPARTY-JAVASCRIPT.html', '.github/workflows/ci.yml', '.github/workflows/codeql.yml', '.github/workflows/deep-verification.yml', '.github/workflows/scorecard.yml', '.github/workflows/security.yml')
+          entries = []
+          for name in names:
+              path = pathlib.Path('generated') / name
+              assert path.is_file() and not path.is_symlink(), name
+              assert path.stat().st_size < 5000000, name
+              blob = api('/git/blobs', {'content': path.read_text(), 'encoding': 'utf-8'})
+              entries.append({'path': name, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+          tree = api('/git/trees', {'base_tree': parent['tree']['sha'], 'tree': entries})
+          commit = api('/git/commits', {'message': 'chore(deps): regenerate reviewed pending dependency updates', 'tree': tree['sha'], 'parents': [source]})
+          api('/git/refs/heads/' + branch, {'sha': commit['sha'], 'force': False}, 'PATCH')
+          print(json.dumps({'commit': commit['sha'], 'tree': tree['sha'], 'files': entries}, indent=2))
+          PY
