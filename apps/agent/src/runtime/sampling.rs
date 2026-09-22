@@ -144,7 +144,8 @@ pub(super) async fn sample_loop(
         for signal in alerts.evaluate(&sample, &rules) {
             // A raised alert is the event an operator is waiting for, so it is
             // logged at warn even when its severity is only `Warning`; the
-            // recovery that ends it stays at info.
+            // transition that clears it stays at info. The detail distinguishes
+            // measured recovery from an unavailable metric.
             if signal.active {
                 tracing::warn!(
                     rule = %signal.rule_id,
@@ -156,7 +157,7 @@ pub(super) async fn sample_loop(
                 tracing::info!(
                     rule = %signal.rule_id,
                     detail = %signal.detail,
-                    "local health threshold recovered"
+                    "local health threshold cleared"
                 );
             }
         }
