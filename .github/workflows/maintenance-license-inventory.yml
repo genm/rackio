@@ -1,0 +1,123 @@
+name: Regenerate committed license inventory
+
+on:
+  push:
+    branches: [maintenance/license-inventory-20260922]
+    paths: [.github/workflows/maintenance-license-inventory.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    if: github.repository == 'genm/rackio'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the integrated dependency commit without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ae51f984d22faab37f1a8115e0b1fd9fa2f64741
+          persist-credentials: false
+      - name: Select pinned Rust
+        run: rustup toolchain install 1.97.1 --profile minimal
+      - name: Install pinned license generator
+        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7
+        with:
+          tool: cargo-about@0.9.1
+          fallback: none
+      - name: Generate notices from the committed lockfile
+        run: |
+          test "$(git rev-parse HEAD)" = ae51f984d22faab37f1a8115e0b1fd9fa2f64741
+          test "$(git hash-object Cargo.lock)" = 6296b6db29a420cf0996d263c92f5f218c7d2859
+          cargo metadata --locked --format-version 1 > /tmp/rackio-metadata.json
+          scripts/generate-third-party-licenses.sh /tmp/rackio-THIRDPARTY.html
+          cp /tmp/rackio-THIRDPARTY.html THIRDPARTY.html
+          scripts/generate-third-party-licenses.sh /tmp/rackio-THIRDPARTY-repeat.html
+          diff -u THIRDPARTY.html /tmp/rackio-THIRDPARTY-repeat.html
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import tomllib
+          html = pathlib.Path('THIRDPARTY.html').read_text()
+          packages = tomllib.loads(pathlib.Path('Cargo.lock').read_text())['package']
+          versions = {p['name']: p['version'] for p in packages}
+          expected = {'clap': '4.6.7', 'clap_builder': '4.6.7', 'tauri-plugin-dialog': '2.7.3', 'tauri-plugin-fs': '2.5.2', 'tauri-plugin-notification': '2.4.0', 'uuid': '1.26.0', 'iroh': '1.0.3', 'rustls': '0.23.45', 'rustls-webpki': '0.103.15'}
+          for name, version in expected.items():
+              assert versions[name] == version, (name, versions.get(name))
+              assert '>' + name + ' ' + version + '</a>' in html, ('missing current notice', name, version)
+          for name, version in {'clap': '4.6.6', 'clap_builder': '4.6.6', 'tauri-plugin-dialog': '2.7.2', 'tauri-plugin-fs': '2.5.1', 'tauri-plugin-notification': '2.3.3', 'uuid': '1.24.1'}.items():
+              assert '>' + name + ' ' + version + '</a>' not in html, ('stale notice', name, version)
+          metadata = json.loads(pathlib.Path('/tmp/rackio-metadata.json').read_text())
+          actual = {(p['name'], p['version']) for p in metadata['packages']}
+          assert all(item in actual for item in expected.items())
+          print(json.dumps({'source': 'ae51f984d22faab37f1a8115e0b1fd9fa2f64741', 'verified_notices': expected}, indent=2))
+          PY
+      - name: Set up pinned Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.15.0
+      - name: Reproduce JavaScript notices and audit the frozen dependency graph
+        run: |
+          corepack enable
+          corepack install
+          pnpm install --frozen-lockfile
+          pnpm audit --audit-level=high
+          node scripts/generate-javascript-licenses.mjs THIRDPARTY-JAVASCRIPT.html
+          node scripts/generate-javascript-licenses.mjs /tmp/rackio-THIRDPARTY-JAVASCRIPT.html
+          diff -u THIRDPARTY-JAVASCRIPT.html /tmp/rackio-THIRDPARTY-JAVASCRIPT.html
+          git diff --exit-code -- Cargo.toml Cargo.lock fuzz/Cargo.lock package.json apps/desktop/package.json pnpm-lock.yaml pnpm-workspace.yaml about.hbs
+          git diff --check
+          git diff --stat
+          git hash-object THIRDPARTY.html THIRDPARTY-JAVASCRIPT.html
+      - name: Preserve verified inventories
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: committed-license-inventories
+          path: |
+            THIRDPARTY.html
+            THIRDPARTY-JAVASCRIPT.html
+          retention-days: 3
+          if-no-files-found: error
+
+  publish:
+    needs: generate
+    if: github.repository == 'genm/rackio' && github.ref == 'refs/heads/maintenance/license-inventory-20260922'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download this run's verified inventories
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: committed-license-inventories
+          path: generated
+      - name: Store only verified inventories without executing repository code
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import urllib.request
+          entries = []
+          for name in ('THIRDPARTY.html', 'THIRDPARTY-JAVASCRIPT.html'):
+              path = pathlib.Path('generated') / name
+              assert path.is_file() and not path.is_symlink()
+              content = path.read_bytes()
+              assert 0 < len(content) < 5000000
+              data = json.dumps({'content': content.decode('utf-8'), 'encoding': 'utf-8'}).encode()
+              request = urllib.request.Request('https://api.github.com/repos/genm/rackio/git/blobs', data=data, method='POST')
+              request.add_header('Authorization', 'Bearer ' + os.environ['GH_TOKEN'])
+              request.add_header('Accept', 'application/vnd.github+json')
+              request.add_header('Content-Type', 'application/json')
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  blob = json.load(response)
+              expected_sha = hashlib.sha1(b'blob ' + str(len(content)).encode() + b'\0' + content).hexdigest()
+              assert blob['sha'] == expected_sha, (name, blob['sha'], expected_sha)
+              entries.append({'path': name, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+          print(json.dumps({'source': 'ae51f984d22faab37f1a8115e0b1fd9fa2f64741', 'files': entries}, indent=2))
+          PY
