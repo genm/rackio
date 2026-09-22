@@ -262,7 +262,7 @@ jobs:
         # nightly. Type-checking it here on stable means a refactor that breaks
         # a target fails on the pull request that caused it, not a week later.
         if: env.RUN_RUST == 'true' && runner.os == 'Linux'
-        run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
+        run: cargo check --manifest-path fuzz/Cargo.toml --all-targets --locked
       - name: Exercise two-daemon pairing and reconnect
         if: env.RUN_RUST == 'true' && runner.os == 'Linux'
         run: scripts/test-two-daemon-pairing.sh
