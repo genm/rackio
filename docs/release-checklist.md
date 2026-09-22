@@ -143,8 +143,8 @@ A headless Linux agent archive may therefore be published as the evaluation
 pre-release defined in [`release-governance.md`](release-governance.md). The
 desktop application stays unpublished on Linux until the advisory is resolved.
 
-The exact `iroh 1.0.3` dependency is built without default features. Rackio
-clears relay transports for direct-only operation and constructs only the
+The exact iroh dependency pinned in `Cargo.toml` is built without default
+features. Rackio clears relay transports for direct-only operation and constructs only the
 custom relay variant when a self-hosted URL is configured. This keeps the
 upstream production and staging relay constants out of the final LTO binary;
 the artifact scan above guards against regression.

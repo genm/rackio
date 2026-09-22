@@ -78,7 +78,8 @@ lab_assert_true "pairing_accepted" "the viewer imported the pairing bundle" \
 fleet="$(lab_wait_for_remote_sample "$viewer")"
 endpoint_id="$(jq -r '.data.remotes[0].endpoint_id' <<<"$fleet")"
 paired_sequence="$(jq -r '.data.remotes[0].latest.sequence' <<<"$fleet")"
-paired_registry="$(lab_registry "$viewer" '.')"
+# Cached metrics change independently of the registered identity and addresses.
+paired_registry="$(lab_registry "$viewer" 'map_values(del(.last_snapshot))')"
 
 # --- Phase 1: a restart on the paired address recovers on its own -----------
 lab_daemon_stop "$monitored"
@@ -101,11 +102,12 @@ lab_assert_true "restart_recovered_last_seen" "the viewer recorded a fresh last-
   "$([[ "$recovered_last_seen" != "null" ]] && echo true || echo false)"
 lab_assert_equal "registry_unchanged_by_restart" \
   "a restart on the paired address does not rewrite the viewer's registry" \
-  "$(lab_registry "$viewer" '.')" "$paired_registry"
+  "$(lab_registry "$viewer" 'map_values(del(.last_snapshot))')" "$paired_registry"
 
 # --- Phase 2: an address the viewer cannot follow stays visibly offline -----
 lab_rackio "$monitored" listen-port set "$moved_port" >/dev/null
 lab_daemon_stop "$monitored"
+stopped_at_ms="$(lab_exec "$monitored" date +%s%3N)"
 move_address "$paired_address" "$moved_address"
 lab_daemon_start "$monitored"
 lab_wait_for_command "monitored daemon on its new address" \
@@ -125,9 +127,20 @@ lab_assert_true "unreachable_machine_says_how_to_recover" \
 lab_assert_true "last_known_values_preserved" \
   "an offline machine keeps its last known sample instead of reading as zero" \
   "$([[ "$(lab_remote_field "$viewer" 'latest.cpu_percent')" != "null" ]] && echo true || echo false)"
-lab_assert_equal "offline_sequence_frozen" \
-  "no fresh sample is invented while the machine is unreachable" \
-  "$(lab_remote_field "$viewer" 'latest.sequence')" "$recovered_sequence"
+# Samples can arrive between the recovered observation and daemon shutdown.
+# Bound their timestamp by shutdown, then prove the entire offline sample stays
+# frozen across more than two sampling intervals.
+offline_latest="$(lab_remote_field "$viewer" 'latest')"
+offline_sequence="$(jq -r '.sequence' <<<"$offline_latest")"
+lab_assert_true "last_sample_precedes_shutdown" \
+  "the retained sample was collected before the monitored daemon stopped" \
+  "$(jq --argjson stopped "$stopped_at_ms" '.timestamp_ms <= $stopped' <<<"$offline_latest")"
+sleep 5
+lab_assert_equal "offline_sample_frozen" \
+  "no metric payload changes while the machine is unreachable" \
+  "$(lab_remote_field "$viewer" 'latest')" "$offline_latest"
+lab_assert_equal "machine_stays_offline" "the unknown address does not recover by itself" \
+  "$(lab_remote_field "$viewer" 'state')" "offline"
 lab_assert_equal "viewer_grants_nothing" "the viewer authorized no peer of its own" \
   "$(lab_rackio "$viewer" peer list | jq -r '.data | length')" "0"
 lab_assert_equal "monitored_allowlist_intact" \
@@ -146,7 +159,7 @@ lab_daemon_start "$monitored"
 lab_wait_for_command "monitored daemon back on its paired address" \
   lab_rackio "$monitored" status
 return_started_ms="$(lab_now_ms)"
-lab_wait_for_sequence_beyond "$viewer" "$recovered_sequence" 90
+lab_wait_for_sequence_beyond "$viewer" "$offline_sequence" 90
 return_reconnect_ms=$(($(lab_now_ms) - return_started_ms))
 returned_sequence="$(lab_remote_field "$viewer" 'latest.sequence')"
 
@@ -187,7 +200,7 @@ lab_observe packet_loss "$packet_loss"
 lab_observe capture "$capture"
 lab_observe relay "$(jq -n --arg url "$relay_url" --arg mode "$relay_mode" \
   '{configured_relay_url: (if $url == "null" then null else $url end),
-    relay_mode: $mode, relays_running_in_lab: 0}')"
+    relay_mode: $mode, relays_running_in_lab: 1}')"
 lab_observe_string offline_details "$offline_details"
 
 lab_assert_equal "selected_path" "the recovered path is LAN direct" \

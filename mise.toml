@@ -45,7 +45,7 @@ run = [
   "cargo clippy --workspace --all-targets --all-features -- -D warnings",
   "cargo doc --workspace --all-features --no-deps",
   "cargo nextest run --workspace",
-  "cargo check --manifest-path fuzz/Cargo.toml --all-targets",
+  "cargo check --manifest-path fuzz/Cargo.toml --all-targets --locked",
   "scripts/test-two-daemon-cleanup.sh",
   "scripts/test-two-daemon-pairing.sh",
   "scripts/test-two-daemon-address-change.sh",

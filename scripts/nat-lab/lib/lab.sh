@@ -20,6 +20,7 @@ lab_results_dir="$lab_repo_root/test-results/nat-matrix"
 LAB_AGENT_IMAGE="${LAB_AGENT_IMAGE:-rackio-nat-lab-agent:local}"
 LAB_ROUTER_IMAGE="${LAB_ROUTER_IMAGE:-rackio-nat-lab-router:local}"
 LAB_SERVICES_IMAGE="${LAB_SERVICES_IMAGE:-rackio-nat-lab-services:local}"
+LAB_RELAY_IMAGE="${LAB_RELAY_IMAGE:-rackio-nat-lab-relay:local}"
 # Captures are bounded so a long scenario cannot fill a disk with evidence.
 LAB_CAPTURE_SECONDS="${LAB_CAPTURE_SECONDS:-180}"
 LAB_CAPTURE_PACKETS="${LAB_CAPTURE_PACKETS:-20000}"
@@ -58,6 +59,13 @@ lab_build_images() {
     --platform linux/arm64 \
     --file "$lab_dir/services.Dockerfile" \
     --tag "$LAB_SERVICES_IMAGE" \
+    "$lab_repo_root"
+  # The compose topology always includes the pinned relay, even for direct
+  # scenarios. Build it here so a cold machine never tries to pull a local tag.
+  DOCKER_BUILDKIT=1 docker build \
+    --platform linux/arm64 \
+    --file "$lab_repo_root/relay-package/Dockerfile" \
+    --tag "$LAB_RELAY_IMAGE" \
     "$lab_repo_root"
 }
 
@@ -183,8 +191,7 @@ lab_remote_field_of() {
   local viewer="$1" endpoint_id="$2" field="$3"
   lab_rackio "$viewer" fleet 2>/dev/null |
     jq -r --arg id "$endpoint_id" \
-      ".data.remotes[] | select(.endpoint_id == \$id) | .$field" |
-    head -n 1
+      "first(.data.remotes[] | select(.endpoint_id == \$id)) | .$field"
 }
 
 lab_wait_for_remote_sample_of() {

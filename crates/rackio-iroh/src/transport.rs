@@ -720,14 +720,16 @@ aGVsbG8gcmFja2lv
         // Falling back to an ephemeral port here would stand the daemon up on
         // an address no viewer knows, which is exactly the failure the setting
         // exists to prevent.
-        let port = free_udp_port();
+        let holder = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let port = holder
+            .local_addr()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .port();
         let config = EndpointConfig {
             bind_port: Some(port),
             ..EndpointConfig::default()
         };
-        let holder = bind_endpoint(SecretKey::generate(), &config)
-            .await
-            .unwrap_or_else(|error| panic!("{error}"));
 
         let error = bind_endpoint(SecretKey::generate(), &config)
             .await
@@ -741,7 +743,7 @@ aGVsbG8gcmFja2lv
             other => panic!("a taken port must be reported as such, got {other}"),
         }
 
-        holder.close().await;
+        drop(holder);
     }
 
     #[tokio::test]
@@ -765,20 +767,16 @@ aGVsbG8gcmFja2lv
         // A viewer recovers a moved peer by learning the address of the
         // session it already authenticated, so that address has to be readable
         // from the connection itself.
-        let port = free_udp_port();
-        let server = bind_endpoint(
-            SecretKey::generate(),
-            &EndpointConfig {
-                bind_port: Some(port),
-                ..EndpointConfig::default()
-            },
-        )
-        .await
-        .unwrap_or_else(|error| panic!("{error}"));
+        // Let the endpoint reserve its own port atomically; probing and releasing
+        // a free port lets another concurrent test claim it before this bind.
+        let server = bind_endpoint(SecretKey::generate(), &EndpointConfig::default())
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
         let client_endpoint = bind_endpoint(SecretKey::generate(), &EndpointConfig::default())
             .await
             .unwrap_or_else(|error| panic!("{error}"));
         let server_address = server.addr();
+        let candidates: Vec<_> = server_address.ip_addrs().copied().collect();
         let accept = tokio::spawn({
             let server = server.clone();
             async move {
@@ -798,7 +796,7 @@ aGVsbG8gcmFja2lv
         let observed = client.observed_direct_addresses();
 
         assert!(
-            observed.iter().all(|address| address.port() == port),
+            observed.iter().all(|address| candidates.contains(address)),
             "an observed direct address must be the peer's own listen address, got {observed:?}"
         );
         assert!(

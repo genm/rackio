@@ -148,6 +148,7 @@ owns it and is not permanently replicated by the viewer.
 ## Version policy
 
 The original design assumed pre-1.0 iroh. Implementation began after iroh 1.0,
-so the adapter pins exact `iroh = 1.0.3`. All iroh calls remain isolated inside
-`rackio-iroh`; upgrading requires the NAT and privacy matrices in
+so the adapter pins an exact iroh version in the root `Cargo.toml`. All iroh
+calls remain isolated inside `rackio-iroh`; upgrading requires the NAT and
+privacy matrices in
 [`release-checklist.md`](release-checklist.md).

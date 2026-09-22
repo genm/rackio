@@ -17,7 +17,8 @@ scripts/nat-lab/run.sh address_change   # one scenario
 ```
 
 Requires Docker with the compose plugin, plus `jq` and `node` on the host. The
-runner builds the images, runs each scenario in a freshly created topology,
+runner builds the agent, router, service and version-pinned relay images, runs
+each scenario in a freshly created topology,
 writes the reports, tears the topology down, and exits non-zero if any scenario
 failed.
 
