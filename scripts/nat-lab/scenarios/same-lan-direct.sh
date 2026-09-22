@@ -59,7 +59,7 @@ lab_observe packet_loss "$packet_loss"
 lab_observe capture "$capture"
 lab_observe relay "$(jq -n --arg url "$relay_url" --arg mode "$relay_mode" \
   '{configured_relay_url: (if $url == "null" then null else $url end),
-    relay_mode: $mode, relays_running_in_lab: 0}')"
+    relay_mode: $mode, relays_running_in_lab: 1}')"
 
 lab_assert_equal "selected_path" "a peer on the same LAN is a LAN-direct path" \
   "$selected_path" "lan_direct"
