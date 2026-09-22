@@ -6,7 +6,7 @@ const GLOBAL_PATHS = [
   /^\.github\/workflows\//,
   /^mise\.toml$/,
   /^scripts\/ci-plan(?:-lib)?\.mjs$/,
-  /^scripts\/ci-plan\.test\.mjs$/,
+  /^scripts\/ci-plan(?:-security)?\.test\.mjs$/,
   /^scripts\/reject-matches(?:\.sh|\.test\.mjs)$/,
 ];
 
@@ -44,6 +44,9 @@ const FRONTEND_PATHS = [
 const SECURITY_POLICY_PATHS = [
   /^\.github\/dependabot\.yml$/,
   /^(?:Cargo\.(?:toml|lock)|deny\.toml|rust-toolchain\.toml)$/,
+  // fuzz is a separate Cargo workspace with its own lockfile and Dependabot
+  // updates. Its existing cargo-deny check must run when that workspace changes.
+  /^fuzz\/(?!corpus\/)/,
   /^(?:package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)$/,
   /^THIRDPARTY(?:-JAVASCRIPT)?\.html$/,
   /^(?:apps\/agent|crates|proto)\//,

@@ -20,16 +20,17 @@ minimumReleaseAgeExclude:
 # Each entry is the patched range from the advisory itself, so removing the
 # parent's stale pin is enough to drop the override.
 overrides:
-  # GHSA-7p8r-x3mc-p8w7: host confusion via a backslash authority introducer,
+  # GHSA-5jgf-p345-68v8, GHSA-f65p-4m7j-42xc, GHSA-fph4-wmhf-6fwf and
+  # GHSA-jqff-g426-hqxp: URI normalization and host confusion vulnerabilities,
   # reached through @commitlint/config-validator > ajv.
-  fast-uri@>=3.0.0 <3.1.5: "^3.1.5"
+  fast-uri@>=3.0.0 <3.1.6: "^3.1.6"
   # GHSA-2v37-7h3g-55p8: custom generators loop indefinitely on size zero,
   # reached through vite > postcss.
   nanoid@<3.3.17: "^3.3.18"
-  # GHSA-5p4m-2wfm-xmqj: quadratic CPU consumption resolving !!omap. The direct
-  # devDependency is pinned to the patched release; this covers the copy
-  # cosmiconfig resolves for @commitlint/load.
-  js-yaml@>=4.0.0 <4.3.1: "4.3.1"
+  # GHSA-2883-xcg3-v3hh: empty YAML merge sources bypass the CPU limit.
+  # The direct devDependency uses the patched 5.x release; this covers the
+  # 4.x copy cosmiconfig resolves for @commitlint/load.
+  js-yaml@>=4.0.0 <4.3.2: "4.3.2"
 allowBuilds:
   "@tauri-apps/cli": true
   esbuild: true
