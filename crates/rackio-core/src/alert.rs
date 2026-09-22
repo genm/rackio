@@ -334,9 +334,10 @@ impl AlertEvaluator {
             .filter_map(|rule| {
                 // A metric that became unreadable is not a metric below its
                 // threshold. Skipping the rule outright left an already-raised
-                // alert latched forever with no recovery transition, so clear
+                // alert latched forever with no clearing transition, so clear
                 // it explicitly instead.
-                let breach = match metric_reading(sample, &rule.metric) {
+                let reading = metric_reading(sample, &rule.metric);
+                let breach = match reading.as_ref() {
                     None => {
                         self.counts.insert(rule.id.clone(), 0);
                         None
@@ -355,7 +356,7 @@ impl AlertEvaluator {
                 // Rewritten on every tick while active: the fullest filesystem
                 // can change, and a stale mount name would send an operator to
                 // the wrong disk.
-                let detail = breach.map(|reading| breach_description(rule, &reading));
+                let detail = breach.map(|reading| breach_description(rule, reading));
                 if let Some(detail) = detail.clone() {
                     self.active.insert(
                         rule.id.clone(),
@@ -371,7 +372,17 @@ impl AlertEvaluator {
                     rule_id: rule.id.clone(),
                     active: now_active,
                     severity: rule.severity,
-                    detail: detail.unwrap_or_else(|| recovery_description(rule)),
+                    detail: detail.unwrap_or_else(|| {
+                        // Clearing an unreadable metric does not prove recovery.
+                        if reading.is_none() {
+                            format!(
+                                "{} is unavailable; threshold recovery is unconfirmed",
+                                metric_subject(&rule.metric)
+                            )
+                        } else {
+                            recovery_description(rule)
+                        }
+                    }),
                 })
             })
             .collect()
@@ -620,14 +631,23 @@ mod tests {
         assert!(raised[0].active);
         assert_eq!(evaluator.worst_active_severity(), Some(NodeState::Critical));
 
-        // The CPU source becomes unreadable. Without an explicit recovery the
-        // operator would see a permanently latched critical alert.
+        // Clear the latched alert without claiming a measured recovery.
         let mut unreadable = sample(0.0);
         unreadable.cpu_percent = None;
         let cleared = evaluator.evaluate(&unreadable, std::slice::from_ref(&rule));
         assert_eq!(cleared.len(), 1);
         assert!(!cleared[0].active);
+        assert_eq!(
+            cleared[0].detail,
+            "CPU is unavailable; threshold recovery is unconfirmed"
+        );
         assert_eq!(evaluator.worst_active_severity(), None);
+        assert!(
+            evaluator
+                .evaluate(&unreadable, std::slice::from_ref(&rule))
+                .is_empty()
+        );
+        assert!(evaluator.evaluate(&sample(90.0), std::slice::from_ref(&rule))[0].active);
     }
 
     fn rule(id: &str, metric: &str, comparison: Comparison, threshold: f64) -> AlertRule {
@@ -658,6 +678,10 @@ mod tests {
 
         let raised = evaluator.evaluate(&sample(5.0), std::slice::from_ref(&rule));
         assert!(raised[0].active);
+        assert_eq!(
+            raised[0].detail,
+            "CPU 5% is at or below the warning threshold of 10%"
+        );
 
         let recovered = evaluator.evaluate(&sample(50.0), std::slice::from_ref(&rule));
         assert!(!recovered[0].active);
@@ -707,6 +731,7 @@ mod tests {
         // an unranked severity must not displace it.
         let _ = evaluator.evaluate(&sample(15.0), &rules);
         assert_eq!(evaluator.worst_active_severity(), Some(NodeState::Warning));
+        assert!(evaluator.active_details()[0].contains("warning"));
 
         // With only the unranked rule active there is still an answer.
         let _ = evaluator.evaluate(&sample(5.0), &rules);
@@ -995,10 +1020,10 @@ mod tests {
             .evaluate(&sample_with_disks, std::slice::from_ref(&rule))
             .remove(0);
 
-        assert!(raised.detail.contains("/data"), "{}", raised.detail);
-        assert!(raised.detail.contains("93%"), "{}", raised.detail);
-        assert!(raised.detail.contains("90%"), "{}", raised.detail);
-        assert!(raised.detail.contains("warning"), "{}", raised.detail);
+        assert_eq!(
+            raised.detail,
+            "Disk /data 93% is at or above the warning threshold of 90%"
+        );
     }
 
     #[test]
@@ -1033,8 +1058,7 @@ mod tests {
             .remove(0);
 
         assert!(!recovered.active);
-        assert!(recovered.detail.contains("CPU"), "{}", recovered.detail);
-        assert!(recovered.detail.contains("80%"), "{}", recovered.detail);
+        assert_eq!(recovered.detail, "CPU left the warning threshold of 80%");
     }
 
     #[test]
@@ -1126,6 +1150,52 @@ mod tests {
         assert!(!entry.enabled);
         assert_eq!(entry.source, super::AlertRuleSource::BuiltIn);
         assert!((entry.rule.threshold - 90.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn each_level_override_is_reported_as_configured() {
+        let base = override_for("disk-capacity-warning");
+        for change in [
+            super::AlertRuleConfig {
+                metric: Some("swap_percent".into()),
+                ..base.clone()
+            },
+            super::AlertRuleConfig {
+                comparison: Some(Comparison::LessThanOrEqual),
+                ..base.clone()
+            },
+            super::AlertRuleConfig {
+                threshold: Some(80.0),
+                ..base.clone()
+            },
+            super::AlertRuleConfig {
+                consecutive_samples: Some(10),
+                ..base.clone()
+            },
+            super::AlertRuleConfig {
+                severity: Some(NodeState::Critical),
+                ..base
+            },
+        ] {
+            assert_eq!(
+                resolved(std::slice::from_ref(&change), &change.id).source,
+                super::AlertRuleSource::Configured,
+                "{change:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_swap_is_unavailable_even_for_a_zero_threshold() {
+        let mut without_swap = sample(0.0);
+        without_swap.swap_used_bytes = Some(0);
+        without_swap.swap_total_bytes = Some(0);
+        for comparison in [Comparison::GreaterThanOrEqual, Comparison::LessThanOrEqual] {
+            let swap = rule("swap", "swap_percent", comparison, 0.0);
+            let mut evaluator = AlertEvaluator::default();
+            assert!(evaluator.evaluate(&without_swap, &[swap]).is_empty());
+            assert_eq!(evaluator.worst_active_severity(), None);
+        }
     }
 
     #[test]
