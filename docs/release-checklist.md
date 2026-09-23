@@ -71,6 +71,9 @@ are maintained in [`backlog.md`](backlog.md).
           certificate identity does not exist yet, so no pinned publisher is
           wired into a real release pipeline
     - [ ] real macOS notarization receipt and Windows Authenticode/MSI signature
+- [ ] desktop updater signing key is recoverably secured; signed update bundles
+      and `latest.json` are published, and in-place update, restart and rejected
+      signature paths are verified on each supported desktop OS
 - [x] immediate teardown of active connections when a peer is revoked
 - [x] five-minute mDNS advertisement lifecycle during pairing only
 - [x] QR and private file import/export for pairing bundles

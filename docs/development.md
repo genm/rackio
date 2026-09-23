@@ -26,6 +26,9 @@ For the user/operator lifecycle rather than source development, use
 [`operations.md`](operations.md); it is also the authoritative guide for the
 SSH-assisted Linux bootstrap trust boundary.
 
+The desktop update channel's signing and release requirements are documented
+in [`desktop-updates.md`](desktop-updates.md).
+
 ## Minimum supported Rust version
 
 `Cargo.toml`'s `workspace.package.rust-version` is the single stated owner of

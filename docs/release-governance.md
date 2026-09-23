@@ -78,6 +78,16 @@ and Windows service installer are not published as pre-releases.
 A pre-release must not be described as supported, must not receive a
 `latest.txt` pointer, and must not be mirrored to a custom-domain path that
 implies it is the current version.
+The desktop updater also follows GitHub's latest non-pre-release release, so
+evaluation pre-releases must not publish or advertise a `latest.json` update
+manifest.
+
+[`Desktop updater artifacts`](../.github/workflows/desktop-updater-artifacts.yml)
+assembles signed macOS updater archives and `latest.json` for a stable version
+tag after the protected-main and CI/Security checks pass. It uploads a
+seven-day Actions artifact only; it never creates or modifies a GitHub Release.
+After release approval, the maintainer can attach those exact versioned assets
+to the canonical draft release and verify them before publication.
 
 ## Publication gate
 

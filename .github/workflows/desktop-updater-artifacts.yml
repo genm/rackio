@@ -1,0 +1,195 @@
+name: Desktop updater artifacts
+
+# This assembles signed updater assets for a supported version but never
+# creates or publishes a GitHub Release. Publication stays behind the recorded
+# approval in docs/release-governance.md.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-updater-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Verify the supported-version build gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      supported: ${{ steps.release.outputs.supported }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify stable tag, protected-main ancestry and successful checks
+        id: release
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$TAG" =~ - ]]; then
+            echo "Skipping updater assets for evaluation pre-release $TAG."
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag $TAG is not a stable Rackio version tag" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin \
+            "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH" \
+            "+refs/tags/$TAG:refs/tags/$TAG"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "refs/remotes/origin/$DEFAULT_BRANCH"; then
+            echo "$GITHUB_SHA is not contained in protected $DEFAULT_BRANCH" >&2
+            exit 1
+          fi
+          version="$(cargo metadata --locked --no-deps --format-version 1 |
+            jq --raw-output '.packages[] | select(.name == "rackio-agent") | .version')"
+          if [[ "$TAG" != "v$version" || ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag $TAG does not name the stable workspace version $version" >&2
+            exit 1
+          fi
+          for workflow in ci.yml security.yml; do
+            conclusions="$(gh api \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$GITHUB_SHA&event=push" \
+              --jq '.workflow_runs[] | select(.conclusion == "success") | .id')"
+            if [[ -z "$conclusions" ]]; then
+              echo "$workflow has no successful push run for $GITHUB_SHA" >&2
+              exit 1
+            fi
+          done
+          {
+            echo "supported=true"
+            echo "version=$version"
+            echo "tag=$TAG"
+            echo "sha=$GITHUB_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Sign updater bundle (${{ matrix.platform }})
+    needs: gate
+    if: needs.gate.outputs.supported == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: darwin-aarch64
+          - runner: macos-15-intel
+            platform: darwin-x86_64
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - name: Check out the gated release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Select pinned Rust toolchain
+        run: rustup show
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - name: Activate pinned pnpm and install locked dependencies
+        run: |
+          corepack enable
+          corepack install
+          pnpm install --frozen-lockfile
+      - name: Build updater-enabled app without the private key
+        run: |
+          updater_public_key="$(jq --raw-output '.plugins.updater.pubkey' apps/desktop/src-tauri/tauri.updater.conf.json)"
+          RACKIO_UPDATER_PUBLIC_KEY="$updater_public_key" \
+            pnpm --filter @rackio/desktop tauri build \
+            --ci \
+            --config src-tauri/tauri.updater.conf.json \
+            --no-bundle \
+            -- --locked
+      - name: Create signed updater archive
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY is not configured" >&2
+            exit 1
+          fi
+          pnpm --filter @rackio/desktop tauri bundle \
+            --ci \
+            --config src-tauri/tauri.updater.conf.json \
+            --bundles app
+          archive="target/release/bundle/macos/Rackio.app.tar.gz"
+          test -s "$archive"
+          test -s "$archive.sig"
+          mkdir -p "updater-input/$PLATFORM"
+          cp "$archive" "$archive.sig" "updater-input/$PLATFORM/"
+      - name: Upload one-day intermediate updater bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rackio-updater-${{ matrix.platform }}
+          path: updater-input/${{ matrix.platform }}/*
+          if-no-files-found: error
+          retention-days: 1
+
+  assemble:
+    name: Assemble latest.json and release assets
+    needs: [gate, build]
+    if: needs.gate.outputs.supported == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out the gated release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Collect signed updater bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for platform in darwin-aarch64 darwin-x86_64; do
+            mkdir -p "updater-input/$platform"
+            gh run download "$GITHUB_RUN_ID" \
+              --repo "$GITHUB_REPOSITORY" \
+              --name "rackio-updater-$platform" \
+              --dir "updater-input/$platform"
+          done
+      - name: Create stable update manifest and versioned assets
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          TAG: ${{ needs.gate.outputs.tag }}
+        run: |
+          node scripts/create-desktop-update-manifest.mjs \
+            "$VERSION" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG" \
+            updater-input \
+            updater-release
+      - name: Upload short-lived release evidence bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rackio-desktop-updater-v${{ needs.gate.outputs.version }}
+          path: updater-release/*
+          if-no-files-found: error
+          retention-days: 7
