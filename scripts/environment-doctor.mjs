@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { evaluateEnvironment } from "./environment-doctor-lib.mjs";
+import { evaluateEnvironment, resolvedLockfileDocument } from "./environment-doctor-lib.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const jsonOutput = process.argv.includes("--json");
@@ -151,15 +151,18 @@ function dependencyCheck() {
   const installedLock = resolve(repositoryRoot, "node_modules/.pnpm/lock.yaml");
   // pnpm copies the resolved lockfile here; equality proves this install is not stale.
   const lockMatches =
-    existsSync(installedLock) && readFileSync(workspaceLock).equals(readFileSync(installedLock));
+    existsSync(installedLock) &&
+    resolvedLockfileDocument(readFileSync(workspaceLock, "utf8")) ===
+      readFileSync(installedLock, "utf8");
   return {
     name: "workspace_dependencies",
     required: true,
     ok: result.ok && lockMatches,
-    detail:
-      result.ok && lockMatches
+    detail: !result.ok
+      ? result.output || "pnpm list failed"
+      : lockMatches
         ? "pnpm workspace dependencies match the lockfile"
-        : result.output || "run `mise run bootstrap`",
+        : "installed lockfile differs from pnpm-lock.yaml; run `mise run bootstrap`",
   };
 }
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { evaluateEnvironment } from "./environment-doctor-lib.mjs";
+import { evaluateEnvironment, resolvedLockfileDocument } from "./environment-doctor-lib.mjs";
 
 const requiredChecks = [
   { name: "node", required: true, ok: true, detail: "v24.15.0" },
@@ -42,4 +42,18 @@ test("surfaces an unavailable optional relay runtime as degraded", () => {
   assert.equal(result.status, "degraded");
   assert.equal(result.exitCode, 0);
   assert.deepEqual(result.degraded, ["docker"]);
+});
+
+test("resolvedLockfileDocument passes a single-document lockfile through", () => {
+  const lockfile = "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies: {}\n";
+
+  assert.equal(resolvedLockfileDocument(lockfile), lockfile);
+});
+
+test("resolvedLockfileDocument returns the resolved lockfile from a pnpm 12 lockfile", () => {
+  const resolved = "lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n";
+  const lockfile =
+    "---\npackageManagerDependencies:\n  pnpm:\n    version: 12.5.1\n\n---\n" + resolved;
+
+  assert.equal(resolvedLockfileDocument(lockfile), resolved);
 });
