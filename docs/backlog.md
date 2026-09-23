@@ -102,6 +102,8 @@ Scope:
 - install on a clean supported macOS host;
 - verify `_rackio` ownership, `rackio-viewers` access, LaunchDaemon recovery,
   logout behavior, upgrade, preserving uninstall, and purge uninstall.
+- publish and verify signed Tauri updater artifacts, including signature
+  rejection and an in-place app update/restart.
 
 Evidence required:
 
@@ -119,6 +121,8 @@ Scope:
 
 - run the Windows named-pipe integration job in GitHub Actions;
 - Authenticode-sign and timestamp the executable and release archive;
+- publish and verify signed Tauri updater artifacts and exercise update, restart
+  and invalid-signature rejection.
 - install on a clean supported Windows host;
 - verify `Rackio Viewers` access, rejection of unauthorized and remote pipe
   clients, Service recovery, reboot, upgrade, and uninstall;

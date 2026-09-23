@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Rackio",
-  "version": "0.1.0",
   "identifier": "dev.rackio.desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",

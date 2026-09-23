@@ -3,6 +3,7 @@ mod pairing;
 mod presentation;
 mod ssh_bootstrap;
 mod tray;
+mod updater;
 
 use tauri::Manager;
 
@@ -162,8 +163,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             app.manage(tray::TrayRegistry::<tauri::Wry>::default());
+            updater::start(app.handle().clone());
             #[cfg(target_os = "macos")]
             {
                 // The desktop window is a secondary viewer; the primary surface
