@@ -41,6 +41,7 @@ export function Dashboard({
   onDisableNotifications = () => undefined,
   onNotificationThresholdChange = () => undefined,
   onCreatePairingShare = async () => undefined,
+  onTrayIconChange = async () => undefined,
 }: {
   snapshot: FleetSnapshot;
   pairing?: PairingStatus;
@@ -59,6 +60,7 @@ export function Dashboard({
   onDisableNotifications?: () => void;
   onNotificationThresholdChange?: (threshold: NotificationThreshold) => void;
   onCreatePairingShare?: () => Promise<void>;
+  onTrayIconChange?: (node: FleetNode, icon: string | null) => Promise<void>;
 }) {
   const [cardMetrics, setCardMetrics] = useStoredMetricMap();
   const [compareOpen, setCompareOpen] = useState(false);
@@ -188,6 +190,7 @@ export function Dashboard({
                 metric={cardMetrics[node.id] ?? "cpu"}
                 onMetricChange={(metric) => setCardMetrics(node.id, metric)}
                 onViewHistory={onViewHistory}
+                onTrayIconChange={onTrayIconChange}
               />
             ))}
           </section>

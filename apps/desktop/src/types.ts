@@ -66,6 +66,13 @@ export interface FleetNode {
   id: string;
   endpointId?: string;
   name: string;
+  /**
+   * The one glyph this machine's menu-bar item shows, resolved by the desktop
+   * shell: the operator's chosen icon, or the first letter of the name.
+   */
+  trayLabel: string;
+  /** The operator's chosen tray icon; absent or null when the initial is used. */
+  trayIcon?: string | null;
   os: string;
   state: NodeState;
   path: ConnectionPath;

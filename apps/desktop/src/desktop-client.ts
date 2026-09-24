@@ -62,6 +62,11 @@ export function fetchMachineHistory(
   return invoke<HistoryPoint[]>("machine_history", { endpointId, hours });
 }
 
+/** Set a machine's tray icon (one character or emoji), or clear it with null. */
+export function setTrayIcon(machineId: string, icon: string | null): Promise<void> {
+  return invoke<void>("set_tray_icon", { machineId, icon });
+}
+
 export function savePairingBundle(path: string, bundle: string): Promise<void> {
   return invoke<void>("save_pairing_bundle", { path, bundle });
 }
