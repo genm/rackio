@@ -65,3 +65,9 @@ frontend:
 
 measure-desktop-build:
     mise run measure:desktop-build
+
+cache-report:
+    mise run cache:report
+
+cache-clean *args:
+    mise run cache:clean -- {{args}}

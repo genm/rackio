@@ -33,6 +33,17 @@ trivy = "0.72.0"
 # An explicit `CARGO_TARGET_DIR` still wins, so a caller that needs an isolated
 # build directory — `measure:desktop-build` does — can still ask for one.
 CARGO_TARGET_DIR = "{{ get_env(name='CARGO_TARGET_DIR', default=get_env(name='XDG_CACHE_HOME', default=get_env(name='HOME', default=get_env(name='LOCALAPPDATA', default='.')) ~ '/.cache') ~ '/rackio/target') }}"
+# Cargo's intermediate output (`deps/`, `incremental/`, build-script `build/`,
+# fingerprints) goes to a sibling `build/` directory, so `target/` holds only
+# the final artifacts and `mise run cache:report` can tell them apart.
+# `mise run cache:clean` goes through `cargo clean`, which covers both.
+#
+# A caller that exports only `CARGO_TARGET_DIR` gets its intermediates in that
+# same directory, which is Cargo's own default, so an isolated build stays
+# isolated instead of writing into the shared cache. `get_env` reads the
+# caller's environment, not the value assigned above, which is what makes that
+# distinction possible. Nested `mise` invocations inherit both values unchanged.
+CARGO_BUILD_BUILD_DIR = "{{ get_env(name='CARGO_BUILD_BUILD_DIR', default=get_env(name='CARGO_TARGET_DIR', default=get_env(name='XDG_CACHE_HOME', default=get_env(name='HOME', default=get_env(name='LOCALAPPDATA', default='.')) ~ '/.cache') ~ '/rackio/build')) }}"
 
 [tasks.check]
 description = "Run repository quality gates"
@@ -89,6 +100,15 @@ run = "pnpm --filter @rackio/desktop dev"
 [tasks."measure:desktop-build"]
 description = "Measure a clean desktop debug build and enforce its disk budget"
 run = "node scripts/measure-desktop-build.mjs"
+
+[tasks."cache:report"]
+description = "Report the local Cargo build cache size by directory, profile and category (read-only)"
+run = "node scripts/build-cache.mjs report"
+
+[tasks."cache:clean"]
+description = "Reclaim development build output via cargo clean; pass --dry-run to preview, --all for everything"
+# Refuses to run while a process executes from the cache, and never stops one.
+run = "node scripts/build-cache.mjs clean"
 
 [tasks."test:nat-lab"]
 description = "Run the container NAT matrix and write per-scenario evidence to test-results/nat-matrix"

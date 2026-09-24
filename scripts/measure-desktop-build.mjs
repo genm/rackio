@@ -45,7 +45,14 @@ try {
   if (ownsTarget) {
     execFileSync("cargo", ["build", "--locked", "-p", "rackio-desktop"], {
       cwd: repositoryRoot,
-      env: { ...process.env, CARGO_TARGET_DIR: targetDirectory },
+      // Both directories point at the temporary one: `mise` otherwise sends
+      // intermediates to the shared build directory, which would both hide
+      // them from this budget and leave them behind after cleanup.
+      env: {
+        ...process.env,
+        CARGO_TARGET_DIR: targetDirectory,
+        CARGO_BUILD_BUILD_DIR: targetDirectory,
+      },
       stdio: "inherit",
     });
   }
