@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { dump, load } from "js-yaml";
 import { classifyChangedFiles, fullPlan, parseChangedFiles, planForEvent } from "./ci-plan-lib.mjs";
 
 const plannerPath = resolve("scripts/ci-plan.mjs");
@@ -285,50 +286,180 @@ test("workflow wiring compares every pull request from its protected base", () =
   );
 });
 
-test("CodeQL analysis never uploads for an unaffected language", () => {
-  // Uploading an empty or partial SARIF for a language nobody scanned would
-  // resolve that language's live alerts as fixed. Every CodeQL step must
-  // therefore carry the same gate as the checkout it depends on.
-  const codeqlWorkflow = readFileSync(resolve(".github/workflows/codeql.yml"), "utf8");
-  const codeqlSteps = codeqlWorkflow
-    .split("\n")
-    .reduce((steps, line) => {
-      if (/^ {6}- name: /.test(line)) {
-        steps.push([]);
-      }
-      steps.at(-1)?.push(line);
-      return steps;
-    }, [])
-    .map((lines) => lines.join("\n"));
-
-  const guarded = codeqlSteps.filter((step) => step.includes("github/codeql-action/"));
-  assert.equal(guarded.length, 2);
-  for (const step of guarded) {
-    assert.match(step, /if: env\.RUN_CODEQL == 'true'/);
+// GitHub Actions accepts a step or job condition with or without the outer
+// `${{ }}`, and ignores whitespace inside an expression. These guards compare
+// the expression itself, so only those two spellings are normalised; anything
+// else (a different operator, operand or gate) is a different condition.
+function expression(value) {
+  if (typeof value !== "string") {
+    return value;
   }
+  let text = value.trim();
+  const wrapped = /^\$\{\{([\s\S]*)\}\}$/.exec(text);
+  if (wrapped && !wrapped[1].includes("${{") && !wrapped[1].includes("}}")) {
+    text = wrapped[1];
+  }
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function loadWorkflow(path) {
+  return load(readFileSync(resolve(path), "utf8"));
+}
+
+const CODEQL_LANGUAGE_GATES = {
+  actions: "codeql_actions",
+  "javascript-typescript": "codeql_javascript",
+  rust: "codeql_rust",
+};
+
+// Uploading an empty or partial SARIF for a language nobody scanned would
+// resolve that language's live alerts as fixed. Every CodeQL step must
+// therefore carry the same gate as the checkout it depends on.
+function codeqlUploadGateViolations(workflow) {
+  const analyze = workflow?.jobs?.analyze;
+  if (!analyze) {
+    return ["the analyze job is missing"];
+  }
+  const violations = [];
+  const gate = expression(analyze.env?.RUN_CODEQL);
+  if (gate !== "needs.plan.result != 'success' || matrix.gate != 'false'") {
+    violations.push(`RUN_CODEQL is not derived from the planner gate: ${gate}`);
+  }
+  const steps = analyze.steps ?? [];
+  const guarded = steps.filter(
+    (step) =>
+      step.uses?.startsWith("github/codeql-action/") || step.uses?.startsWith("actions/checkout@"),
+  );
+  for (const action of ["github/codeql-action/init@", "github/codeql-action/analyze@"]) {
+    if (!guarded.some((step) => step.uses.startsWith(action))) {
+      violations.push(`no ${action} step`);
+    }
+  }
+  for (const step of guarded) {
+    if (expression(step.if) !== "env.RUN_CODEQL == 'true'") {
+      violations.push(`${step.name ?? step.uses} runs on ${JSON.stringify(step.if ?? "always")}`);
+    }
+  }
+  return violations;
+}
+
+// A dynamic `needs.plan.outputs[matrix.gate]` lookup is invisible to actionlint
+// and resolves to an empty string when it is wrong, which `!= 'false'` reads as
+// "run" — so a typo would scan every language forever and still look healthy.
+// Static references are validated before the workflow runs, and this pins them
+// to the planner keys that actually exist.
+function codeqlPlannerOutputViolations(workflow) {
+  const violations = [];
+  const plannerKeys = Object.keys(fullPlan("test")).filter((key) => key.startsWith("codeql_"));
+  if (JSON.stringify(workflow).includes("needs.plan.outputs[")) {
+    violations.push("dynamic needs.plan.outputs[...] lookup");
+  }
+  const outputs = workflow?.jobs?.plan?.outputs ?? {};
+  for (const key of plannerKeys) {
+    if (expression(outputs[key]) !== `steps.plan.outputs.${key}`) {
+      violations.push(`plan job output ${key} is ${JSON.stringify(outputs[key])}`);
+    }
+  }
+  const include = workflow?.jobs?.analyze?.strategy?.matrix?.include ?? [];
+  const languages = include.map((entry) => entry.language).sort();
+  if (JSON.stringify(languages) !== JSON.stringify(Object.keys(CODEQL_LANGUAGE_GATES).sort())) {
+    violations.push(`matrix languages are ${JSON.stringify(languages)}`);
+  }
+  for (const entry of include) {
+    const key = CODEQL_LANGUAGE_GATES[entry.language];
+    if (key && expression(entry.gate) !== `needs.plan.outputs.${key}`) {
+      violations.push(`${entry.language} is gated on ${JSON.stringify(entry.gate)}`);
+    }
+  }
+  return violations;
+}
+
+function codeqlWorkflowWith(mutate) {
+  const workflow = loadWorkflow(".github/workflows/codeql.yml");
+  mutate(workflow);
+  // Round-trip through YAML so every fixture is a workflow a parser accepts.
+  return load(dump(workflow));
+}
+
+const codeqlStep = (workflow, action) =>
+  workflow.jobs.analyze.steps.find((step) => step.uses?.startsWith(action));
+
+test("CodeQL analysis never uploads for an unaffected language", () => {
+  assert.deepEqual(codeqlUploadGateViolations(loadWorkflow(".github/workflows/codeql.yml")), []);
 });
 
 test("every CodeQL language gate is a statically checkable planner output", () => {
-  // A dynamic `needs.plan.outputs[matrix.gate]` lookup is invisible to
-  // actionlint and resolves to an empty string when it is wrong, which
-  // `!= 'false'` reads as "run" — so a typo would scan every language forever
-  // and still look healthy. Static references are validated before the workflow
-  // runs, and this pins them to the planner keys that actually exist.
-  const codeqlWorkflow = readFileSync(resolve(".github/workflows/codeql.yml"), "utf8");
   const plannerKeys = Object.keys(fullPlan("test")).filter((key) => key.startsWith("codeql_"));
+  assert.deepEqual(plannerKeys.sort(), Object.values(CODEQL_LANGUAGE_GATES).sort());
+  assert.deepEqual(codeqlPlannerOutputViolations(loadWorkflow(".github/workflows/codeql.yml")), []);
+});
 
-  assert.deepEqual(plannerKeys.sort(), ["codeql_actions", "codeql_javascript", "codeql_rust"]);
-  assert.doesNotMatch(codeqlWorkflow, /needs\.plan\.outputs\[/);
-  for (const key of plannerKeys) {
-    // Declared as a job output, and consumed as the matrix gate.
-    assert.match(
-      codeqlWorkflow,
-      new RegExp(`^ {6}${key}: \\$\\{\\{ steps\\.plan\\.outputs\\.${key} \\}\\}$`, "m"),
-    );
-    assert.match(
-      codeqlWorkflow,
-      new RegExp(`^ {12}gate: \\$\\{\\{ needs\\.plan\\.outputs\\.${key} \\}\\}$`, "m"),
-    );
+test("equivalent spellings and layouts of the CodeQL gates are accepted", () => {
+  const source = readFileSync(resolve(".github/workflows/codeql.yml"), "utf8");
+  const variants = [
+    source.replaceAll("if: env.RUN_CODEQL == 'true'", "if: ${{ env.RUN_CODEQL == 'true' }}"),
+    source.replaceAll("if: env.RUN_CODEQL == 'true'", "if: ${{env.RUN_CODEQL   ==  'true'}}"),
+    // Same document, different indentation and key order.
+    dump(load(source), { indent: 4, sortKeys: true }),
+  ];
+  for (const variant of variants) {
+    assert.notEqual(variant, source);
+    const workflow = load(variant);
+    assert.deepEqual(codeqlUploadGateViolations(workflow), []);
+    assert.deepEqual(codeqlPlannerOutputViolations(workflow), []);
+  }
+});
+
+test("removing, widening or replacing a CodeQL upload gate is rejected", () => {
+  for (const [name, mutate] of [
+    ["init gate removed", (w) => delete codeqlStep(w, "github/codeql-action/init@").if],
+    [
+      "analyze runs always",
+      (w) => (codeqlStep(w, "github/codeql-action/analyze@").if = "always()"),
+    ],
+    ["analyze runs on true", (w) => (codeqlStep(w, "github/codeql-action/analyze@").if = true)],
+    [
+      "analyze reads a missing gate as run",
+      (w) => (codeqlStep(w, "github/codeql-action/analyze@").if = "env.RUN_CODEQL != 'false'"),
+    ],
+    [
+      "init gated on another variable",
+      (w) => (codeqlStep(w, "github/codeql-action/init@").if = "${{ env.RUN_RUST == 'true' }}"),
+    ],
+    ["checkout ungated", (w) => delete codeqlStep(w, "actions/checkout@").if],
+    [
+      "analyze step dropped",
+      (w) => {
+        const steps = w.jobs.analyze.steps;
+        steps.splice(steps.indexOf(codeqlStep(w, "github/codeql-action/analyze@")), 1);
+      },
+    ],
+    ["gate ignores the planner", (w) => (w.jobs.analyze.env.RUN_CODEQL = "true")],
+  ]) {
+    assert.notDeepEqual(codeqlUploadGateViolations(codeqlWorkflowWith(mutate)), [], name);
+  }
+});
+
+test("missing, wrong or dynamic CodeQL planner outputs are rejected", () => {
+  const entry = (w, language) =>
+    w.jobs.analyze.strategy.matrix.include.find((item) => item.language === language);
+  for (const [name, mutate] of [
+    ["output removed", (w) => delete w.jobs.plan.outputs.codeql_rust],
+    [
+      "output misnamed",
+      (w) => (w.jobs.plan.outputs.codeql_rust = "${{ steps.plan.outputs.rust }}"),
+    ],
+    [
+      "gate crosses languages",
+      (w) => (entry(w, "rust").gate = "${{ needs.plan.outputs.codeql_actions }}"),
+    ],
+    [
+      "dynamic lookup",
+      (w) => (entry(w, "rust").gate = "${{ needs.plan.outputs[format('codeql_{0}', 'rust')] }}"),
+    ],
+    ["language dropped", (w) => w.jobs.analyze.strategy.matrix.include.pop()],
+  ]) {
+    assert.notDeepEqual(codeqlPlannerOutputViolations(codeqlWorkflowWith(mutate)), [], name);
   }
 });
 
