@@ -9,46 +9,9 @@ trap 'rm -f "$config"' EXIT HUP INT TERM
 
 # deny.toml remains the license-policy SSOT. Generate cargo-about's equivalent
 # config so dependency notices cannot silently diverge from the enforced policy.
-awk '
-  /^\[graph\]$/ {
-    section = "graph"
-    next
-  }
-  /^\[licenses\]$/ {
-    section = "licenses"
-    next
-  }
-  /^\[/ {
-    section = ""
-    capture = ""
-  }
-  section == "graph" && /^targets = \[/ {
-    print "targets = ["
-    capture = "targets"
-    found_targets = 1
-    next
-  }
-  section == "licenses" && /^allow = \[/ {
-    print "accepted = ["
-    capture = "licenses"
-    found_licenses = 1
-    next
-  }
-  capture != "" && /^\]$/ {
-    print "]"
-    capture = ""
-    next
-  }
-  capture != "" {
-    print
-  }
-  END {
-    if (!found_targets || !found_licenses) {
-      print "deny.toml must define graph.targets and licenses.allow" > "/dev/stderr"
-      exit 2
-    }
-  }
-' "$repo_root/deny.toml" >"$config"
+# The translation parses TOML (smol-toml, a root devDependency), so it needs
+# `pnpm install` to have run first.
+node "$repo_root/scripts/cargo-about-config.mjs" "$repo_root/deny.toml" "$config"
 
 cd "$repo_root"
 cargo about generate \

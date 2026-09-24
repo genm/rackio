@@ -11,12 +11,13 @@
     "lint": "oxlint apps/desktop scripts commitlint.config.mjs",
     "licenses:javascript": "node scripts/generate-javascript-licenses.mjs",
     "test:env": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/environment-doctor.junit.xml scripts/environment-doctor.test.mjs scripts/build-cache.test.mjs",
-    "test:ci-plan": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/ci-plan.junit.xml scripts/ci-plan.test.mjs scripts/ci-plan-security.test.mjs && node --test --test-reporter=junit --test-reporter-destination=test-results/reject-matches.junit.xml scripts/reject-matches.test.mjs && node --test --test-reporter=junit --test-reporter-destination=test-results/dependabot-automerge-policy.junit.xml scripts/dependabot-automerge-policy.test.mjs && pnpm test:dependabot-config && pnpm test:license-refresh",
+    "test:ci-plan": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/ci-plan.junit.xml scripts/ci-plan.test.mjs scripts/ci-plan-security.test.mjs scripts/ci-wiring.test.mjs && node --test --test-reporter=junit --test-reporter-destination=test-results/reject-matches.junit.xml scripts/reject-matches.test.mjs && node --test --test-reporter=junit --test-reporter-destination=test-results/dependabot-automerge-policy.junit.xml scripts/dependabot-automerge-policy.test.mjs && pnpm test:dependabot-config && pnpm test:license-refresh",
     "test:desktop-updater": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/desktop-updater-manifest.junit.xml scripts/create-desktop-update-manifest.test.mjs",
     "test:dependabot-config": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/dependabot-config.junit.xml scripts/dependabot-config-check.test.mjs",
     "test:governance": "pnpm check:governance && node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/governance.junit.xml scripts/governance-check.test.mjs",
     "test": "pnpm --filter @rackio/desktop test",
     "test:ct": "pnpm --filter @rackio/desktop test:ct",
+    "test:license-policy": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results/license-policy.junit.xml scripts/cargo-about-config.test.mjs",
     "test:license-refresh": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/license-refresh.junit.xml scripts/refresh-pr-license-notices.test.mjs"
   },
   "devDependencies": {
@@ -24,7 +25,8 @@
     "@commitlint/config-conventional": "21.2.2",
     "js-yaml": "5.4.1",
     "oxfmt": "0.65.0",
-    "oxlint": "1.80.0"
+    "oxlint": "1.80.0",
+    "smol-toml": "1.8.0"
   },
   "packageManager": "pnpm@12.5.1"
 }

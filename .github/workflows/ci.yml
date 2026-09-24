@@ -266,6 +266,9 @@ jobs:
       - name: Exercise two-daemon pairing and reconnect
         if: env.RUN_RUST == 'true' && runner.os == 'Linux'
         run: scripts/test-two-daemon-pairing.sh
+      - name: Verify an interrupted two-daemon run fails closed and cleans up
+        if: env.RUN_RUST == 'true' && runner.os == 'Linux'
+        run: scripts/test-two-daemon-cleanup.sh
       - name: Exercise monitored address change and recovery
         if: env.RUN_RUST == 'true' && runner.os == 'Linux'
         run: scripts/test-two-daemon-address-change.sh
@@ -367,13 +370,12 @@ jobs:
       # on the Windows runner. `rackio-desktop` is excluded because Tauri needs
       # a Windows webview SDK that cannot be cross-linked from Linux; the
       # Windows leg remains its only gate.
-      - name: Check the Windows-owned crates for the Windows GNU target
-        if: env.RUN_RUST_WINDOWS_CROSS == 'true'
-        run: >-
-          cargo check --target x86_64-pc-windows-gnu --all-features
-          -p rackio-windows-ipc -p rackio-core -p rackio-protocol
-          -p rackio-iroh -p rackio-agent
-      - name: Clippy the Windows-owned crates for the Windows GNU target
+      #
+      # One Clippy pass is the type check too: it compiles the same target,
+      # packages and features that a separate `cargo check` would, plus every
+      # test/example/bench target, and no workspace code branches on
+      # `cfg(clippy)`. A standalone check before it only repeated that work.
+      - name: Type-check and Clippy the Windows-owned crates for the Windows GNU target
         if: env.RUN_RUST_WINDOWS_CROSS == 'true'
         run: >-
           cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features
@@ -453,6 +455,12 @@ jobs:
       - name: CI routing and failure-guard tests
         if: env.RUN_FRONTEND == 'true'
         run: pnpm test:ci-plan
+      - name: Desktop updater manifest tests
+        if: env.RUN_FRONTEND == 'true'
+        run: pnpm test:desktop-updater
+      - name: License-policy translation tests
+        if: env.RUN_FRONTEND == 'true'
+        run: pnpm test:license-policy
       - name: Component tests
         if: env.RUN_FRONTEND == 'true'
         run: pnpm test:ct

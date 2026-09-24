@@ -33,14 +33,32 @@ jobs:
           persist-credentials: false
           sparse-checkout: scripts/dependabot-automerge-policy.mjs
           sparse-checkout-cone-mode: false
+      # fetch-metadata fails the job on any pull request whose commits are not
+      # all Dependabot's own, so a maintainer-modified update would otherwise
+      # look like a broken workflow instead of the manual review it is. This
+      # read-only step can only stop the job short of auto-merge; it never
+      # substitutes for the verification below.
+      - name: Detect maintainer changes
+        id: preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits" \
+            --jq '.[] | {sha, author: .author.login, committer: .committer.login} | tojson' \
+            > "${RUNNER_TEMP:?}/pr-commits.ndjson"
+          node scripts/dependabot-automerge-policy.mjs preflight < "${RUNNER_TEMP}/pr-commits.ndjson"
       - name: Fetch verified Dependabot metadata
         id: metadata
+        if: steps.preflight.outputs.proceed == 'true'
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           alert-lookup: true
           github-token: ${{ github.token }}
       - name: Evaluate bounded update policy
         id: policy
+        if: steps.preflight.outputs.proceed == 'true'
         env:
           DEPENDABOT_UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
           DEPENDABOT_ALERT_STATE: ${{ steps.metadata.outputs.alert-state }}
@@ -53,7 +71,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         # Native auto-merge still waits for strict branch protection, every
         # required check, and unresolved conversations. This job cannot merge
-        # an out-of-date or failing pull request by itself.
-        run: gh pr merge --auto --merge "$PR_URL"
+        # an out-of-date or failing pull request by itself, and the head match
+        # refuses a commit pushed after the metadata above was verified.
+        run: gh pr merge --auto --merge --match-head-commit "$PR_HEAD_SHA" "$PR_URL"

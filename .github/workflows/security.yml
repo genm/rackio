@@ -121,14 +121,6 @@ jobs:
         # --manifest-path, so this reuses the same policy (#117).
         if: env.RUN_SECURITY_POLICY == 'true'
         run: cargo deny --manifest-path fuzz/Cargo.toml check
-      - name: Verify bundled third-party license notices
-        if: env.RUN_SECURITY_POLICY == 'true'
-        run: |
-          scripts/generate-third-party-licenses.sh /tmp/rackio-THIRDPARTY.html
-          cmp THIRDPARTY.html /tmp/rackio-THIRDPARTY.html
-      - name: Check unused Rust dependencies
-        if: env.RUN_SECURITY_POLICY == 'true'
-        run: cargo machete
       - name: Set up Node
         if: env.RUN_SECURITY_POLICY == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -154,6 +146,18 @@ jobs:
       - name: Install dependencies
         if: env.RUN_SECURITY_POLICY == 'true'
         run: pnpm install --frozen-lockfile
+      - name: Test the license-policy translation
+        if: env.RUN_SECURITY_POLICY == 'true'
+        run: pnpm test:license-policy
+      - name: Verify bundled third-party license notices
+        if: env.RUN_SECURITY_POLICY == 'true'
+        # Needs the Node dependencies above: deny.toml is parsed, not scraped.
+        run: |
+          scripts/generate-third-party-licenses.sh /tmp/rackio-THIRDPARTY.html
+          cmp THIRDPARTY.html /tmp/rackio-THIRDPARTY.html
+      - name: Check unused Rust dependencies
+        if: env.RUN_SECURITY_POLICY == 'true'
+        run: cargo machete
       - name: Validate Dependabot configuration
         if: env.RUN_SECURITY_POLICY == 'true'
         run: pnpm test:dependabot-config
