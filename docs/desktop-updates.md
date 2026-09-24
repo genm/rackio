@@ -13,6 +13,16 @@ secret `TAURI_SIGNING_PRIVATE_KEY`. Do not commit it, print it, or put it in a
 ordinary development builds have no verification key and make no update
 requests.
 
+The embedded key is the single switch. Without it (`tauri dev`, plain `cargo
+build`) the updater plugin is not registered, so the build needs no
+`plugins.updater` configuration, and the shell logs
+`desktop updates are disabled because no updater public key was embedded` as a
+`WARN` line on stderr. With it, the build must also be given
+`src-tauri/tauri.updater.conf.json` (`--config`), and that file's `pubkey` must
+match the embedded key: a keyed build with no updater configuration, or with a
+different key, refuses to start and names the mismatch rather than running
+with updates silently off or verifying against an unintended key.
+
 The [`Desktop updater artifacts`](../.github/workflows/desktop-updater-artifacts.yml)
 workflow runs for version tags. It skips evaluation pre-releases and, for a
 stable version on protected `main` with successful CI and Security runs,

@@ -173,9 +173,29 @@ async fn machine_history(endpoint_id: String, hours: u16) -> Result<serde_json::
     ))
 }
 
+/// Structured logs on stderr, filtered like the agent's (`RUST_LOG`, default
+/// `info`). Without a subscriber every `tracing` event the shell emits — tray
+/// dispatch failures, update-check failures, updates being disabled — was
+/// silently dropped.
+fn init_logging() {
+    use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
+    // `try_init` only fails when a global subscriber is already installed, in
+    // which case events already have somewhere to go.
+    let _ = tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(std::io::stderr),
+        )
+        .try_init();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    init_logging();
+    let context = tauri::generate_context!();
+    let builder = tauri::Builder::default()
         // Registered first so a second launch exits before it builds any
         // status items: two running copies would each put the whole rack in
         // the menu bar. The running copy brings its dashboard forward instead.
@@ -183,8 +203,9 @@ pub fn run() {
             tray::show_dashboard(app);
         }))
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init());
+    updater::register(builder, context.config())
+        .unwrap_or_else(|error| panic!("failed to run Rackio desktop: {error}"))
         .setup(|app| {
             app.manage(tray::TrayRegistry::<tauri::Wry>::default());
             app.manage(tray_badges::TrayBadges::load(
@@ -214,6 +235,6 @@ pub fn run() {
             ssh_bootstrap::ssh_inspect_host,
             ssh_bootstrap::ssh_bootstrap
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .unwrap_or_else(|error| panic!("failed to run Rackio desktop: {error}"));
 }
