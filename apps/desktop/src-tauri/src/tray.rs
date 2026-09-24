@@ -1,6 +1,6 @@
 //! Tray state, menus, main-thread updates, and daemon polling.
 
-use crate::fleet_snapshot;
+use crate::{load_fleet_snapshot, tray_badges::TrayBadges};
 use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
@@ -66,6 +66,10 @@ struct TrayFleetSnapshot {
 struct TrayNodeSnapshot {
     id: String,
     name: String,
+    /// The one glyph this machine's status item shows, resolved by
+    /// `tray_badges` (the operator's icon, or the name's initial).
+    #[serde(rename = "trayLabel")]
+    tray_label: String,
     state: String,
     path: String,
     #[serde(rename = "cpuPercent")]
@@ -156,14 +160,16 @@ fn tray_state_color(state: &str) -> Result<[u8; 4], String> {
     }
 }
 
+pub(crate) fn show_dashboard<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 fn tray_event_handler<R: Runtime>(app: &AppHandle<R>, event: &tauri::menu::MenuEvent) {
     match event.id().as_ref() {
-        "show" => {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }
+        "show" => show_dashboard(app),
         "quit" => app.exit(0),
         _ => {}
     }
@@ -383,7 +389,6 @@ fn update_machine_trays(app: &AppHandle, snapshot: &TrayFleetSnapshot) {
         .unwrap_or_default();
     let status_slot =
         registered_ids.contains("rackio-status") && app.tray_by_id("rackio-status").is_some();
-    let fleet_title = fleet_tray_status(&snapshot.nodes);
     let fleet_sections = fleet_tray_sections(&snapshot.nodes);
     let mut active_ids = HashSet::new();
     for (index, node) in snapshot.nodes.iter().enumerate() {
@@ -394,11 +399,10 @@ fn update_machine_trays(app: &AppHandle, snapshot: &TrayFleetSnapshot) {
         };
         let machine = tray_machine_menu(node);
         let is_primary_machine = index == 0;
-        let title = if is_primary_machine {
-            fleet_title.clone()
-        } else {
-            tray_node_status(node)
-        };
+        // Every item, the primary included, titles only its own machine: each
+        // machine already has an item, so repeating the whole rack in the
+        // primary's title only doubled the menu-bar width.
+        let title = tray_node_status(node);
         let sections = if is_primary_machine {
             fleet_sections.clone()
         } else {
@@ -409,11 +413,7 @@ fn update_machine_trays(app: &AppHandle, snapshot: &TrayFleetSnapshot) {
             &id,
             &node.state,
             &title,
-            if is_primary_machine {
-                &fleet_title
-            } else {
-                &machine.title
-            },
+            &machine.title,
             &sections,
             || {
                 tray_menu(app, &sections)
@@ -451,14 +451,6 @@ fn retired_tray_ids(registered: &HashSet<String>, active: &HashSet<String>) -> V
     registered.difference(active).cloned().collect()
 }
 
-fn fleet_tray_status(nodes: &[TrayNodeSnapshot]) -> String {
-    nodes
-        .iter()
-        .map(tray_node_status)
-        .collect::<Vec<_>>()
-        .join(" · ")
-}
-
 fn fleet_tray_sections(nodes: &[TrayNodeSnapshot]) -> Vec<TraySection> {
     nodes
         .iter()
@@ -468,8 +460,9 @@ fn fleet_tray_sections(nodes: &[TrayNodeSnapshot]) -> Vec<TraySection> {
 
 fn tray_node_status(node: &TrayNodeSnapshot) -> String {
     // Keep the status item narrow enough that multiple machines remain visible
-    // beside other menu-bar extras; the click menu carries the full metrics.
-    format!("{} {}", node.name, tray_state_symbol(&node.state))
+    // beside other menu-bar extras: one glyph for the machine, one for its
+    // state. The tooltip and the click menu carry the full name and metrics.
+    format!("{} {}", node.tray_label, tray_state_symbol(&node.state))
 }
 
 fn tray_machine_menu(node: &TrayNodeSnapshot) -> TrayMachineMenu {
@@ -758,7 +751,8 @@ fn tray_state_label(state: &str) -> &str {
 }
 
 async fn update_tray_from_daemon(app: &AppHandle) {
-    let Ok(value) = fleet_snapshot().await else {
+    let badges = app.state::<TrayBadges>();
+    let Ok(value) = load_fleet_snapshot(badges.inner()).await else {
         dispatch_tray_update(app, |app| {
             update_status_tray(app, "daemon_unavailable", "Agent unavailable");
         });
@@ -864,8 +858,8 @@ mod tests {
 
     use super::{
         GAUGE_WIDTH, TrayGauge, TrayMachineMenu, TrayNodeSnapshot, TraySection, TrayTemperature,
-        fleet_tray_status, gauge_fill_width, link_label, machine_tray_id, retired_tray_ids,
-        status_section, tray_machine_menu, tray_node_status, tray_state_color,
+        gauge_fill_width, link_label, machine_tray_id, retired_tray_ids, status_section,
+        tray_machine_menu, tray_node_status, tray_state_color,
     };
 
     fn ids(values: &[&str]) -> HashSet<String> {
@@ -897,6 +891,7 @@ mod tests {
         let node = TrayNodeSnapshot {
             id: String::from("server-id"),
             name: String::from("Server"),
+            tray_label: String::from("S"),
             state: String::from("warning"),
             path: String::from("relayed"),
             cpu_percent: Some(60.0),
@@ -918,7 +913,9 @@ mod tests {
         };
 
         assert_eq!(machine_tray_id(&node), "machine-server-id");
-        assert_eq!(tray_node_status(&node), "Server ▲");
+        // The status item carries the machine's badge, not its full name; the
+        // tooltip (the menu title) keeps the name.
+        assert_eq!(tray_node_status(&node), "S ▲");
         assert_eq!(
             tray_machine_menu(&node),
             TrayMachineMenu {
@@ -945,6 +942,7 @@ mod tests {
         let steamdeck = TrayNodeSnapshot {
             id: String::from("steamdeck-id"),
             name: String::from("steamdeck"),
+            tray_label: String::from("🎮"),
             state: String::from("healthy"),
             path: String::from("lan_direct"),
             cpu_percent: None,
@@ -976,10 +974,7 @@ mod tests {
                 gauge("Uptime —", None),
             ]
         );
-        assert_eq!(
-            fleet_tray_status(&[node, steamdeck]),
-            "Server ▲ · steamdeck ●"
-        );
+        assert_eq!(tray_node_status(&steamdeck), "🎮 ●");
     }
 
     #[test]
@@ -1008,6 +1003,7 @@ mod tests {
         let node = TrayNodeSnapshot {
             id: String::from("id"),
             name: String::from("Server"),
+            tray_label: String::from("S"),
             state: String::from("healthy"),
             path: String::from("lan_direct"),
             cpu_percent: Some(10.0),
@@ -1056,6 +1052,7 @@ mod tests {
         let local = TrayNodeSnapshot {
             id: String::from("local-id"),
             name: String::from("Mac"),
+            tray_label: String::from("M"),
             state: String::from("healthy"),
             path: String::from("unknown"),
             cpu_percent: Some(51.0),

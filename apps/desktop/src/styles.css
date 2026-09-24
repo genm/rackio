@@ -1075,6 +1075,98 @@ h2 {
   border-top: 1px solid #202b25;
 }
 
+.tray-icon {
+  margin-top: 10px;
+  color: #829188;
+  font-size: 11px;
+}
+
+.tray-icon summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.tray-icon summary:focus-visible,
+.tray-icon button:focus-visible,
+.tray-icon input:focus-visible {
+  outline: 2px solid #69db98;
+  outline-offset: 2px;
+}
+
+.tray-icon-preview {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 5px;
+  border: 1px solid #2c3831;
+  border-radius: 6px;
+  color: #e3ebe6;
+  background: #0c120f;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.tray-icon-source {
+  color: #5c6b62;
+}
+
+.tray-icon-body {
+  display: grid;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.tray-icon-presets,
+.tray-icon-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tray-icon button,
+.tray-icon input {
+  padding: 5px 9px;
+  border: 1px solid #2c3831;
+  border-radius: 7px;
+  color: #c8d3cc;
+  background: #111713;
+  font: inherit;
+}
+
+.tray-icon-presets button {
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tray-icon button[aria-pressed="true"] {
+  border-color: #4e6f5b;
+  background: #19231d;
+}
+
+.tray-icon-form input {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.tray-icon-form button {
+  cursor: pointer;
+}
+
+.tray-icon button:disabled,
+.tray-icon input:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.tray-icon-error {
+  margin: 0;
+  color: #ff8b83;
+}
+
 .empty-state {
   display: grid;
   place-items: center;

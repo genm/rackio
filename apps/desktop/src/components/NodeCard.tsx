@@ -9,6 +9,7 @@ import {
 import { connectionPathRegistry, isLiveNodeState, nodeStateRegistry } from "../state-model";
 import { type TrendMetric, trendLines, trendMetricRegistry, trendScale } from "../trend-series";
 import type { FleetNode } from "../types";
+import { TrayIconControl } from "./TrayIconControl";
 import { TrendChart } from "./TrendChart";
 
 /**
@@ -21,11 +22,13 @@ export function NodeCard({
   metric,
   onMetricChange,
   onViewHistory,
+  onTrayIconChange,
 }: {
   node: FleetNode;
   metric: TrendMetric;
   onMetricChange: (metric: TrendMetric) => void;
   onViewHistory?: (node: FleetNode) => void;
+  onTrayIconChange: (node: FleetNode, icon: string | null) => Promise<void>;
 }) {
   const state = nodeStateRegistry[node.state];
   const path = connectionPathRegistry[node.path];
@@ -143,6 +146,7 @@ export function NodeCard({
             : null}
         </span>
       </footer>
+      <TrayIconControl node={node} onChange={(icon) => onTrayIconChange(node, icon)} />
       <button
         type="button"
         className="history-button"

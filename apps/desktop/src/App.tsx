@@ -13,6 +13,7 @@ import {
   fetchMachineHistory,
   importPairingBundle,
   inspectSshHost as fetchSshHostIdentity,
+  setTrayIcon,
 } from "./desktop-client";
 import { machineNotificationTransitions } from "./notification-policy";
 import { initialDesktopState } from "./state-model";
@@ -154,6 +155,14 @@ export default function App() {
     }
   };
 
+  // A rejection propagates to the card, which shows the shell's reason. The
+  // refresh only makes the new glyph appear before the next poll; if it fails,
+  // that poll reports the agent state as usual.
+  const changeTrayIcon = async (node: FleetNode, icon: string | null) => {
+    await setTrayIcon(node.id, icon);
+    fetchFleetSnapshot().then(setSnapshot, () => undefined);
+  };
+
   const changeHistoryRange = async (hours: HistoryRange) => {
     // The open dialog owns which machine is being queried; a range change must
     // not be able to load one machine's history under another's name.
@@ -282,6 +291,7 @@ export default function App() {
         })
       }
       onNotificationThresholdChange={setNotificationThreshold}
+      onTrayIconChange={changeTrayIcon}
     />
   );
 }

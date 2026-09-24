@@ -3,6 +3,7 @@ mod pairing;
 mod presentation;
 mod ssh_bootstrap;
 mod tray;
+mod tray_badges;
 mod updater;
 
 use tauri::Manager;
@@ -10,7 +11,18 @@ use tauri::Manager;
 use presentation::{history_point_from_sample, machine_json};
 
 #[tauri::command]
-async fn fleet_snapshot() -> Result<serde_json::Value, String> {
+async fn fleet_snapshot(
+    badges: tauri::State<'_, tray_badges::TrayBadges>,
+) -> Result<serde_json::Value, String> {
+    load_fleet_snapshot(&badges).await
+}
+
+/// The fleet as both the dashboard and the tray see it: the daemon's machines
+/// plus each machine's resolved menu-bar badge, so the two surfaces cannot
+/// disagree about which glyph stands for which machine.
+pub(crate) async fn load_fleet_snapshot(
+    badges: &tray_badges::TrayBadges,
+) -> Result<serde_json::Value, String> {
     let response = daemon::request(serde_json::json!({ "command": "fleet_snapshot" }))
         .await
         .map_err(|error| error.to_string())?;
@@ -76,6 +88,9 @@ async fn fleet_snapshot() -> Result<serde_json::Value, String> {
                 .and_then(|details| details.first())
                 .and_then(serde_json::Value::as_str),
         )?);
+    }
+    for node in &mut nodes {
+        badges.decorate(node);
     }
     Ok(serde_json::json!({
         "daemon": "connected",
@@ -161,11 +176,20 @@ async fn machine_history(endpoint_id: String, hours: u16) -> Result<serde_json::
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Registered first so a second launch exits before it builds any
+        // status items: two running copies would each put the whole rack in
+        // the menu bar. The running copy brings its dashboard forward instead.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            tray::show_dashboard(app);
+        }))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             app.manage(tray::TrayRegistry::<tauri::Wry>::default());
+            app.manage(tray_badges::TrayBadges::load(
+                app.path().app_config_dir().ok(),
+            ));
             updater::start(app.handle().clone());
             #[cfg(target_os = "macos")]
             {
@@ -186,6 +210,7 @@ pub fn run() {
             create_pairing_share,
             pairing::save_pairing_bundle,
             machine_history,
+            tray_badges::set_tray_icon,
             ssh_bootstrap::ssh_inspect_host,
             ssh_bootstrap::ssh_bootstrap
         ])
