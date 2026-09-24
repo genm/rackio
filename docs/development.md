@@ -66,6 +66,7 @@ mise run agent:daemon
 mise run desktop:dev
 mise run frontend:dev
 mise run measure:desktop-build
+mise run cache:report
 mise run test:pairing
 mise run test:installer
 mise run check
@@ -104,19 +105,145 @@ checkout. A full `mise run check` leaves roughly 5 GB behind, and without this
 every additional Git worktree pays that cost again for the same dependency
 graph. The nested `fuzz/` workspace shares the directory for the same reason.
 
+It also sets Cargo's `build.build-dir` (as `CARGO_BUILD_BUILD_DIR`) to the
+sibling `$XDG_CACHE_HOME/rackio/build`:
+
+```text
+~/.cache/rackio/
+├── target/   # final artifacts: binaries, rustdoc, nextest reports
+└── build/    # intermediates: deps/, incremental/, build/, .fingerprint/
+```
+
 Two consequences are worth knowing:
 
 - Cargo takes an exclusive lock on the directory, so a build started from a
   second worktree waits for the first to finish rather than running beside it.
-- `cargo clean` still works, but it now clears the directory every checkout
+- `cargo clean` still works, but it now clears the directories every checkout
   shares, not just the current one.
 
 Exporting `CARGO_TARGET_DIR` yourself overrides this, which is how
-`measure:desktop-build` isolates its own build. Scripts that need a built
-binary resolve the directory from the same variable instead of assuming
-`target/`, so an override stays consistent across the repository. Builds run
-outside `mise` fall back to `target/` inside the checkout; `mise` shell
-activation or `mise exec --` keeps them together.
+`measure:desktop-build` isolates its own build. When only `CARGO_TARGET_DIR`
+is exported, the build directory follows it, which is Cargo's own default, so
+an isolated build does not write intermediates into the shared cache. Export
+`CARGO_BUILD_BUILD_DIR` as well to place intermediates elsewhere. Scripts that
+need a built binary resolve the directory from `cargo metadata` or the same
+variable instead of assuming `target/`, so an override stays consistent
+across the repository. Builds run outside `mise` fall back to `target/` inside
+the checkout for both; `mise` shell activation or `mise exec --` keeps them
+together. CI does not load the `mise` environment and keeps Cargo's default
+single `target/` directory.
+
+### Cache contract
+
+Everything under both directories is reproducible Cargo output built from the
+pinned toolchain and `Cargo.lock`. It is not Rackio application data: machine
+identities, the peer allowlist, pairing state, metrics history and
+configuration live in the agent's configuration, data and state directories
+(the OS application directories for `dev.rackio.rackio`, the `RACKIO_*_DIR`
+overrides, or `/etc/rackio` and `/var/lib/rackio` for the Linux service; see
+[`operations.md`](operations.md)). The agent never writes under
+`~/.cache/rackio`, so the build cache never contains them. Deleting the
+cache costs a recompile, not data. The size of this local compiler cache is a
+separate concern from the size of the shipped binary, `.app`, installer or
+release archive.
+
+Prefer the tasks below to deleting cache paths by hand. They resolve the
+directories from `cargo metadata`, and cleanup only ever runs `cargo clean`,
+so they do not depend on Cargo's internal layout, which is not stable.
+
+```sh
+mise run cache:report                   # read-only size breakdown
+mise run cache:report -- --json         # the same, machine-readable
+mise run cache:clean -- --dry-run       # preview what the default clean removes
+mise run cache:clean                    # remove the dev, test and debugging profiles
+mise run cache:clean -- --all           # remove everything, including release and cross targets
+```
+
+`cache:report` prints the size of each directory and, per profile, final
+artifacts separately from `deps/`, `incremental/`, build-script `build/` and
+fingerprints. Hard links between a final binary and its `deps/` copy are
+counted once, against the final artifact. The report never modifies anything.
+
+`cache:clean` without `--all` runs `cargo clean --profile dev` and
+`cargo clean --profile debugging`, which leaves release builds, rustdoc output
+and cross-compilation targets such as the one `check:windows-cross` produces
+in place. `--all` runs a plain `cargo clean`. Both print the directories they
+affect first and refuse to run when a directory is not tagged by Cargo
+(`CACHEDIR.TAG`), is a filesystem root, or contains the checkout or the home
+directory.
+
+Stop any Rackio agent or desktop app that was started from a development build
+(`mise run agent:daemon`, `mise run desktop:dev`, a binary under
+`~/.cache/rackio/target`) before cleaning. `cache:clean` never stops them: on
+Linux and macOS it lists processes whose executable lives in the cache and
+refuses to clean while any do, and on Windows, where it cannot inspect them,
+it says so and relies on you. An installed Rackio service runs from its
+installation directory and is unaffected.
+
+After switching an existing cache to this layout, run
+`mise run cache:clean -- --all` once: intermediates from the old single
+directory are not reused by the new one and otherwise linger in `target/`.
+
+### `build-dir` compatibility
+
+Verified with Cargo 1.97.1 on Linux (the pinned toolchain): workspace builds,
+`cargo nextest`, `cargo doc`, release builds, the two-daemon E2E scripts and
+the Linux installer test all run unchanged, because they locate artifacts
+through `cargo metadata`'s `target_directory` or `CARGO_TARGET_DIR`, where
+Cargo still places final artifacts. `cargo-llvm-cov` honours
+`CARGO_BUILD_BUILD_DIR` itself. `cargo clean` covers both directories.
+
+One known interaction: `tauri-build` finds the directory beside the app binary
+by walking three levels up from its `OUT_DIR`, so with a separate build
+directory it copies `bundle.resources` (the licence files) into
+`build/<profile>/` instead of `target/<profile>/`. The desktop app does not read
+those files at runtime, and `tauri build` bundles them from their source
+paths, so neither `tauri dev` nor packaging is affected. A future change that
+reads bundled resources at runtime in development builds must account for
+this. The desktop build and macOS and Windows hosts were not exercised by the
+measurements below; if the layout causes trouble there, export
+`CARGO_BUILD_BUILD_DIR` equal to `CARGO_TARGET_DIR` to restore the single
+directory.
+
+### Measurements and incremental compilation
+
+Recorded on 2026-09-24 on a 4-vCPU Linux x86_64 container with the pinned
+Cargo 1.97.1. The container has no WebKitGTK, so `rackio-desktop` is excluded;
+the ~9.7 GiB cache reported in #211 came from a macOS host that also builds
+the desktop app and its `objc2` dependency graph, and so is larger than this
+reproduction. The workload, repeated for each layout from an empty cache:
+
+1. `cargo build --locked --workspace --exclude rackio-desktop --all-targets`
+2. the same after touching `crates/rackio-core/src/lib.rs`
+3. the same after touching `apps/agent/src/main.rs`
+4. `cargo build --locked --release -p rackio-agent`
+5. `cargo doc --workspace --exclude rackio-desktop --no-deps`
+
+| Layout | Total | `debug` (final / deps / incremental / build) | `release` | Build 1 / 2 / 3 / 4 |
+| --- | ---: | --- | ---: | --- |
+| Single `target/` (before) | 2.3 GiB | 1.6 GiB (88 MiB / 1019 MiB / 445 MiB / 49 MiB) | 748 MiB | 63 s / 3 s / 2 s / 295 s |
+| `target/` + `build/` (after) | 2.3 GiB: 113 MiB in `target/`, 2.2 GiB in `build/` | 88 MiB final in `target/`, 1.5 GiB intermediates in `build/` | 748 MiB | 68 s / 3 s / 2 s / 295 s |
+| `target/` + `build/`, `CARGO_INCREMENTAL=0` | 1.7 GiB | 1.0 GiB, no `incremental/` | same | 63 s / 7 s / 5 s / — |
+
+`cache:report` totals matched `du -sB1` to the byte.
+`mise run cache:clean` reduced 2.3 GiB to 758 MiB in both layouts (release
+profile and rustdoc kept), and `cache:clean -- --all` to nothing. After the
+default clean, step 1 rebuilt in 65 s from the pinned toolchain and
+`Cargo.lock`, `cargo test --workspace --exclude rackio-desktop` passed, the
+two-daemon cleanup smoke and the Linux installer test passed, and an agent
+daemon started from the rebuilt binary. Cleaning while that daemon ran was
+refused with its PID and left it running.
+
+The separate build directory does not change total size or build time; it
+makes the split between final artifacts and disposable intermediates visible
+and lets a report attribute it without guessing.
+
+Incremental compilation stays enabled for development builds (Cargo's
+default). Disabling it saved about 0.6 GiB of the `debug` profile but made the
+edit-rebuild loop in steps 2 and 3 roughly 2.3x slower, which is the path a
+developer repeats most. `mise run check` and `mise run mutants` already set
+`CARGO_INCREMENTAL=0`, so the quality gate adds no incremental data of its
+own. Use `cache:clean` to reclaim `incremental/` rather than disabling it.
 
 ## Refreshing dependency PR license notices
 
