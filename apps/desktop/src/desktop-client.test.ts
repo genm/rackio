@@ -24,6 +24,7 @@ import {
   importPairingBundle,
   inspectSshHost,
   savePairingBundle,
+  setTrayIcon,
 } from "./desktop-client";
 import type { FleetSnapshot, SshBootstrapInput, SshProgress, SshTarget } from "./types";
 
@@ -53,6 +54,18 @@ describe("desktop IPC client", () => {
       ["fleet_snapshot"],
       ["pair_machine", { bundle: " rackio-pair:test-contract " }],
       ["create_pairing_share"],
+    ]);
+  });
+
+  it("sets and clears a tray icon by machine id", async () => {
+    tauri.invoke.mockResolvedValue(undefined);
+
+    await setTrayIcon("node-1", "🎮");
+    await setTrayIcon("node-1", null);
+
+    expect(tauri.invoke.mock.calls).toEqual([
+      ["set_tray_icon", { machineId: "node-1", icon: "🎮" }],
+      ["set_tray_icon", { machineId: "node-1", icon: null }],
     ]);
   });
 

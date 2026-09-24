@@ -36,6 +36,7 @@ const snapshot: FleetSnapshot = {
     {
       id: "node-1",
       name: "Studio Mac",
+      trayLabel: "S",
       os: "macOS · arm64",
       state: "healthy",
       path: "lan_direct",
@@ -71,6 +72,7 @@ const snapshot: FleetSnapshot = {
       id: "node-2",
       endpointId: "endpoint-node-2",
       name: "Home Server",
+      trayLabel: "H",
       os: "Linux · x86_64",
       state: "degraded",
       path: "relayed",
@@ -166,6 +168,7 @@ test("hides an offline machine's current numbers while preserving last-contact c
         id: "node-3",
         endpointId: "endpoint-node-3",
         name: "Steam Deck",
+        trayLabel: "S",
         os: "Linux · x86_64",
         state: "offline",
         path: "lan_direct",
@@ -204,6 +207,7 @@ test("excludes offline machines from the live comparison", async ({ mount }) => 
           {
             id: "node-3",
             name: "Steam Deck",
+            trayLabel: "S",
             os: "Linux · x86_64",
             state: "offline",
             path: "lan_direct",
@@ -537,4 +541,69 @@ test("falls back to the normal window when tray integration is unavailable", asy
   );
   await expect(component.getByText("Tray unavailable")).toBeVisible();
   await expect(component.getByText("Studio Mac")).toBeVisible();
+});
+
+test("shows each machine's menu bar glyph and sets or clears a custom icon", async ({ mount }) => {
+  const changes: Array<[string, string | null]> = [];
+  const component = await mount(
+    <Dashboard
+      snapshot={{
+        ...snapshot,
+        nodes: [snapshot.nodes[0], { ...snapshot.nodes[1], trayLabel: "🗄️", trayIcon: "🗄️" }],
+      }}
+      onTrayIconChange={async (node, icon) => {
+        changes.push([node.id, icon]);
+      }}
+    />,
+  );
+  const studio = component.locator("article").filter({ hasText: "Studio Mac" });
+  const server = component.locator("article").filter({ hasText: "Home Server" });
+
+  await expect(studio.getByTestId("tray-label")).toHaveText("S");
+  await expect(studio.locator(".tray-icon-source")).toHaveText("initial");
+  await expect(server.getByTestId("tray-label")).toHaveText("🗄️");
+
+  await studio.getByText("Menu bar icon").click();
+  await studio.getByRole("button", { name: "Use 🎮" }).click();
+  await studio.getByLabel("Custom menu bar icon for Studio Mac").fill("★");
+  await studio.getByRole("button", { name: "Set", exact: true }).click();
+  // The initial is already in use, so there is nothing to clear.
+  await expect(studio.getByRole("button", { name: "Use initial" })).toBeDisabled();
+
+  await server.getByText("Menu bar icon").click();
+  await expect(server.getByRole("button", { name: "Use 🗄️" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await server.getByRole("button", { name: "Use initial" }).click();
+
+  await expect
+    .poll(() => changes)
+    .toEqual([
+      ["node-1", "🎮"],
+      ["node-1", "★"],
+      ["node-2", null],
+    ]);
+});
+
+test("shows why a tray icon was rejected and keeps the draft", async ({ mount }) => {
+  const component = await mount(
+    <Dashboard
+      snapshot={snapshot}
+      onTrayIconChange={async () => {
+        throw "A tray icon must be a single character or emoji.";
+      }}
+    />,
+  );
+  const studio = component.locator("article").filter({ hasText: "Studio Mac" });
+  await studio.getByText("Menu bar icon").click();
+  const input = studio.getByLabel("Custom menu bar icon for Studio Mac");
+  await input.fill("Studio");
+  await studio.getByRole("button", { name: "Set", exact: true }).click();
+
+  await expect(studio.getByRole("alert")).toHaveText(
+    "A tray icon must be a single character or emoji.",
+  );
+  await expect(input).toHaveValue("Studio");
+  await expect(studio.getByTestId("tray-label")).toHaveText("S");
 });

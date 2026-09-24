@@ -6,6 +6,7 @@ import type { FleetNode } from "./types";
 const baseNode: FleetNode = {
   id: "presentation-node",
   name: "Presentation Server",
+  trayLabel: "P",
   os: "Test OS",
   state: "healthy",
   path: "unknown",

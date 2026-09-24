@@ -7,6 +7,7 @@ function machine(id: string, name: string, state: NodeState, detail?: string | n
   return {
     id,
     name,
+    trayLabel: name.slice(0, 1),
     os: "Test OS",
     state,
     path: "lan_direct",

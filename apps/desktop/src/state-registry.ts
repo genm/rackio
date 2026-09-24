@@ -44,6 +44,7 @@ const detailFixtureNode = {
   id: "detail-node",
   endpointId: "endpoint-detail",
   name: "Home Server",
+  trayLabel: "H",
   os: "Linux · x86_64",
   state: "healthy" as const,
   path: "lan_direct" as const,
