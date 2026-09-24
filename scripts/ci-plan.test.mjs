@@ -182,6 +182,73 @@ test("Tauri JSON configuration selects both desktop owners", () => {
   assert.equal(plan.frontend, true);
 });
 
+test("CI-consumed configuration and templates select the jobs that read them", () => {
+  const nextest = classifyChangedFiles([".config/nextest.toml"]);
+  assert.equal(nextest.rust_linux, true);
+  assert.equal(nextest.rust_macos, true);
+  assert.equal(nextest.rust_windows, true);
+  assert.equal(nextest.full_run, false);
+  assert.equal(nextest.frontend, false);
+
+  const template = classifyChangedFiles(["about.hbs"]);
+  assert.equal(template.security_policy, true);
+  assert.equal(template.rust, false);
+  assert.equal(template.full_run, false);
+
+  for (const file of ["scripts/cargo-about-config.mjs", "scripts/cargo-about-config.test.mjs"]) {
+    assert.equal(classifyChangedFiles([file]).security_policy, true, file);
+  }
+  assert.equal(classifyChangedFiles(["scripts/test-two-daemon-cleanup.sh"]).rust_linux, true);
+  const benchmark = classifyChangedFiles(["scripts/benchmark-agent-resources.ps1"]);
+  assert.equal(benchmark.rust_windows, true);
+  assert.equal(benchmark.rust_linux, false);
+});
+
+// Files that deliberately select no affected gate. Anything else a pull request
+// can touch must reach at least one gate, so a new CI input cannot silently
+// ride the unaffected no-op path of every stable check context.
+const UNROUTED_BY_DESIGN = [
+  // Prose and legal text; no job reads them. Link checking is local-only.
+  [/\.md$/, "documentation"],
+  [/^LICENSE-(?:APACHE|MIT)$/, "license text"],
+  [/^\.lycheeignore$/, "local links:check task"],
+  // Read by jobs that run on every change regardless of the plan.
+  [/^typos\.toml$/, "Repository hygiene job always runs"],
+  // Local tooling that no CI job executes.
+  [/^\.agents\//, "agent skills"],
+  [/^\.codex\//, "agent environment"],
+  [/^(?:justfile|lefthook\.yml)$/, "local task and hook entrypoints"],
+  [/^\.git(?:ignore|attributes)$/, "Git metadata; changes no checked-out content"],
+  // Exercised only by scheduled or opt-in runs, never per pull request.
+  [/^\.cargo\/mutants\.toml$/, "scheduled deep-verification"],
+  [/^scripts\/nat-lab\/(?!.*\.mjs$)/, "opt-in test:nat-lab"],
+  [/^fuzz\/corpus\//, "fuzzer input, never compiled"],
+];
+
+test("every tracked file selects a gate or is unrouted by an explicit decision", () => {
+  const tracked = parseChangedFiles(
+    spawnSync("git", ["ls-files", "-z"], { cwd: resolve("."), maxBuffer: 64 * 1024 * 1024 }).stdout,
+  );
+  assert.ok(tracked.length > 100);
+  const selectsNothing = (path) =>
+    !Object.entries(classifyChangedFiles([path])).some(
+      ([key, value]) => key !== "reason" && value === true,
+    );
+  const unexplained = tracked.filter(
+    (path) => selectsNothing(path) && !UNROUTED_BY_DESIGN.some(([pattern]) => pattern.test(path)),
+  );
+  assert.deepEqual(unexplained, [], "route these to the jobs that read them, or document why not");
+
+  // An exemption that matches nothing unrouted is stale and would hide a
+  // future file at that path, so each one must still be needed.
+  for (const [pattern, reason] of UNROUTED_BY_DESIGN) {
+    assert.ok(
+      tracked.some((path) => pattern.test(path) && selectsNothing(path)),
+      `${pattern} (${reason}) no longer exempts any tracked file`,
+    );
+  }
+});
+
 test("recognized pull request actions select only affected gates", () => {
   for (const eventAction of ["opened", "ready_for_review", "reopened", "synchronize"]) {
     const plan = planForEvent({
@@ -318,6 +385,82 @@ test("deletions and rename sources still select their original owners", () => {
   assert.ok(plan.files.includes("crates/guard.rs"));
   assert.ok(plan.files.includes("docs/guard.rs"));
   assert.ok(plan.files.includes("docs/line\nbreak.md"));
+});
+
+test("adding, modifying, deleting or renaming CI inputs selects their consumers", () => {
+  const directory = mkdtempSync(join(tmpdir(), "rackio-ci-plan-inputs-"));
+  mkdirSync(join(directory, ".config"), { recursive: true });
+  mkdirSync(join(directory, "docs"), { recursive: true });
+  git(directory, "init", "--quiet");
+  git(directory, "config", "user.name", "Rackio CI");
+  git(directory, "config", "user.email", "ci@example.test");
+  writeFileSync(join(directory, "README.md"), "fixture\n");
+  git(directory, "add", "--all");
+  git(directory, "commit", "--quiet", "-m", "test: seed");
+
+  const planBetween = (baseSha) => {
+    const result = spawnSync(process.execPath, [plannerPath], {
+      cwd: directory,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CI_EVENT_NAME: "pull_request",
+        CI_EVENT_ACTION: "synchronize",
+        CI_BASE_SHA: baseSha,
+        CI_HEAD_SHA: git(directory, "rev-parse", "HEAD"),
+        GITHUB_OUTPUT: join(directory, ".git", "github-output"),
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const commit = (message, change) => {
+    const baseSha = git(directory, "rev-parse", "HEAD");
+    change();
+    git(directory, "add", "--all");
+    git(directory, "commit", "--quiet", "-m", message);
+    return planBetween(baseSha);
+  };
+  const assertSelected = (plan, form) => {
+    assert.equal(plan.reason, "affected", form);
+    assert.equal(plan.security_policy, true, `${form}: about.hbs`);
+    assert.equal(plan.rust_linux && plan.rust_macos && plan.rust_windows, true, `${form}: nextest`);
+  };
+
+  assertSelected(
+    commit("test: add", () => {
+      writeFileSync(join(directory, "about.hbs"), "{{#each licenses}}{{/each}}\n");
+      writeFileSync(join(directory, ".config", "nextest.toml"), "[profile.default]\n");
+    }),
+    "added",
+  );
+  assertSelected(
+    commit("test: modify", () => {
+      writeFileSync(join(directory, "about.hbs"), "{{#each overview}}{{/each}}\n");
+      writeFileSync(join(directory, ".config", "nextest.toml"), "[profile.default]\nretries = 1\n");
+    }),
+    "modified",
+  );
+  assertSelected(
+    commit("test: rename away", () => {
+      git(directory, "mv", "about.hbs", "docs/about.hbs");
+      git(directory, "mv", ".config/nextest.toml", "docs/nextest.toml");
+    }),
+    "renamed",
+  );
+  assertSelected(
+    commit("test: restore then delete", () => {
+      git(directory, "mv", "docs/about.hbs", "about.hbs");
+      git(directory, "mv", "docs/nextest.toml", ".config/nextest.toml");
+    }),
+    "renamed back",
+  );
+  assertSelected(
+    commit("test: delete", () => {
+      git(directory, "rm", "--quiet", "about.hbs", ".config/nextest.toml");
+    }),
+    "deleted",
+  );
 });
 
 test("unavailable comparison SHAs fail closed in the CLI", () => {

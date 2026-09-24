@@ -13,6 +13,8 @@ const GLOBAL_PATHS = [
 const CROSS_PLATFORM_RUST_PATHS = [
   /^Cargo\.(?:toml|lock)$/,
   /^rust-toolchain\.toml$/,
+  // `cargo nextest run --workspace` reads this on every Rust runner.
+  /^\.config\/nextest\.toml$/,
   /^(?:apps\/agent|crates|proto)\//,
   /^apps\/desktop\/src-tauri\//,
   /^packaging\/(?!linux\/|macos\/|windows\/|.*\.md$)/,
@@ -21,7 +23,7 @@ const CROSS_PLATFORM_RUST_PATHS = [
 const LINUX_RUST_PATHS = [
   /^install\.sh$/,
   /^packaging\/linux\/(?!.*\.md$)/,
-  /^scripts\/(?:benchmark-agent-resources|test-two-daemon-pairing|test-two-daemon-address-change|check-release-binary-cloud-independence)\.sh$/,
+  /^scripts\/(?:benchmark-agent-resources|test-two-daemon-cleanup|test-two-daemon-pairing|test-two-daemon-address-change|check-release-binary-cloud-independence)\.sh$/,
   // The fuzz crate is type-checked only on the Linux leg, so a change to it
   // must reach that leg without pulling in the macOS and Windows runners.
   /^fuzz\/(?!corpus\/)/,
@@ -31,7 +33,9 @@ const MACOS_RUST_PATHS = [/^packaging\/macos\/(?!.*\.md$)/];
 
 const WINDOWS_RUST_PATHS = [
   /^packaging\/windows\/(?!.*\.md$)/,
-  /^scripts\/test-windows-named-pipe\.ps1$/,
+  // The Windows leg runs the named-pipe smoke test and syntax-checks the
+  // benchmark counterpart; both are read nowhere else in CI.
+  /^scripts\/(?:test-windows-named-pipe|benchmark-agent-resources)\.ps1$/,
 ];
 
 const FRONTEND_PATHS = [
@@ -54,6 +58,10 @@ const SECURITY_POLICY_PATHS = [
   /^install\.sh$/,
   /^apps\/desktop\/(?:package\.json|src-tauri\/)/,
   /^scripts\/generate-(?:javascript-licenses|third-party-licenses)\.(?:mjs|sh)$/,
+  // Inputs of the Rust notice generator: the cargo-about template and the
+  // deny.toml -> cargo-about policy translation with its regression tests.
+  /^about\.hbs$/,
+  /^scripts\/cargo-about-config(?:\.test)?\.mjs$/,
 ];
 
 const SECURITY_SOURCE_PATHS = [/^(?:apps|crates)\//];
