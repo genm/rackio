@@ -68,6 +68,7 @@ run = [
   "pnpm test:ci-plan",
   "pnpm test:governance",
   "pnpm test:desktop-updater",
+  "pnpm test:license-policy",
   "pnpm test",
   "pnpm test:ct",
   "pnpm build",
