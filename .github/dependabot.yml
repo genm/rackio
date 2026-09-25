@@ -27,6 +27,11 @@ updates:
 
   # cargo-fuzz is deliberately detached from the root Cargo workspace and has
   # its own lockfile, so it needs an independent update entry.
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
   - package-ecosystem: cargo
     directory: /fuzz
     schedule:
@@ -51,6 +56,10 @@ updates:
           - "*"
         update-types:
           - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: npm
     directory: /
@@ -79,6 +88,10 @@ updates:
         # Keep minor and major upgrades isolated so one failure has one owner.
         update-types:
           - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: github-actions
     directory: /
@@ -110,6 +123,11 @@ updates:
 
   # The relay package pins both image tags and digests. Keep these updates
   # visible, but the auto-merge policy requires manual review for Docker.
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
   - package-ecosystem: docker
     directory: /relay-package
     schedule:
@@ -128,3 +146,7 @@ updates:
     commit-message:
       prefix: chore
       include: scope
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
