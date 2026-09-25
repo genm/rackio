@@ -25,13 +25,13 @@ updates:
         update-types:
           - patch
 
-  # cargo-fuzz is deliberately detached from the root Cargo workspace and has
-  # its own lockfile, so it needs an independent update entry.
     ignore:
       - dependency-name: "*"
         update-types:
           - "version-update:semver-major"
 
+  # cargo-fuzz is deliberately detached from the root Cargo workspace and has
+  # its own lockfile, so it needs an independent update entry.
   - package-ecosystem: cargo
     directory: /fuzz
     schedule:
@@ -85,7 +85,7 @@ updates:
       npm-patches:
         patterns:
           - "*"
-        # Keep minor and major upgrades isolated so one failure has one owner.
+        # Keep patch updates grouped; minor upgrades remain isolated.
         update-types:
           - patch
     ignore:
@@ -121,13 +121,13 @@ updates:
           - minor
           - patch
 
-  # The relay package pins both image tags and digests. Keep these updates
-  # visible, but the auto-merge policy requires manual review for Docker.
     ignore:
       - dependency-name: "*"
         update-types:
           - "version-update:semver-major"
 
+  # The relay package pins both image tags and digests. Keep these updates
+  # visible, but the auto-merge policy requires manual review for Docker.
   - package-ecosystem: docker
     directory: /relay-package
     schedule:
