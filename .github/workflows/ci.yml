@@ -84,7 +84,7 @@ jobs:
           tar -xzf "$archive" -C "$install_dir" actionlint
           printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
       - name: Install pinned workflow and spelling auditors
-        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2.86.8
+        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: zizmor@1.28.0,typos@1.48.0
           fallback: none
@@ -237,7 +237,7 @@ jobs:
           done
       - name: Install nextest
         if: env.RUN_RUST == 'true'
-        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2.86.8
+        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2.87.19
         with:
           tool: cargo-nextest@0.9.140
           fallback: none
