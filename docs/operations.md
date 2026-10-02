@@ -337,7 +337,10 @@ and SCP. A host-key change stops the installation.
 authenticate that key. Verify the displayed fingerprint through an existing
 trusted path such as a console, inventory system, or an administrator you can
 independently reach. The accepted keys are stored in Rackio’s local application
-configuration so later SSH/SCP calls stay pinned. If a connection drops before
+configuration so later SSH/SCP calls stay pinned. Only the key lines that name
+the scanned host are kept — a server’s scan response cannot pin a key for a
+host it is not, or widen what a later connection trusts — and the file is
+cleaned to the same shape on every write. If a connection drops before
 cleanup, inspect and remove only the matching `/tmp/rackio-bootstrap.*`
 directory on the target after confirming it belongs to this operation.
 
