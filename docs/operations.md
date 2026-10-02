@@ -440,12 +440,14 @@ a level, and are still reported.
 
 #### Metrics a rule may name
 
-`cpu_percent`, `memory_percent`, `swap_percent`, `disk_percent` and
+`cpu_percent`, `memory_percent`, `swap_percent`, `disk_percent`,
+`temperature_celsius` (the hottest sensor's absolute reading, for an operator
+who knows this machine's thermal envelope) and
 `temperature_headroom_celsius` (degrees remaining before the hardware's own
 limit). A rule naming anything else is rejected: a metric that never resolves
 would leave the machine silent in exactly the way a healthy one is. A source
-the host cannot read — no swap, no published sensor limit — leaves its rule
-inactive rather than reading as zero, and a rule whose metric becomes
+the host cannot read — no swap, no sensor, no published sensor limit — leaves
+its rule inactive rather than reading as zero, and a rule whose metric becomes
 unreadable clears instead of staying latched. A degraded collector or storage
 subsystem still reports `degraded` in preference to a threshold state, because
 the underlying values are no longer trustworthy.
