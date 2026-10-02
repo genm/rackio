@@ -100,6 +100,11 @@ Inbound authorization and outbound monitoring are separate directions. Pairing
 machine A as a viewer of machine B does not authorize B to view A. Mutual
 monitoring requires a second explicit pairing.
 
+Removal follows the same directionality. `rackio peer revoke` on the monitored
+machine cuts a viewer's access; `rackio machine remove` on the viewer deletes
+its record of the machine and stops the monitor task, so a removed machine
+leaves the fleet view instead of lingering as `offline`.
+
 ## Current remote-state semantics
 
 - A metric sample or heartbeat updates viewer-local `last_seen`.
