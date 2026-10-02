@@ -122,7 +122,12 @@ fn node_info(info: rackio_protocol::v1::NodeInfo) -> Result<NodeInfo, RemoteFlee
         .protocol
         .ok_or(RemoteFleetError::UnexpectedResponse("protocol version"))?;
     Ok(NodeInfo {
-        node_id: Uuid::parse_str(&info.node_id).map_err(|_| RemoteFleetError::IdentityMismatch)?,
+        // A malformed UUID is not a wrong identity — the QUIC handshake already
+        // pinned the endpoint — it is a protocol violation. Reporting it as
+        // `IdentityMismatch` would surface `auth_error` on the viewer and send
+        // the operator checking credentials instead of the peer's payload.
+        node_id: Uuid::parse_str(&info.node_id)
+            .map_err(|_| RemoteFleetError::UnexpectedResponse("node id"))?,
         display_name: info.display_name,
         os: info.os,
         architecture: info.architecture,
