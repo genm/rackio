@@ -19,7 +19,9 @@ use tokio::sync::{RwLock, watch};
 use uuid::Uuid;
 
 use crate::remote::RemoteFleet;
-use config::{AgentConfig, create_directories, init_logging, load_config, load_or_create_node_id};
+use config::{
+    AgentConfig, config_path, create_directories, init_logging, load_config, load_or_create_node_id,
+};
 use local_ipc::{LocalContext, run_local_server};
 use sampling::sample_loop;
 
@@ -70,11 +72,29 @@ fn load_alert_rules(config: &AgentConfig) -> anyhow::Result<Vec<rackio_core::Ale
     Ok(rules)
 }
 
+/// Load the operator configuration and refuse a file no command could have
+/// written.
+///
+/// The file is editable by hand while the daemon is stopped, so what it now
+/// holds may be a state no `rackio` command would ever store. Refusing to
+/// start on it keeps a port-0 advertised address or a CA pinned to no relay
+/// from becoming running behavior with no command having said so.
+fn load_validated_config(paths: &AppPaths) -> anyhow::Result<AgentConfig> {
+    let config = load_config(paths)?;
+    config.validate().map_err(|error| {
+        anyhow!(
+            "{} is not a usable configuration: {error}",
+            config_path(paths).display()
+        )
+    })?;
+    Ok(config)
+}
+
 pub async fn run_daemon(paths: AppPaths) -> anyhow::Result<()> {
     create_directories(&paths)?;
     init_logging(&paths)?;
 
-    let config = load_config(&paths)?;
+    let config = load_validated_config(&paths)?;
     let secret = load_or_create_secret_key(&paths.data.join("identity.key"))?;
     let endpoint = rackio_iroh::bind_endpoint(
         secret,

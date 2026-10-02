@@ -472,7 +472,10 @@ retuned one level still receives later releases' defaults for the rest.
 
 Edit the file directly only while the daemon is stopped; a running daemon owns
 it, and `rackio alerts` is the interface that keeps the file and the running
-rules in step.
+rules in step. Whatever the field, the daemon re-validates the file at startup
+with the same rules the CLI enforces — a value no command could have written,
+such as an advertised port 0 or a relay CA without a relay, fails the start and
+names the setting.
 
 #### Where a breach is visible
 
