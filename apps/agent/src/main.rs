@@ -22,6 +22,11 @@ enum Command {
         endpoint_id: String,
         #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u16).range(1..=168))]
         hours: u16,
+        /// `minute` returns one averaged row per minute of retention; `raw`
+        /// returns the two-second samples for as far back as raw retention
+        /// lasts.
+        #[arg(long, default_value = "minute", value_parser = ["minute", "raw"])]
+        resolution: String,
     },
     Pairing {
         #[command(subcommand)]
@@ -174,20 +179,13 @@ async fn main() -> anyhow::Result<()> {
         Command::Fleet => {
             print_response(request_local(&paths, LocalCommand::FleetSnapshot).await?)?;
         }
-        Command::History { endpoint_id, hours } => {
-            let to_ms = Utc::now().timestamp_millis();
-            let from_ms = to_ms.saturating_sub(i64::from(hours) * 60 * 60 * 1_000);
+        Command::History {
+            endpoint_id,
+            hours,
+            resolution,
+        } => {
             print_response(
-                request_local(
-                    &paths,
-                    LocalCommand::QueryHistory {
-                        endpoint_id,
-                        from_ms,
-                        to_ms,
-                        resolution: RemoteHistoryResolution::Minute,
-                    },
-                )
-                .await?,
+                request_local(&paths, history_request(endpoint_id, hours, &resolution)).await?,
             )?;
         }
         Command::Pairing {
@@ -266,6 +264,24 @@ async fn main() -> anyhow::Result<()> {
         Command::Doctor => print_response(request_local(&paths, LocalCommand::Doctor).await?)?,
     }
     Ok(())
+}
+
+/// Build the history query for the range the operator asked for. `minute` is
+/// the default because a week of two-second samples is not a table anyone
+/// scrolls; `raw` exists for short windows where the real cadence matters.
+fn history_request(endpoint_id: String, hours: u16, resolution: &str) -> LocalCommand {
+    let to_ms = Utc::now().timestamp_millis();
+    let from_ms = to_ms.saturating_sub(i64::from(hours) * 60 * 60 * 1_000);
+    LocalCommand::QueryHistory {
+        endpoint_id,
+        from_ms,
+        to_ms,
+        resolution: if resolution == "raw" {
+            RemoteHistoryResolution::Raw
+        } else {
+            RemoteHistoryResolution::Minute
+        },
+    }
 }
 
 /// Translate the operator's wording into the daemon's threshold command.
