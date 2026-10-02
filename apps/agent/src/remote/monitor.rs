@@ -61,6 +61,19 @@ pub(super) async fn monitor_machine(
     // as a crafted sequence number for forcing a registry rewrite.
     let mut last_persisted: Option<Instant> = None;
     loop {
+        // The record this task monitors is what justifies its connections. If
+        // it is gone — the operator removed the machine while this task was
+        // between sessions — the task must stop rather than keep dialling a
+        // machine nobody paired with or recreating the snapshot removal just
+        // dropped. An unreadable registry is not proof of removal, so only a
+        // definite absence exits.
+        if matches!(registry.contains(&record.endpoint_id), Ok(false)) {
+            tracing::info!(
+                endpoint_id = %record.endpoint_id,
+                "monitor stopping; the pairing record no longer exists"
+            );
+            return;
+        }
         let started = Instant::now();
         let result = monitor_session(
             endpoint.clone(),
