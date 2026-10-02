@@ -152,7 +152,12 @@ pub(super) fn metric_sample(sample: rackio_protocol::v1::MetricSample) -> Metric
     MetricSample {
         timestamp_ms: sample.timestamp_ms,
         sequence: sample.sequence,
-        cpu_percent: sample.cpu_percent,
+        // The wire can carry NaN and infinities; neither is a reading. Passing
+        // one through would let a malformed frame appear as a number in memory
+        // and as `null` once a snapshot is persisted — the same frame told two
+        // ways. Absent is the honest shape, matching how the collector reports
+        // an unreadable source.
+        cpu_percent: sample.cpu_percent.filter(|value| value.is_finite()),
         memory_used_bytes: sample.memory_used_bytes,
         memory_total_bytes: sample.memory_total_bytes,
         swap_used_bytes: sample.swap_used_bytes,
@@ -170,11 +175,17 @@ pub(super) fn metric_sample(sample: rackio_protocol::v1::MetricSample) -> Metric
             received_bytes_per_second: network.received_bytes_per_second,
             sent_bytes_per_second: network.sent_bytes_per_second,
         }),
-        temperature: sample.temperature.map(|temperature| TemperatureMetric {
-            label: temperature.label,
-            celsius: temperature.celsius,
-            critical_celsius: temperature.critical_celsius,
-            sensor_count: temperature.sensor_count,
+        temperature: sample.temperature.and_then(|temperature| {
+            // A non-finite reading is not a reading: drop it rather than
+            // report a sensor value that cannot be ordered against anything.
+            temperature.celsius.is_finite().then(|| TemperatureMetric {
+                label: temperature.label,
+                celsius: temperature.celsius,
+                critical_celsius: temperature
+                    .critical_celsius
+                    .filter(|value| value.is_finite()),
+                sensor_count: temperature.sensor_count,
+            })
         }),
         uptime_seconds: sample.uptime_seconds,
         errors: sample
@@ -218,5 +229,71 @@ fn connection_path(path: i32) -> ConnectionPath {
         Ok(rackio_protocol::v1::ConnectionPath::WanDirect) => ConnectionPath::WanDirect,
         Ok(rackio_protocol::v1::ConnectionPath::Relayed) => ConnectionPath::Relayed,
         _ => ConnectionPath::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rackio_protocol::v1 as wire;
+
+    use super::metric_sample;
+
+    #[test]
+    fn a_non_finite_reading_is_reported_as_absent_not_as_a_number() {
+        let decoded = metric_sample(wire::MetricSample {
+            timestamp_ms: 1,
+            sequence: 1,
+            cpu_percent: Some(f32::NAN),
+            ..Default::default()
+        });
+        assert_eq!(
+            decoded.cpu_percent, None,
+            "NaN must decode as an absent reading"
+        );
+
+        let decoded = metric_sample(wire::MetricSample {
+            timestamp_ms: 1,
+            sequence: 1,
+            cpu_percent: Some(f32::INFINITY),
+            ..Default::default()
+        });
+        assert_eq!(decoded.cpu_percent, None);
+    }
+
+    #[test]
+    fn a_non_finite_temperature_drops_the_reading() {
+        let decoded = metric_sample(wire::MetricSample {
+            timestamp_ms: 1,
+            sequence: 1,
+            temperature: Some(wire::TemperatureMetric {
+                label: String::from("CPU die"),
+                celsius: f32::NAN,
+                critical_celsius: Some(100.0),
+                sensor_count: 2,
+            }),
+            ..Default::default()
+        });
+        assert!(
+            decoded.temperature.is_none(),
+            "a sensor reporting NaN has not reported a temperature"
+        );
+
+        // A corrupt limit must not take the honest reading down with it.
+        let decoded = metric_sample(wire::MetricSample {
+            timestamp_ms: 1,
+            sequence: 1,
+            temperature: Some(wire::TemperatureMetric {
+                label: String::from("CPU die"),
+                celsius: 55.0,
+                critical_celsius: Some(f32::NEG_INFINITY),
+                sensor_count: 2,
+            }),
+            ..Default::default()
+        });
+        let temperature = decoded
+            .temperature
+            .unwrap_or_else(|| panic!("a finite reading must survive"));
+        assert_eq!(temperature.celsius.to_bits(), 55.0_f32.to_bits());
+        assert_eq!(temperature.critical_celsius, None);
     }
 }
