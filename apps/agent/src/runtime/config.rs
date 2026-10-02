@@ -209,6 +209,51 @@ impl Default for AgentConfig {
 }
 
 impl AgentConfig {
+    /// Check a loaded configuration against every invariant the `rackio`
+    /// commands enforce on their own writes.
+    ///
+    /// The file is a supported configuration surface — the operations guide
+    /// covers editing it while the daemon is stopped — so a hand edit gets the
+    /// same refusals a command would give rather than silently becoming
+    /// behavior: a port-0 advertised address lands in every pairing bundle as
+    /// an unreachable candidate, a ninth entry is silently dropped by the
+    /// viewer it was meant to reach, and a relay CA without a relay claims to
+    /// anchor nothing.
+    ///
+    /// Alerts are deliberately not checked here: they have their own
+    /// resolution path, and `alerts reset` repairs them through the CLI — this
+    /// check must not turn a broken rule into a file nothing can load.
+    ///
+    /// # Errors
+    /// Returns the operator-facing reason the stored configuration cannot run.
+    pub(super) fn validate(&self) -> Result<(), String> {
+        validate_bind_port(self.bind_port).map_err(String::from)?;
+        validate_relay_url(self.relay_url.as_deref()).map_err(String::from)?;
+        validate_relay_ca_certificate(
+            self.relay_url.as_deref(),
+            self.relay_ca_certificate.as_deref(),
+        )?;
+        if self.advertise_addresses.len() > MAX_ADVERTISE_ADDRESSES {
+            return Err(format!(
+                "at most {MAX_ADVERTISE_ADDRESSES} advertised addresses are kept; \
+                 the file lists {}",
+                self.advertise_addresses.len()
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for address in &self.advertise_addresses {
+            if address.port() == 0 {
+                return Err(format!(
+                    "{address} cannot be advertised; port 0 is ephemeral and nothing listens on it"
+                ));
+            }
+            if !seen.insert(address) {
+                return Err(format!("{address} is advertised more than once"));
+            }
+        }
+        Ok(())
+    }
+
     /// Every effective rule, including the ones switched off, for the operator
     /// surfaces that have to show what exists before it can be changed.
     ///
@@ -246,7 +291,7 @@ pub(super) fn create_directories(paths: &AppPaths) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn config_path(paths: &AppPaths) -> PathBuf {
+pub(super) fn config_path(paths: &AppPaths) -> PathBuf {
     paths.config.join("config.json")
 }
 
@@ -786,5 +831,80 @@ mod tests {
         write_config(&paths, "not json");
 
         assert!(load_config(&paths).is_err());
+    }
+
+    #[test]
+    fn a_hand_edited_config_meets_the_same_refusals_a_command_would() {
+        // The file is a supported configuration surface, so the states the CLI
+        // refuses to store must also be refused when the file is read back:
+        // an ephemeral port promised as stable, an advertised port nothing
+        // listens on, a duplicate advertisement, a set the viewer would
+        // silently truncate, and a trust anchor pinned to no relay.
+        let cases: [(&str, &str); 5] = [
+            (r#"{"bind_port": 0}"#, "ephemeral"),
+            (
+                r#"{"advertise_addresses": ["198.51.100.7:0"]}"#,
+                "ephemeral",
+            ),
+            (
+                r#"{"advertise_addresses": ["198.51.100.7:41641", "198.51.100.7:41641"]}"#,
+                "more than once",
+            ),
+            (
+                &format!(
+                    r#"{{"advertise_addresses": [{}]}}"#,
+                    (0..=MAX_ADVERTISE_ADDRESSES)
+                        .map(|index| format!(r#""198.51.100.7:{}""#, 41641 + index))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                "at most",
+            ),
+            (
+                r#"{"relay_ca_certificate": "/etc/rackio/ca.pem"}"#,
+                "relay URL",
+            ),
+        ];
+
+        for (body, expected) in cases {
+            let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+            let paths = test_paths(directory.path());
+            write_config(&paths, body);
+
+            let config = load_config(&paths).unwrap_or_else(|error| panic!("{error}"));
+            let Err(error) = config.validate() else {
+                panic!("{body} must not validate: no command could have written it");
+            };
+            assert!(error.contains(expected), "{body}: {error}");
+        }
+    }
+
+    #[test]
+    fn an_invalid_file_still_loads_so_a_command_can_repair_it() {
+        // `load_config` itself stays permissive: a strict reader would turn a
+        // bad field into a file no `rackio` command can open, forcing the
+        // operator to repair the file by hand under exactly the tooling meant
+        // to replace hand edits.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let paths = test_paths(directory.path());
+        write_config(&paths, r#"{"bind_port": 0}"#);
+
+        let config = load_config(&paths).unwrap_or_else(|error| panic!("{error}"));
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn a_config_the_cli_wrote_validates_cleanly() {
+        let config = AgentConfig {
+            relay_url: Some(String::from(RELAY_URL)),
+            bind_port: Some(41641),
+            advertise_addresses: vec![
+                address("198.51.100.7:41641"),
+                address("[2001:db8::1]:41641"),
+            ],
+            ..AgentConfig::default()
+        };
+
+        config.validate().unwrap_or_else(|error| panic!("{error}"));
     }
 }
