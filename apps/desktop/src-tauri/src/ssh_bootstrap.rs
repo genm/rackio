@@ -219,14 +219,11 @@ fn inspect_host(target: &SshTarget) -> Result<SshHostIdentity, String> {
         .output()
         .map_err(|error| format!("Could not start ssh-keyscan: {error}"))?;
     let stdout = output_text(&output, "SSH host-key scan")?;
-    let host_keys: Vec<String> = stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(str::to_owned)
-        .collect();
+    let host_keys = retained_scan_lines(target, stdout.lines());
     if host_keys.is_empty() {
-        return Err(String::from("The SSH server did not return a host key."));
+        return Err(String::from(
+            "The SSH server returned no host key that names this host.",
+        ));
     }
 
     let fingerprints_output = run_with_stdin(
@@ -395,20 +392,12 @@ fn persist_known_hosts(keys: &[String]) -> Result<PathBuf, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(format!("Could not read Rackio known_hosts: {error}")),
     };
-    let mut merged: BTreeSet<String> = existing
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
-        .collect();
-    let incoming = normalized_key_set(keys);
-    detect_host_key_conflict(&merged, &incoming).map_err(|conflict| {
+    let merged = merged_known_host_lines(&existing, keys).map_err(|conflict| {
         format!(
             "{conflict} Verify the new key through a trusted channel, then remove the stale entry from {}.",
             path.display()
         )
     })?;
-    merged.extend(incoming);
     let mut file = tempfile::Builder::new()
         .prefix(".known-hosts-")
         .tempfile_in(&directory)
@@ -436,6 +425,83 @@ fn known_hosts_entry(line: &str) -> Option<(&str, &str, &str)> {
     let key_type = fields.next()?;
     let key = fields.next()?;
     (!hosts.starts_with('|') && !hosts.starts_with('@')).then_some((hosts, key_type, key))
+}
+
+/// The host tokens a scan of `target` can legitimately answer with: the plain
+/// name the default port uses, and the bracketed `host:port` form otherwise.
+fn scan_host_tokens(target: &SshTarget) -> [String; 2] {
+    [
+        target.host.clone(),
+        format!("[{}]:{}", target.host, target.port),
+    ]
+}
+
+/// Whether `line` is a plain `hosts key-type key` entry for literal host
+/// tokens — no marker, no hash, and no pattern that could match a machine the
+/// entry was never scanned for. Anything else in Rackio's private `known_hosts`
+/// can only have arrived through scan output that predated the host check, so
+/// it earns no continued trust.
+fn literal_host_key_line(line: &str) -> bool {
+    known_hosts_entry(line).is_some_and(|(hosts, _, _)| {
+        hosts
+            .split(',')
+            .all(|token| !token.contains(['*', '?', '!']))
+    })
+}
+
+/// Keep only the `ssh-keyscan` lines that authorize the host actually scanned.
+///
+/// The output is bytes the scanned server chose, on their way into a
+/// persistent trust-anchor file that `StrictHostKeyChecking=yes` later accepts
+/// on any match. A hostile server can append keys naming other hosts, a
+/// wildcard that matches every host, or an `@cert-authority` marker that would
+/// trust an attacker's CA — and a later bootstrap cannot tell those entries
+/// apart from the real one. A line survives only when its single host token is
+/// exactly the scanned host: a comma-list that *also* names it would still
+/// authorize the key but evade the changed-key check, which compares whole
+/// host fields. The file can then never authorize a machine this bootstrap did
+/// not contact.
+fn retained_scan_lines<'a>(
+    target: &SshTarget,
+    lines: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    let expected = scan_host_tokens(target);
+    lines
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter(|line| {
+            literal_host_key_line(line)
+                && known_hosts_entry(line).is_some_and(|(hosts, _, _)| {
+                    expected
+                        .iter()
+                        .any(|expected| hosts.eq_ignore_ascii_case(expected))
+                })
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Merge the newly scanned keys into the file's existing entries.
+///
+/// Both sides pass `literal_host_key_line` first: this file is written only by
+/// this path, so a marker, hashed or wildcard line already in it — or arriving
+/// in a scan response — can only have come from a hostile server and is dropped
+/// rather than carried forward. The conflict check then runs on the cleaned
+/// sets, and the surviving entries are what get persisted.
+fn merged_known_host_lines(existing: &str, keys: &[String]) -> Result<BTreeSet<String>, String> {
+    let mut merged: BTreeSet<String> = existing
+        .lines()
+        .map(str::trim)
+        .filter(|line| literal_host_key_line(line))
+        .map(str::to_owned)
+        .collect();
+    let incoming: BTreeSet<String> = normalized_key_set(keys)
+        .into_iter()
+        .filter(|line| literal_host_key_line(line))
+        .collect();
+    detect_host_key_conflict(&merged, &incoming)?;
+    merged.extend(incoming);
+    Ok(merged)
 }
 
 /// Reject a host key that changed since the last bootstrap of the same host.
@@ -571,11 +637,21 @@ mod tests {
 
     use super::{
         SshTarget, detect_host_key_conflict, extract_pairing_bundle, known_hosts_option,
-        remote_target, validate_remote_temp_dir, validate_target,
+        merged_known_host_lines, remote_target, retained_scan_lines, validate_remote_temp_dir,
+        validate_target,
     };
 
     fn key_set(lines: &[&str]) -> BTreeSet<String> {
         lines.iter().map(|line| (*line).to_owned()).collect()
+    }
+
+    fn target(host: &str, port: u16) -> SshTarget {
+        SshTarget {
+            host: String::from(host),
+            user: String::from("operator"),
+            port,
+            identity_file: None,
+        }
     }
 
     #[test]
@@ -681,5 +757,106 @@ mod tests {
         );
         assert!(extract_pairing_bundle(r#"{"ok":false,"error":"denied"}"#).is_err());
         assert!(extract_pairing_bundle(r#"{"ok":true,"data":"not-a-bundle"}"#).is_err());
+    }
+
+    #[test]
+    fn a_scan_only_keeps_keys_that_name_the_scanned_host() {
+        // The scan output is server-controlled input to a persistent trust
+        // anchor. Anything that would authorize a machine other than the one
+        // being installed — another hostname, a wildcard that matches every
+        // host, a CA marker, a hashed entry no comparison can catch — must be
+        // dropped before it can be fingerprinted, confirmed or persisted.
+        let lines = [
+            "# server.test:22 SSH-2.0-OpenSSH_9.9",
+            "",
+            "[server.test]:22 ssh-ed25519 AAAARealEd25519",
+            "[server.test]:22 ssh-rsa AAAARealRsa",
+            "[other.test]:22 ssh-ed25519 AAAAAnotherHost",
+            "* ssh-ed25519 AAAAWildcardForEveryHost",
+            "*.test ssh-ed25519 AAAAWildcardSuffix",
+            "@cert-authority * ssh-ed25519 AAAAAttackerCA",
+            "|1|aGFzaGVk|aGFzaGVk ssh-ed25519 AAAAHashedEntry",
+            "[server.test]:22,evil.test ssh-ed25519 AAAAMixedList",
+            "garbage",
+        ];
+        let retained = retained_scan_lines(&target("server.test", 22), lines.into_iter());
+
+        assert_eq!(
+            retained,
+            vec![
+                String::from("[server.test]:22 ssh-ed25519 AAAARealEd25519"),
+                String::from("[server.test]:22 ssh-rsa AAAARealRsa"),
+            ],
+            "only the scanned host's own keys may survive"
+        );
+    }
+
+    #[test]
+    fn a_scan_matches_the_host_token_forms_ssh_keyscan_emits() {
+        // The plain name is the known_hosts form for the default port; the
+        // bracketed host:port form covers everything else. Hostname matching
+        // in OpenSSH is case-insensitive, so the filter must be too — a
+        // case-folded echo would still authorize the host.
+        let lines = [
+            "server.test ssh-ed25519 AAAAPlain",
+            "SERVER.TEST ssh-rsa AAAACaseEcho",
+        ];
+        let retained = retained_scan_lines(&target("server.test", 22), lines.into_iter());
+        assert_eq!(retained.len(), 2, "both accepted token forms survive");
+
+        let v6 = retained_scan_lines(
+            &target("2001:db8::10", 22),
+            ["[2001:db8::10]:22 ssh-ed25519 AAAAIPv6"].into_iter(),
+        );
+        assert_eq!(v6.len(), 1, "an IPv6 host keeps its bracketed form");
+    }
+
+    #[test]
+    fn a_scan_with_no_line_naming_the_host_reports_no_key() {
+        let retained = retained_scan_lines(
+            &target("server.test", 22),
+            ["[other.test]:22 ssh-ed25519 AAAAAnotherHost"].into_iter(),
+        );
+        assert!(retained.is_empty());
+    }
+
+    #[test]
+    fn a_merge_drops_marker_and_wildcard_lines_it_could_never_have_written() {
+        // This file is only written by this path, so a wildcard or marker line
+        // already inside it can only have arrived through a hostile scan
+        // response. Rewriting without cleaning would preserve the injection.
+        let existing = "[server.test]:22 ssh-ed25519 AAAAOriginalKeyMaterial\n\
+                        * ssh-ed25519 AAAAWildcardForEveryHost\n\
+                        @cert-authority * ssh-ed25519 AAAAAttackerCA\n\
+                        |1|aGFzaGVk|aGFzaGVk ssh-ed25519 AAAAHashedEntry\n\
+                        [other.test]:22 ssh-ed25519 AAAAAnotherHost\n";
+        let incoming = vec![String::from(
+            "[server.test]:22 ssh-ed25519 AAAAOriginalKeyMaterial",
+        )];
+
+        let merged =
+            merged_known_host_lines(existing, &incoming).unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(
+            merged,
+            key_set(&[
+                "[server.test]:22 ssh-ed25519 AAAAOriginalKeyMaterial",
+                "[other.test]:22 ssh-ed25519 AAAAAnotherHost",
+            ]),
+            "only literal host-key entries survive the rewrite"
+        );
+    }
+
+    #[test]
+    fn a_merge_still_flags_a_replaced_key_after_cleaning() {
+        let existing = "[server.test]:22 ssh-ed25519 AAAAOriginalKeyMaterial";
+        let incoming = vec![String::from(
+            "[server.test]:22 ssh-ed25519 AAAAAttackerKeyMaterial",
+        )];
+
+        assert!(
+            merged_known_host_lines(existing, &incoming).is_err(),
+            "a substituted key must still be refused"
+        );
     }
 }
