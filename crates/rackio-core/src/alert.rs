@@ -179,11 +179,18 @@ pub struct ResolvedAlertRule {
 
 /// The metrics a rule may name. A typo here would produce a rule that can never
 /// fire, so resolution rejects anything else.
-pub const ALERT_METRICS: [&str; 5] = [
+///
+/// Two temperature metrics exist because they answer different questions:
+/// `temperature_headroom_celsius` measures distance to the limit the hardware
+/// itself publishes, which is the only temperature level Rackio can ship a
+/// default for, while `temperature_celsius` is the hottest sensor's absolute
+/// reading for an operator who knows their machine's thermal envelope.
+pub const ALERT_METRICS: [&str; 6] = [
     "cpu_percent",
     "memory_percent",
     "swap_percent",
     "disk_percent",
+    "temperature_celsius",
     "temperature_headroom_celsius",
 ];
 
@@ -1211,6 +1218,26 @@ mod tests {
         let entry = resolved(std::slice::from_ref(&addition), "swap-warning");
 
         assert_eq!(entry.rule.metric, "swap_percent");
+        assert!(entry.enabled);
+        assert_eq!(entry.source, super::AlertRuleSource::Configured);
+    }
+
+    #[test]
+    fn an_operator_can_threshold_the_absolute_temperature() {
+        // Rackio ships no default for `temperature_celsius` — no absolute value
+        // is right for every machine — but the evaluator resolves it, so the
+        // metric must stay nameable in configuration.
+        let addition = super::AlertRuleConfig {
+            metric: Some(String::from("temperature_celsius")),
+            comparison: Some(Comparison::GreaterThanOrEqual),
+            threshold: Some(85.0),
+            consecutive_samples: Some(5),
+            severity: Some(NodeState::Critical),
+            ..override_for("cooling-failure")
+        };
+        let entry = resolved(std::slice::from_ref(&addition), "cooling-failure");
+
+        assert_eq!(entry.rule.metric, "temperature_celsius");
         assert!(entry.enabled);
         assert_eq!(entry.source, super::AlertRuleSource::Configured);
     }
