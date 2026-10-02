@@ -523,7 +523,17 @@ sudo /usr/local/lib/rackio/uninstall.sh --purge
 ```
 
 Before decommissioning a machine, revoke it from every viewer that monitors it.
-Revocation cuts active connections immediately. Backups containing
+Revocation cuts active connections immediately.
+
+On a viewer, `sudo rackio machine remove <endpoint-id>` is the other direction:
+it stops the monitor loop, deletes the machine's pairing record and drops its
+last-known snapshot, so the machine disappears from `rackio fleet` and the
+tray rather than sitting there as `offline` forever. The monitored agent is
+untouched — it keeps its own metrics and still lists this viewer as a peer
+until the operator revokes that peer on the machine itself. Removing an
+endpoint id that was never paired reports `removed: false` and writes nothing.
+
+Backups containing
 `identity.key`, `peers.json`, `monitored-machines.json` or `metrics.sqlite3`
 are sensitive: protect them as machine credentials and monitoring data, and do
 not copy a private key to a second running machine.

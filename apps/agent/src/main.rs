@@ -27,6 +27,11 @@ enum Command {
         #[command(subcommand)]
         command: PairingCommand,
     },
+    /// Manage the machines this viewer is paired with.
+    Machine {
+        #[command(subcommand)]
+        command: MachineCommand,
+    },
     Peer {
         #[command(subcommand)]
         command: PeerCommand,
@@ -58,6 +63,17 @@ enum Command {
 enum PairingCommand {
     Create,
     Import { bundle: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum MachineCommand {
+    /// Stop watching the machine and delete its pairing record from this
+    /// viewer.
+    ///
+    /// The machine's own agent is untouched: it keeps its metrics, history and
+    /// peer list, and only notices that this viewer stopped connecting. Remove
+    /// this viewer there with `rackio peer revoke` if it should be denied too.
+    Remove { endpoint_id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -181,6 +197,13 @@ async fn main() -> anyhow::Result<()> {
             command: PairingCommand::Import { bundle },
         } => {
             print_response(request_local(&paths, LocalCommand::PairingImport { bundle }).await?)?;
+        }
+        Command::Machine {
+            command: MachineCommand::Remove { endpoint_id },
+        } => {
+            print_response(
+                request_local(&paths, LocalCommand::MachineRemove { endpoint_id }).await?,
+            )?;
         }
         Command::Peer {
             command: PeerCommand::List,

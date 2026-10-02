@@ -42,6 +42,12 @@ pub enum LocalCommand {
     PairingImport {
         bundle: String,
     },
+    /// Stop watching a paired machine and delete its record from this viewer.
+    /// The machine's own agent keeps its history and its peer list; only this
+    /// side of the pairing is removed.
+    MachineRemove {
+        endpoint_id: String,
+    },
     QueryHistory {
         endpoint_id: String,
         from_ms: i64,
@@ -434,6 +440,12 @@ async fn handle_local(context: &LocalContext, command: LocalCommand) -> LocalRes
         LocalCommand::PairingImport { bundle } => {
             match remote_fleet.import_pairing(&bundle).await {
                 Ok(machine) => LocalResponse::success(machine),
+                Err(error) => LocalResponse::failure(error),
+            }
+        }
+        LocalCommand::MachineRemove { endpoint_id } => {
+            match remote_fleet.remove_machine(&endpoint_id).await {
+                Ok(removed) => LocalResponse::success(serde_json::json!({ "removed": removed })),
                 Err(error) => LocalResponse::failure(error),
             }
         }
