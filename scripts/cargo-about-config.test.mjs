@@ -32,7 +32,8 @@ allow = [
 `;
 
 function generated(source) {
-  return parse(cargoAboutConfigFromDenyPolicy(source));
+  // smol-toml returns null-prototype tables; compare policy values, not the parser's table prototype.
+  return { ...parse(cargoAboutConfigFromDenyPolicy(source)) };
 }
 
 test("the canonical layout yields the policy's targets and accepted licenses", () => {
@@ -135,7 +136,7 @@ test("the CLI writes the config and exits non-zero with a diagnostic on a bad po
     },
   );
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(parse(readFileSync(outputPath, "utf8")), EXPECTED);
+  assert.deepEqual({ ...parse(readFileSync(outputPath, "utf8")) }, EXPECTED);
 
   writeFileSync(denyPath, "[licenses]\nallow = ['MIT']\n");
   result = spawnSync(process.execPath, ["scripts/cargo-about-config.mjs", denyPath, outputPath], {
