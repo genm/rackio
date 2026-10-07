@@ -46,6 +46,16 @@ pub(crate) fn save_pairing_bundle(path: PathBuf, bundle: String) -> Result<(), S
     let mut file = options
         .open(path)
         .map_err(|error| format!("failed to open the pairing bundle file: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // `mode` only applies when the open creates the file; a file that
+        // already existed keeps whatever permissions it had. Narrow it
+        // explicitly so re-exporting over a world-readable file cannot leave
+        // a live pairing secret readable by other users.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("failed to restrict the pairing bundle file: {error}"))?;
+    }
     let mut contents = bundle.into_bytes();
     contents.push(b'\n');
     file.write_all(&contents)
@@ -135,5 +145,30 @@ mod tests {
         let result = save_pairing_bundle(path.clone(), String::from("not-a-pairing-bundle"));
         assert!(result.is_err());
         assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn re_exporting_over_a_loose_file_narrows_its_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = directory.path().join("pairing.txt");
+        std::fs::write(&path, "old contents").unwrap_or_else(|error| panic!("{error}"));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        save_pairing_bundle(path.clone(), String::from("rackio-pair:test"))
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let mode = std::fs::metadata(&path)
+            .unwrap_or_else(|error| panic!("{error}"))
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "a bundle that already existed must still end owner-only"
+        );
     }
 }

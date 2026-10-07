@@ -337,7 +337,10 @@ and SCP. A host-key change stops the installation.
 authenticate that key. Verify the displayed fingerprint through an existing
 trusted path such as a console, inventory system, or an administrator you can
 independently reach. The accepted keys are stored in Rackio’s local application
-configuration so later SSH/SCP calls stay pinned. If a connection drops before
+configuration so later SSH/SCP calls stay pinned. Only the key lines that name
+the scanned host are kept — a server’s scan response cannot pin a key for a
+host it is not, or widen what a later connection trusts — and the file is
+cleaned to the same shape on every write. If a connection drops before
 cleanup, inspect and remove only the matching `/tmp/rackio-bootstrap.*`
 directory on the target after confirming it belongs to this operation.
 
@@ -437,12 +440,14 @@ a level, and are still reported.
 
 #### Metrics a rule may name
 
-`cpu_percent`, `memory_percent`, `swap_percent`, `disk_percent` and
+`cpu_percent`, `memory_percent`, `swap_percent`, `disk_percent`,
+`temperature_celsius` (the hottest sensor's absolute reading, for an operator
+who knows this machine's thermal envelope) and
 `temperature_headroom_celsius` (degrees remaining before the hardware's own
 limit). A rule naming anything else is rejected: a metric that never resolves
 would leave the machine silent in exactly the way a healthy one is. A source
-the host cannot read — no swap, no published sensor limit — leaves its rule
-inactive rather than reading as zero, and a rule whose metric becomes
+the host cannot read — no swap, no sensor, no published sensor limit — leaves
+its rule inactive rather than reading as zero, and a rule whose metric becomes
 unreadable clears instead of staying latched. A degraded collector or storage
 subsystem still reports `degraded` in preference to a threshold state, because
 the underlying values are no longer trustworthy.
@@ -472,7 +477,10 @@ retuned one level still receives later releases' defaults for the rest.
 
 Edit the file directly only while the daemon is stopped; a running daemon owns
 it, and `rackio alerts` is the interface that keeps the file and the running
-rules in step.
+rules in step. Whatever the field, the daemon re-validates the file at startup
+with the same rules the CLI enforces — a value no command could have written,
+such as an advertised port 0 or a relay CA without a relay, fails the start and
+names the setting.
 
 #### Where a breach is visible
 
@@ -515,7 +523,17 @@ sudo /usr/local/lib/rackio/uninstall.sh --purge
 ```
 
 Before decommissioning a machine, revoke it from every viewer that monitors it.
-Revocation cuts active connections immediately. Backups containing
+Revocation cuts active connections immediately.
+
+On a viewer, `sudo rackio machine remove <endpoint-id>` is the other direction:
+it stops the monitor loop, deletes the machine's pairing record and drops its
+last-known snapshot, so the machine disappears from `rackio fleet` and the
+tray rather than sitting there as `offline` forever. The monitored agent is
+untouched — it keeps its own metrics and still lists this viewer as a peer
+until the operator revokes that peer on the machine itself. Removing an
+endpoint id that was never paired reports `removed: false` and writes nothing.
+
+Backups containing
 `identity.key`, `peers.json`, `monitored-machines.json` or `metrics.sqlite3`
 are sensitive: protect them as machine credentials and monitoring data, and do
 not copy a private key to a second running machine.

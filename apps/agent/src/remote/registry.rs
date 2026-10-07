@@ -173,6 +173,24 @@ impl RemoteMachineRegistry {
         *records = next;
         Ok(())
     }
+
+    /// Delete a paired machine's record.
+    ///
+    /// Returns `false` for a machine that was never paired and writes nothing:
+    /// a removal that changed nothing must not touch the file.
+    pub(super) fn remove(&self, endpoint_id: &str) -> Result<bool, RemoteFleetError> {
+        let mut records = self
+            .records
+            .write()
+            .map_err(|_| RemoteFleetError::RegistryUnavailable)?;
+        let mut next = records.clone();
+        if next.remove(endpoint_id).is_none() {
+            return Ok(false);
+        }
+        persist_records(&self.path, &next)?;
+        *records = next;
+        Ok(true)
+    }
 }
 
 fn persist_records(
@@ -319,6 +337,54 @@ mod tests {
                 .list()
                 .unwrap_or_else(|error| panic!("{error}"))
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_removed_machine_stays_removed_across_restarts() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = directory.path().join("machines.json");
+        let registry = RemoteMachineRegistry::load(&path).unwrap_or_else(|error| panic!("{error}"));
+        let record = record();
+        registry
+            .insert(record.clone())
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        let removed = registry
+            .remove(&record.endpoint_id)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(removed);
+        assert!(registry.get(&record.endpoint_id).is_err());
+
+        let reloaded = RemoteMachineRegistry::load(path).unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            !reloaded
+                .contains(&record.endpoint_id)
+                .unwrap_or_else(|error| panic!("{error}")),
+            "a restart must not resurrect a machine the operator removed"
+        );
+    }
+
+    #[test]
+    fn removing_an_unpaired_machine_writes_nothing() {
+        // A typo'd endpoint id must not be reported as success, and a removal
+        // that matched nothing must not rewrite the file.
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = directory.path().join("machines.json");
+        let registry = RemoteMachineRegistry::load(&path).unwrap_or_else(|error| panic!("{error}"));
+        registry
+            .insert(record())
+            .unwrap_or_else(|error| panic!("{error}"));
+        let before = std::fs::read(&path).unwrap_or_else(|error| panic!("{error}"));
+
+        let removed = registry
+            .remove("never-paired")
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(!removed);
+        assert_eq!(
+            std::fs::read(&path).unwrap_or_else(|error| panic!("{error}")),
+            before
         );
     }
 }

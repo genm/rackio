@@ -16,7 +16,7 @@ mod test_support;
 use std::{
     collections::BTreeMap,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
     time::{Duration, Instant},
 };
 
@@ -84,6 +84,9 @@ pub struct RemoteFleet {
     endpoint: iroh::Endpoint,
     registry: RemoteMachineRegistry,
     snapshots: Arc<AsyncRwLock<BTreeMap<String, RemoteMachineSnapshot>>>,
+    /// One reconnect loop per paired machine, kept so `remove_machine` can stop
+    /// the task rather than letting it recreate the snapshot just deleted.
+    monitors: Arc<StdMutex<BTreeMap<String, tokio::task::JoinHandle<()>>>>,
 }
 
 impl RemoteFleet {
@@ -106,6 +109,7 @@ impl RemoteFleet {
             endpoint,
             registry,
             snapshots: Arc::new(AsyncRwLock::new(initial)),
+            monitors: Arc::new(StdMutex::new(BTreeMap::new())),
         })
     }
 
@@ -304,9 +308,61 @@ impl RemoteFleet {
         let endpoint = self.endpoint.clone();
         let registry = self.registry.clone();
         let snapshots = Arc::clone(&self.snapshots);
-        tokio::spawn(async move {
+        let endpoint_id = record.endpoint_id.clone();
+        let handle = tokio::spawn(async move {
             monitor::monitor_machine(endpoint, record, registry, snapshots).await;
         });
+        let Ok(mut monitors) = self.monitors.lock() else {
+            // Without a handle entry the task cannot be stopped by a removal;
+            // that is a degraded state worth naming rather than dropping the
+            // monitor silently.
+            tracing::warn!(
+                endpoint_id = %endpoint_id,
+                "monitor task registry is unavailable; this machine cannot be removed until restart"
+            );
+            return;
+        };
+        // A second spawn for the same machine would leave the first task
+        // untracked — a monitor nothing can remove. That cannot happen through
+        // the pairing path, which refuses a duplicate, but the handle is the
+        // thing that keeps this true if that ever changes.
+        if let Some(previous) = monitors.insert(endpoint_id.clone(), handle) {
+            previous.abort();
+        }
+        // A removal that interleaved between the registry insert and this
+        // registration must still stop the task it could not see.
+        if matches!(self.registry.contains(&endpoint_id), Ok(false))
+            && let Some(handle) = monitors.remove(&endpoint_id)
+        {
+            handle.abort();
+        }
+    }
+
+    /// Stop monitoring `endpoint_id` and delete its pairing record.
+    ///
+    /// The persisted record goes first so a failed write leaves the pairing
+    /// untouched; the monitor task is then aborted *and awaited* so a task
+    /// still mid-write cannot recreate the snapshot after it is dropped.
+    /// Returns `false` for a machine that was never paired.
+    pub async fn remove_machine(&self, endpoint_id: &str) -> Result<bool, RemoteFleetError> {
+        if !self.registry.remove(endpoint_id)? {
+            return Ok(false);
+        }
+        let monitor = self
+            .monitors
+            .lock()
+            .ok()
+            .and_then(|mut monitors| monitors.remove(endpoint_id));
+        if let Some(handle) = monitor {
+            handle.abort();
+            let _ = handle.await;
+        }
+        let _ = self.snapshots.write().await.remove(endpoint_id);
+        tracing::info!(
+            endpoint_id = %endpoint_id,
+            "stopped monitoring machine and removed its pairing record"
+        );
+        Ok(true)
     }
 }
 
@@ -325,7 +381,83 @@ fn validate_bundle(bundle: &PairingBundle, now_ms: i64) -> Result<(), PairingErr
 mod tests {
     use rackio_iroh::PairingBundle;
 
-    use super::{test_support::record, validate_bundle};
+    use super::{RemoteFleet, RemoteMachineSnapshot, test_support::record, validate_bundle};
+
+    async fn test_fleet(registry_path: &std::path::Path) -> RemoteFleet {
+        let endpoint = rackio_iroh::bind_endpoint(
+            iroh::SecretKey::generate(),
+            &rackio_iroh::EndpointConfig::default(),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+        RemoteFleet::load(endpoint, registry_path).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    #[tokio::test]
+    async fn removal_stops_the_monitor_and_forgets_the_machine() {
+        let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = directory.path().join("machines.json");
+        let fleet = test_fleet(&path).await;
+        let record = record();
+        fleet
+            .registry
+            .insert(record.clone())
+            .unwrap_or_else(|error| panic!("{error}"));
+        fleet.snapshots.write().await.insert(
+            record.endpoint_id.clone(),
+            RemoteMachineSnapshot::offline(&record),
+        );
+        fleet.start().unwrap_or_else(|error| panic!("{error}"));
+
+        let removed = fleet
+            .remove_machine(&record.endpoint_id)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(removed);
+        assert!(
+            fleet
+                .snapshots()
+                .await
+                .iter()
+                .all(|snapshot| snapshot.endpoint_id != record.endpoint_id),
+            "the removed machine must disappear from the fleet view"
+        );
+        assert!(
+            !fleet
+                .registry
+                .contains(&record.endpoint_id)
+                .unwrap_or_else(|error| panic!("{error}"))
+        );
+        assert!(
+            fleet
+                .monitors
+                .lock()
+                .unwrap_or_else(|error| panic!("{error}"))
+                .is_empty(),
+            "a stopped monitor must not stay tracked"
+        );
+
+        let second = fleet
+            .remove_machine(&record.endpoint_id)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            !second,
+            "a second removal of the same endpoint must not claim success"
+        );
+
+        // The monitor was aborted before the snapshot was dropped; nothing may
+        // recreate it while the record is gone.
+        assert!(
+            !fleet
+                .snapshots
+                .read()
+                .await
+                .contains_key(&record.endpoint_id),
+            "an aborted monitor must not recreate the snapshot"
+        );
+    }
 
     #[test]
     fn expired_and_unreachable_bundles_fail_before_network_access() {

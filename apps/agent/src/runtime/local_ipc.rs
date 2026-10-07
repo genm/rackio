@@ -42,6 +42,12 @@ pub enum LocalCommand {
     PairingImport {
         bundle: String,
     },
+    /// Stop watching a paired machine and delete its record from this viewer.
+    /// The machine's own agent keeps its history and its peer list; only this
+    /// side of the pairing is removed.
+    MachineRemove {
+        endpoint_id: String,
+    },
     QueryHistory {
         endpoint_id: String,
         from_ms: i64,
@@ -437,6 +443,12 @@ async fn handle_local(context: &LocalContext, command: LocalCommand) -> LocalRes
                 Err(error) => LocalResponse::failure(error),
             }
         }
+        LocalCommand::MachineRemove { endpoint_id } => {
+            match remote_fleet.remove_machine(&endpoint_id).await {
+                Ok(removed) => LocalResponse::success(serde_json::json!({ "removed": removed })),
+                Err(error) => LocalResponse::failure(error),
+            }
+        }
         LocalCommand::QueryHistory {
             endpoint_id,
             from_ms,
@@ -752,6 +764,16 @@ async fn create_pairing_bundle(
         Ok(config) => config,
         Err(error) => return LocalResponse::failure(error),
     };
+    // A bundle publishes the file's relay and advertised addresses to another
+    // machine, so refuse to mint one while the file holds values no command
+    // would store — a hand edit made while the daemon ran would otherwise
+    // cross the wire unchecked.
+    if let Err(error) = config.validate() {
+        return LocalResponse::failure(format!(
+            "{} is not a usable configuration: {error}",
+            super::config_path(paths).display()
+        ));
+    }
     let observed: Vec<SocketAddr> = endpoint.addr().ip_addrs().copied().collect();
     let addresses = bundle_direct_addresses(&observed, &config.advertise_addresses);
     let relay_urls = config.relay_url.into_iter().collect();
