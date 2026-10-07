@@ -82,11 +82,12 @@ updates:
       prefix: chore
       include: scope
     groups:
-      npm-patches:
+      npm-non-major:
         patterns:
           - "*"
-        # Keep patch updates grouped; minor upgrades remain isolated.
+        # Group routine non-major updates to reduce lockfile contention.
         update-types:
+          - minor
           - patch
     ignore:
       - dependency-name: "*"
