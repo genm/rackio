@@ -9,10 +9,35 @@ import { classifyChangedFiles, fullPlan, parseChangedFiles, planForEvent } from 
 
 const plannerPath = resolve("scripts/ci-plan.mjs");
 
+function fixtureGitEnvironment(directory) {
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+  );
+  return {
+    ...environment,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: join(directory, "..", "gitconfig"),
+    GIT_AUTHOR_NAME: "Rackio CI",
+    GIT_AUTHOR_EMAIL: "ci@example.test",
+    GIT_COMMITTER_NAME: "Rackio CI",
+    GIT_COMMITTER_EMAIL: "ci@example.test",
+  };
+}
+
+function gitFixture(prefix) {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  const directory = join(root, "repo");
+  mkdirSync(directory);
+  // Synthetic commits must not inherit the caller's Git config or hooks.
+  writeFileSync(join(root, "gitconfig"), "");
+  return directory;
+}
+
 function git(directory, ...args) {
   const result = spawnSync("git", args, {
     cwd: directory,
     encoding: "utf8",
+    env: fixtureGitEnvironment(directory),
   });
   assert.equal(result.status, 0, result.stderr);
   return result.stdout.trim();
@@ -473,7 +498,7 @@ test("NUL-delimited paths preserve newlines and reject malformed diff output", (
 });
 
 test("deletions and rename sources still select their original owners", () => {
-  const directory = mkdtempSync(join(tmpdir(), "rackio-ci-plan-git-"));
+  const directory = gitFixture("rackio-ci-plan-git-");
   const outputPath = join(directory, "github-output");
   mkdirSync(join(directory, "crates"), { recursive: true });
   mkdirSync(join(directory, "docs"), { recursive: true });
@@ -497,7 +522,7 @@ test("deletions and rename sources still select their original owners", () => {
     cwd: directory,
     encoding: "utf8",
     env: {
-      ...process.env,
+      ...fixtureGitEnvironment(directory),
       CI_EVENT_NAME: "pull_request",
       CI_EVENT_ACTION: "synchronize",
       CI_BASE_SHA: baseSha,
@@ -519,7 +544,7 @@ test("deletions and rename sources still select their original owners", () => {
 });
 
 test("adding, modifying, deleting or renaming CI inputs selects their consumers", () => {
-  const directory = mkdtempSync(join(tmpdir(), "rackio-ci-plan-inputs-"));
+  const directory = gitFixture("rackio-ci-plan-inputs-");
   mkdirSync(join(directory, ".config"), { recursive: true });
   mkdirSync(join(directory, "docs"), { recursive: true });
   git(directory, "init", "--quiet");
@@ -534,7 +559,7 @@ test("adding, modifying, deleting or renaming CI inputs selects their consumers"
       cwd: directory,
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...fixtureGitEnvironment(directory),
         CI_EVENT_NAME: "pull_request",
         CI_EVENT_ACTION: "synchronize",
         CI_BASE_SHA: baseSha,
