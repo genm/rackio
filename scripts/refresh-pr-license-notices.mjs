@@ -132,7 +132,7 @@ function main() {
   validateTarget(current, repository, defaultBranch, head);
   if (!current.draft) throw new Error("The PR must be draft before publishing a notice update");
   const commit = api("git/commits", "POST", {
-    message: "chore(licenses): refresh bundled third-party notices",
+    message: "chore(licenses): refresh bundled third-party notices [dependabot skip]",
     tree: generated.sha,
     parents: [head],
   });
