@@ -106,7 +106,7 @@ jobs:
       - name: Select pinned Rust toolchain
         run: rustup show
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.15.0
           package-manager-cache: false
@@ -143,7 +143,7 @@ jobs:
           mkdir -p "updater-input/$PLATFORM"
           cp "$archive" "$archive.sig" "updater-input/$PLATFORM/"
       - name: Upload one-day intermediate updater bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rackio-updater-${{ matrix.platform }}
           path: updater-input/${{ matrix.platform }}/*
@@ -187,7 +187,7 @@ jobs:
             updater-input \
             updater-release
       - name: Upload short-lived release evidence bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rackio-desktop-updater-v${{ needs.gate.outputs.version }}
           path: updater-release/*
