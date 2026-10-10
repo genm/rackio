@@ -23,7 +23,7 @@
   "devDependencies": {
     "@commitlint/cli": "21.2.3",
     "@commitlint/config-conventional": "21.2.3",
-    "js-yaml": "5.4.2",
+    "js-yaml": "5.4.3",
     "oxfmt": "0.67.0",
     "oxlint": "1.85.0",
     "smol-toml": "1.9.0"
