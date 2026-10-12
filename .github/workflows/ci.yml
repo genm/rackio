@@ -84,7 +84,7 @@ jobs:
           tar -xzf "$archive" -C "$install_dir" actionlint
           printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
       - name: Install pinned workflow and spelling auditors
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: zizmor@1.28.0,typos@1.48.0
           fallback: none
@@ -112,7 +112,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.15.0
       - name: Activate pinned pnpm
@@ -237,7 +237,7 @@ jobs:
           done
       - name: Install nextest
         if: env.RUN_RUST == 'true'
-        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: cargo-nextest@0.9.140
           fallback: none
@@ -294,7 +294,7 @@ jobs:
           cp target/nextest/default/test-results/nextest/junit.xml test-results/junit.xml || true
       - name: Upload failure diagnostics
         if: env.RUN_RUST == 'true' && failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rust-${{ matrix.os }}-failure
           path: test-results/
@@ -405,7 +405,7 @@ jobs:
           persist-credentials: false
       - name: Set up Node
         if: env.RUN_FRONTEND == 'true'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.15.0
       - name: Activate pinned pnpm
@@ -469,7 +469,7 @@ jobs:
         run: pnpm build
       - name: Upload failure evidence
         if: env.RUN_FRONTEND == 'true' && failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: frontend-failure
           path: |
