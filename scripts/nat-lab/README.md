@@ -542,7 +542,7 @@ original observation so the evidence trail survives.
    `Unknown`.** Losing the direct path ends the session, and the replacement is
    classified before iroh has selected a path for it, so the viewer logs
    `WanDirect -> Unknown` and then, about five seconds later, `Unknown ->
-Relayed`, and reports the path as unknown in between. The migration is
+   Relayed`, and reports the path as unknown in between. The migration is
    recorded with the right paths at each end, but a consumer looking for one
    direct-to-relayed transition will not find it. Recorded in `path_migration`
    under `transient_unknown_path`; the scenario asserts the ordered path
