@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export function validateTarget(pull, repository, defaultBranch, expectedHead) {
   if (
@@ -197,4 +197,12 @@ function main() {
   process.stdout.write(JSON.stringify({ status: "updated", head: commit.sha, draft: true }) + "\n");
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+// Compare real paths: argv[1] and import.meta.url resolve differently when the
+// script is reached through a symlinked directory (for example macOS /tmp), and
+// a false negative would skip main() silently.
+if (
+  process.argv[1] &&
+  realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
+) {
+  main();
+}
