@@ -30,10 +30,14 @@ test("version checks are bounded, staggered, and do not group security updates",
     assert.equal(update.schedule.timezone, "Asia/Tokyo");
     assert.ok(update["open-pull-requests-limit"] >= 1);
     assert.ok(update["open-pull-requests-limit"] <= 5);
+    // Dependabot's config validator rejects the semver-scoped cooldown keys
+    // for github-actions and docker updates; only default-days applies there.
+    const semverScopedCooldown = !["github-actions", "docker"].includes(
+      update["package-ecosystem"],
+    );
     assert.deepEqual(update.cooldown, {
       "default-days": 3,
-      "semver-minor-days": 7,
-      "semver-major-days": 14,
+      ...(semverScopedCooldown ? { "semver-minor-days": 7, "semver-major-days": 14 } : {}),
     });
     assert.ok(update.labels.includes("dependencies"));
     for (const label of update.labels) {
