@@ -5,8 +5,8 @@
 // TOML spelling of the same policy yields the same notices — and a missing or
 // malformed policy stops notice generation instead of producing a partial one.
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { parse, stringify } from "smol-toml";
 
 function requireStringList(value, key) {
@@ -61,7 +61,13 @@ function main([denyPath, outputPath]) {
   writeFileSync(outputPath, `${cargoAboutConfigFromDenyPolicy(readFileSync(denyPath, "utf8"))}\n`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Compare real paths: argv[1] and import.meta.url resolve differently when the
+// script is reached through a symlinked directory (for example macOS /tmp), and
+// a false negative would skip main() silently.
+if (
+  process.argv[1] &&
+  realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
+) {
   try {
     main(process.argv.slice(2));
   } catch (error) {
