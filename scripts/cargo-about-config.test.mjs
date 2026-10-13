@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -144,4 +144,19 @@ test("the CLI writes the config and exits non-zero with a diagnostic on a bad po
   });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /deny\.toml must define graph\.targets/);
+});
+
+test("the entry guard fires through a symlinked script path", () => {
+  // argv[1] keeps the caller's path spelling while import.meta.url is already
+  // real, so a symlinked directory (macOS /tmp, shared caches) made the old URL
+  // comparison skip main() silently.
+  const directory = mkdtempSync(join(tmpdir(), "rackio-entry-"));
+  const link = join(directory, "entry.mjs");
+  const outputPath = join(directory, "about.toml");
+  symlinkSync(resolve("scripts/cargo-about-config.mjs"), link);
+  const result = spawnSync(process.execPath, [link, "deny.toml", outputPath], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(outputPath, "utf8"), /^accepted =/m);
 });
