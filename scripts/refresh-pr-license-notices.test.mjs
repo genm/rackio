@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { load } from "js-yaml";
 import {
   validateTarget,
@@ -156,4 +159,15 @@ test("only existing dependency manifests and locks cross the execution boundary"
   ]) {
     assert.throws(() => dependencyPaths([path], tracked));
   }
+});
+
+test("the entry guard fires through a symlinked script path", () => {
+  // See cargo-about-config.test.mjs: the guard must compare real paths or
+  // main() is skipped silently when the script is reached via a symlink.
+  const directory = mkdtempSync(join(tmpdir(), "rackio-entry-"));
+  const link = join(directory, "entry.mjs");
+  symlinkSync(resolve("scripts/refresh-pr-license-notices.mjs"), link);
+  const result = spawnSync(process.execPath, [link], { encoding: "utf8" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /GITHUB_REPOSITORY/u);
 });
