@@ -7,25 +7,68 @@ on:
         description: Same-repository PR number whose generated notices should be refreshed
         required: true
         type: string
+  # Dependency PRs cannot regenerate bundled notices themselves, so every
+  # lockfile update fails the Security notice comparison until a maintainer
+  # dispatches this workflow. A completed Security run instead selects the
+  # blocked PR automatically; publication still leaves the PR in Draft for a
+  # human ready-for-review decision, and generation never executes PR code.
+  # Generation runs on the trusted default-branch checkout and only copies
+  # dependency data from the PR; publication revalidates repository, base,
+  # and head before pushing, so the elevated token never touches PR code.
+  workflow_run: # zizmor: ignore[dangerous-triggers]
+    workflows: [Security]
+    types: [completed]
 
 permissions:
   contents: read
   pull-requests: read
 
 concurrency:
-  group: refresh-license-notices-${{ inputs.pr }}
+  group: refresh-license-notices-${{ inputs.pr || github.event.workflow_run.id }}
   cancel-in-progress: false
 
 env:
-  PR_NUMBER: ${{ inputs.pr }}
   DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
 jobs:
+  select:
+    name: Select the notice-blocked pull request
+    if: github.event_name == 'workflow_run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read # Read the completed run's failed job and step names.
+      contents: read
+      pull-requests: read
+    outputs:
+      pr: ${{ steps.select.outputs.pr }}
+    steps:
+      - name: Check out trusted automation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: automation
+          persist-credentials: false
+      - name: Pick the pull request blocked on license notices
+        id: select
+        working-directory: automation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_RUN: ${{ toJSON(github.event.workflow_run) }}
+        run: node scripts/refresh-pr-license-notices.mjs select
+
   generate:
+    needs: select
+    if: >-
+      always() &&
+      (github.event_name == 'workflow_dispatch' || needs.select.outputs.pr != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      PR_NUMBER: ${{ inputs.pr || needs.select.outputs.pr }}
     outputs:
       head: ${{ steps.target.outputs.head }}
+      pr: ${{ steps.target.outputs.pr }}
     steps:
       - name: Check out trusted automation
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -81,6 +124,8 @@ jobs:
       contents: write
       pull-requests: write
       actions: read
+    env:
+      PR_NUMBER: ${{ inputs.pr || needs.generate.outputs.pr }}
     steps:
       - name: Check out trusted publisher only
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
