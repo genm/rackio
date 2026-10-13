@@ -29,6 +29,24 @@ export function noticeEntries(read) {
   });
 }
 
+const LICENSE_NOTICE_STEP = /^Verify bundled (?:third-party|JavaScript) license notices$/u;
+
+export function noticeFailure(run, jobs) {
+  return (
+    run?.event === "pull_request" &&
+    run?.conclusion === "failure" &&
+    Array.isArray(jobs) &&
+    jobs.some(
+      (job) =>
+        job?.name === "dependency-policy" &&
+        job?.conclusion === "failure" &&
+        (job.steps ?? []).some(
+          (step) => step?.conclusion === "failure" && LICENSE_NOTICE_STEP.test(step?.name ?? ""),
+        ),
+    )
+  );
+}
+
 export function dependencyPaths(changed, tracked) {
   const allowed = new Set(
     tracked.filter(
@@ -54,11 +72,10 @@ function main() {
   if (
     !repository ||
     !defaultBranch ||
-    !/^[1-9][0-9]*$/u.test(number ?? "") ||
-    !["resolve", "prepare", "publish"].includes(mode)
+    !["resolve", "prepare", "publish", "select"].includes(mode)
   ) {
     throw new Error(
-      "Require resolve/prepare/publish, GITHUB_REPOSITORY, DEFAULT_BRANCH, and a PR_NUMBER",
+      "Require resolve/prepare/publish/select, GITHUB_REPOSITORY, and DEFAULT_BRANCH",
     );
   }
   const api = (endpoint, method = "GET", body) =>
@@ -75,6 +92,39 @@ function main() {
         { encoding: "utf8", input: body ? JSON.stringify(body) : undefined },
       ),
     );
+  if (mode === "select") {
+    const run = JSON.parse(process.env.WORKFLOW_RUN ?? "null");
+    if (!run?.id || !Array.isArray(run?.pull_requests)) {
+      throw new Error("select requires the triggering workflow_run payload");
+    }
+    const jobs = api(`actions/runs/${run.id}/jobs?per_page=100`).jobs;
+    if (!noticeFailure(run, jobs)) {
+      process.stdout.write(JSON.stringify({ status: "skipped" }) + "\n");
+      return;
+    }
+    for (const ref of run.pull_requests) {
+      if (!/^[1-9][0-9]*$/u.test(String(ref?.number ?? ""))) continue;
+      const pull = api(`pulls/${ref.number}`);
+      try {
+        validateTarget(pull, repository, defaultBranch);
+        // Same boundary as prepare: only existing dependency manifests and
+        // lockfiles may cross into the trusted checkout, so PRs that also
+        // change source or tooling are left for a manual refresh.
+        const changed = api(`pulls/${ref.number}/files?per_page=100`).map((file) => file.filename);
+        dependencyPaths(changed, changed);
+      } catch {
+        continue;
+      }
+      appendFileSync(process.env.GITHUB_OUTPUT, `pr=${ref.number}\n`);
+      process.stdout.write(JSON.stringify({ status: "selected", pr: ref.number }) + "\n");
+      return;
+    }
+    process.stdout.write(JSON.stringify({ status: "skipped" }) + "\n");
+    return;
+  }
+  if (!/^[1-9][0-9]*$/u.test(number ?? "")) {
+    throw new Error("A PR_NUMBER is required");
+  }
   const pull = api(`pulls/${number}`);
   const expectedHead = mode !== "resolve" ? process.env.EXPECTED_HEAD : undefined;
   if (mode !== "resolve" && !expectedHead) throw new Error("EXPECTED_HEAD is required");
@@ -88,7 +138,7 @@ function main() {
   }
   const head = validateTarget(pull, repository, defaultBranch, expectedHead);
   if (mode === "resolve") {
-    appendFileSync(process.env.GITHUB_OUTPUT, `head=${head}\n`);
+    appendFileSync(process.env.GITHUB_OUTPUT, `head=${head}\npr=${number}\n`);
     return;
   }
 
