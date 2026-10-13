@@ -19,6 +19,15 @@ updates:
       prefix: chore
       include: scope
     groups:
+      # Tauri crates share one release train: tauri-build emits code the
+      # matching tauri runtime must compile, so a lone minor bump fails to
+      # build. Group them ahead of the catch-all patch group.
+      tauri:
+        patterns:
+          - "tauri*"
+        update-types:
+          - minor
+          - patch
       cargo-patches:
         patterns:
           - "*"
