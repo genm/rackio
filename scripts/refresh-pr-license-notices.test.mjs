@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { load } from "js-yaml";
-import { validateTarget, noticeEntries, dependencyPaths } from "./refresh-pr-license-notices.mjs";
+import {
+  validateTarget,
+  noticeEntries,
+  dependencyPaths,
+  noticeFailure,
+} from "./refresh-pr-license-notices.mjs";
 
 const repository = "owner/rackio";
 const head = "a".repeat(40);
@@ -75,6 +80,67 @@ test("generation has no write token and publication checks out trusted code", ()
   );
   assert.equal(upload.with["retention-days"], 1);
   assert.equal(upload.with["if-no-files-found"], "error");
+});
+
+test("the completed Security run selects without a write token", () => {
+  const workflow = load(
+    readFileSync(
+      new URL("../.github/workflows/refresh-license-notices.yml", import.meta.url),
+      "utf8",
+    ),
+  );
+  assert.deepEqual(workflow.on.workflow_run, {
+    workflows: ["Security"],
+    types: ["completed"],
+  });
+  assert.ok(workflow.jobs.select);
+  for (const permission of Object.values(workflow.jobs.select.permissions)) {
+    assert.equal(permission, "read");
+  }
+  for (const step of workflow.jobs.select.steps.filter((step) =>
+    step.uses?.startsWith("actions/checkout@"),
+  )) {
+    assert.equal(step.with.ref, "${{ github.sha }}");
+    assert.equal(step.with["persist-credentials"], false);
+  }
+  assert.match(workflow.jobs.generate.if, /needs\.select\.outputs\.pr != ''/u);
+});
+
+const blockedRun = { event: "pull_request", conclusion: "failure" };
+const noticeJob = (step) => ({
+  name: "dependency-policy",
+  conclusion: "failure",
+  steps: [{ name: step, conclusion: "failure" }],
+});
+
+test("a failed license notice step selects the run", () => {
+  for (const step of [
+    "Verify bundled third-party license notices",
+    "Verify bundled JavaScript license notices",
+  ]) {
+    assert.equal(noticeFailure(blockedRun, [noticeJob(step)]), true);
+  }
+});
+
+test("other failures, events, and conclusions do not select the run", () => {
+  assert.equal(noticeFailure(blockedRun, [noticeJob("Compile")]), false);
+  assert.equal(
+    noticeFailure({ ...blockedRun, conclusion: "success" }, [
+      noticeJob("Verify bundled third-party license notices"),
+    ]),
+    false,
+  );
+  assert.equal(
+    noticeFailure({ ...blockedRun, event: "push" }, [
+      noticeJob("Verify bundled third-party license notices"),
+    ]),
+    false,
+  );
+  assert.equal(
+    noticeFailure(blockedRun, [{ name: "other", conclusion: "failure", steps: [] }]),
+    false,
+  );
+  assert.equal(noticeFailure(blockedRun, null), false);
 });
 
 test("only existing dependency manifests and locks cross the execution boundary", () => {

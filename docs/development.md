@@ -247,8 +247,11 @@ own. Use `cache:clean` to reclaim `incremental/` rather than disabling it.
 
 ## Refreshing dependency PR license notices
 
-For an open dependency PR in this repository, maintainers can regenerate both
-bundled notice files without changing the license drift checks:
+Lockfile-only PRs cannot regenerate bundled notices themselves, so the
+Security notice comparison fails until a refreshed commit lands. When a
+completed Security run failed on exactly that comparison, the refresh
+workflow selects the same-repository dependency PR automatically; maintainers
+can also trigger it by hand for any eligible PR:
 
 ```sh
 gh workflow run refresh-license-notices.yml --ref main -f pr=PR_NUMBER
