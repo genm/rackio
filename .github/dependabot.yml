@@ -111,10 +111,10 @@ updates:
       time: "09:00"
       timezone: Asia/Tokyo
     open-pull-requests-limit: 3
+    # Dependabot supports only default-days for github-actions cooldowns;
+    # the semver-scoped keys are rejected by its config validator.
     cooldown:
       default-days: 3
-      semver-minor-days: 7
-      semver-major-days: 14
     labels:
       - dependencies
       - github_actions
@@ -148,8 +148,6 @@ updates:
     open-pull-requests-limit: 2
     cooldown:
       default-days: 3
-      semver-minor-days: 7
-      semver-major-days: 14
     labels:
       - dependencies
       - area:packaging
