@@ -1,7 +1,13 @@
 version: 2
 updates:
+  # fuzz/ is a detached Cargo workspace, but its manifests share the root
+  # [workspace.dependencies] requirements through path dependencies. A single
+  # Dependabot entry keeps both lockfiles in one PR: separate entries leave the
+  # other workspace's lockfile stale and fail every --locked check (#259, #266).
   - package-ecosystem: cargo
-    directory: /
+    directories:
+      - "/"
+      - "/fuzz"
     schedule:
       interval: weekly
       day: monday
@@ -34,37 +40,6 @@ updates:
         update-types:
           - patch
 
-    ignore:
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-major"
-
-  # cargo-fuzz is deliberately detached from the root Cargo workspace and has
-  # its own lockfile, so it needs an independent update entry.
-  - package-ecosystem: cargo
-    directory: /fuzz
-    schedule:
-      interval: weekly
-      day: tuesday
-      time: "09:00"
-      timezone: Asia/Tokyo
-    open-pull-requests-limit: 3
-    cooldown:
-      default-days: 3
-      semver-minor-days: 7
-      semver-major-days: 14
-    labels:
-      - dependencies
-      - rust
-    commit-message:
-      prefix: chore
-      include: scope
-    groups:
-      cargo-fuzz-patches:
-        patterns:
-          - "*"
-        update-types:
-          - patch
     ignore:
       - dependency-name: "*"
         update-types:
