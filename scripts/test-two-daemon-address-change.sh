@@ -6,6 +6,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/scripts/reject-matches.sh"
+source "$repo_root/scripts/shell-assert.sh"
 integration_root="$(mktemp -d "${TMPDIR:-/tmp}/rackio-address-change.XXXXXX")"
 viewer_pid=""
 server_pid=""
@@ -194,7 +195,7 @@ wait_for_remote_sample() {
 
 paired_port="$(free_udp_port)"
 moved_port="$(free_udp_port)"
-[[ "$paired_port" != "$moved_port" ]]
+rackio_assert_ne "the two reserved ports differ" "$paired_port" "$moved_port"
 
 start_viewer
 start_server
@@ -204,16 +205,20 @@ wait_for_command "monitored daemon" server status
 # A fixed listen port is the supported way to keep a monitored machine's direct
 # addresses stable across restarts.
 configured="$(server listen-port set "$paired_port")"
-[[ "$(jq -r '.data.restart_required' <<<"$configured")" == "true" ]]
+rackio_assert_eq "changing the listen port requires a restart" \
+  "$(jq -r '.data.restart_required' <<<"$configured")" "true"
 stop_server
 start_server
 wait_for_command "monitored daemon on its configured port" server status
 status="$(server status)"
-[[ "$(jq -r '.data.bind_port' <<<"$status")" == "$paired_port" ]]
-[[ "$(jq -r --arg port "$paired_port" '[.data.direct_addresses[] | endswith(":" + $port)] | all' <<<"$status")" == "true" ]]
+rackio_assert_eq "the monitored daemon binds its configured port" \
+  "$(jq -r '.data.bind_port' <<<"$status")" "$paired_port"
+rackio_assert_eq "every advertised direct address uses the configured port" \
+  "$(jq -r --arg port "$paired_port" '[.data.direct_addresses[] | endswith(":" + $port)] | all' <<<"$status")" "true"
 
 bundle="$(server pairing create | jq -r '.data')"
-[[ "$(jq -r '.ok' <<<"$(viewer pairing import "$bundle")")" == "true" ]]
+rackio_assert_eq "the viewer imported the pairing bundle" \
+  "$(jq -r '.ok' <<<"$(viewer pairing import "$bundle")")" "true"
 fleet="$(wait_for_remote_sample)"
 endpoint_id="$(jq -r '.data.remotes[0].endpoint_id' <<<"$fleet")"
 paired_sequence="$(jq -r '.data.remotes[0].latest.sequence' <<<"$fleet")"
@@ -231,10 +236,20 @@ recovered_path="$(remote_field 'path')"
 recovered_rtt="$(remote_field 'rtt_ms')"
 recovered_last_seen="$(remote_field 'last_seen_ms')"
 recovered_sequence="$(remote_field 'latest.sequence')"
-[[ "$recovered_path" == "lan_direct" ]]
-[[ "$recovered_rtt" != "null" ]]
-[[ "$recovered_last_seen" != "null" ]]
-[[ "$(jq -S 'map_values(del(.last_snapshot))' "$registry")" == "$paired_registry" ]]
+# Name the monitored machine's advertised addresses in the path assertion so a
+# `wan_direct` result carries the candidates that could have produced it. The
+# classifier calls a selected path LAN only when its remote address is private,
+# loopback or link-local (see `rackio-iroh::transport`), so a host that also
+# holds a CGNAT (100.64.0.0/10) or other non-private interface address can have
+# two processes on one machine select a `wan_direct` path.
+recovered_direct_addresses="$(server status | jq -c '.data.direct_addresses')"
+rackio_assert_eq \
+  "the recovered path is LAN-direct (monitored direct addresses: $recovered_direct_addresses)" \
+  "$recovered_path" "lan_direct"
+rackio_assert_ne "the recovered path reports an RTT" "$recovered_rtt" "null"
+rackio_assert_ne "the recovered sample reports last_seen_ms" "$recovered_last_seen" "null"
+rackio_assert_eq "a restart does not change the registered identity" \
+  "$(jq -S 'map_values(del(.last_snapshot))' "$registry")" "$paired_registry"
 
 # 2. An address this viewer cannot follow stays visibly offline, keeps the last
 #    known values, and says what to do about it.
@@ -245,26 +260,33 @@ stop_server
 stopped_at_ms="$(node -e 'process.stdout.write(String(Date.now()))')"
 start_server
 wait_for_command "monitored daemon on its new port" server status
-[[ "$(jq -r '.data.bind_port' <<<"$(server status)")" == "$moved_port" ]]
+rackio_assert_eq "the monitored daemon binds its new port" \
+  "$(jq -r '.data.bind_port' <<<"$(server status)")" "$moved_port"
 wait_for_state offline 60
 offline_details="$(remote_field 'details | join(" ")')"
 grep -q "listen-port set" <<<"$offline_details" || {
   echo "an unreachable machine must say how to recover, got: $offline_details" >&2
   exit 1
 }
-[[ "$(remote_field 'latest.cpu_percent')" != "null" ]]
+rackio_assert_ne "the offline machine keeps its last CPU sample" \
+  "$(remote_field 'latest.cpu_percent')" "null"
 # Permit in-flight samples collected before shutdown, but never a new sample
 # after it. Observe stability while actually offline, not while still sampling.
 offline_latest="$(remote_field 'latest')"
 offline_sequence="$(jq -r '.sequence' <<<"$offline_latest")"
 jq -e --argjson stopped "$stopped_at_ms" '.timestamp_ms <= $stopped' <<<"$offline_latest" >/dev/null
 sleep 5
-[[ "$(remote_field 'latest')" == "$offline_latest" ]]
-[[ "$(remote_field 'state')" == "offline" ]]
-[[ "$(viewer peer list | jq -r '.data | length')" == "0" ]]
-[[ "$(server peer list | jq -r '.data | length')" == "1" ]]
-[[ "$(jq -r 'length' "$registry")" == "1" ]]
-[[ "$(jq -r --arg id "$endpoint_id" 'has($id)' "$registry")" == "true" ]]
+rackio_assert_eq "the offline machine's last sample does not advance" \
+  "$(remote_field 'latest')" "$offline_latest"
+rackio_assert_eq "the unreachable machine stays offline" "$(remote_field 'state')" "offline"
+rackio_assert_eq "the viewer holds no connection to the offline machine" \
+  "$(viewer peer list | jq -r '.data | length')" "0"
+rackio_assert_eq "the monitored machine still authorizes the viewer" \
+  "$(server peer list | jq -r '.data | length')" "1"
+rackio_assert_eq "the registry still holds exactly the paired machine" \
+  "$(jq -r 'length' "$registry")" "1"
+rackio_assert_eq "the registry still keys the paired endpoint" \
+  "$(jq -r --arg id "$endpoint_id" 'has($id)' "$registry")" "true"
 
 # 3. The machine returning to a known address recovers without re-pairing or a
 #    hand-edited registry, and survives a viewer restart too.
@@ -280,12 +302,15 @@ wait "$viewer_pid" 2>/dev/null || true
 viewer_pid=""
 start_viewer
 wait_for_command "restarted viewer daemon" viewer status
-[[ "$(remote_field 'latest.cpu_percent')" != "null" ]]
+rackio_assert_ne "the restarted viewer restores the last CPU sample" \
+  "$(remote_field 'latest.cpu_percent')" "null"
 wait_for_sequence_beyond "$returned_sequence" 60
 restarted_state="$(remote_field 'state')"
 restarted_path="$(remote_field 'path')"
-[[ "$(viewer peer list | jq -r '.data | length')" == "0" ]]
-[[ "$(jq -r 'length' "$registry")" == "1" ]]
+rackio_assert_eq "the restarted viewer holds no live connection" \
+  "$(viewer peer list | jq -r '.data | length')" "0"
+rackio_assert_eq "the restarted viewer keeps the same registry" \
+  "$(jq -r 'length' "$registry")" "1"
 
 rackio_reject_matches \
   "the viewer persisted a one-time pairing secret" \
@@ -301,6 +326,7 @@ rackio_reject_matches \
 printf '%s\n' "$(jq -n \
   --arg recovered_state "$recovered_state" \
   --arg recovered_path "$recovered_path" \
+  --arg recovered_direct_addresses "$recovered_direct_addresses" \
   --argjson recovered_rtt_ms "$recovered_rtt" \
   --argjson recovered_last_seen_ms "$recovered_last_seen" \
   --argjson recovered_sequence "$recovered_sequence" \
@@ -313,6 +339,7 @@ printf '%s\n' "$(jq -n \
     monitored_restart_recovered: true,
     recovered_state: $recovered_state,
     recovered_path: $recovered_path,
+    recovered_direct_addresses: $recovered_direct_addresses,
     recovered_rtt_ms: $recovered_rtt_ms,
     recovered_last_seen_ms: $recovered_last_seen_ms,
     recovered_sequence: $recovered_sequence,
