@@ -500,6 +500,32 @@ aGVsbG8gcmFja2lv
         );
     }
 
+    /// Pin the RFC 6598 shared address space (`100.64.0.0/10`) boundary.
+    ///
+    /// A carrier or overlay network such as Tailscale hands a peer an address
+    /// in this range. It is not globally routable, but it is also not RFC 1918
+    /// private space, so a path selected over one is reported as `wan_direct`.
+    /// A host that holds both a private address and a CGNAT address can hence
+    /// observe either path between two processes on that one machine, which is
+    /// what made the two-daemon LAN-path assertion flaky (#281). This test does
+    /// not endorse the classification, only makes a change to it deliberate.
+    #[test]
+    fn a_cgnat_address_is_reported_as_wan_direct() {
+        assert!(!is_private_or_local(address("100.64.0.1")), "lower bound");
+        assert!(
+            !is_private_or_local(address("100.127.255.254")),
+            "upper bound"
+        );
+        assert_eq!(
+            direct_path(&TransportAddr::Ip(
+                "100.69.239.69:7777"
+                    .parse()
+                    .unwrap_or_else(|error| panic!("{error}")),
+            )),
+            ConnectionPath::WanDirect
+        );
+    }
+
     #[test]
     fn a_round_trip_time_is_reported_in_whole_milliseconds() {
         assert_eq!(duration_millis(Duration::from_micros(1_500)), 1);

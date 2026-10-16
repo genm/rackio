@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/scripts/reject-matches.sh"
+source "$repo_root/scripts/shell-assert.sh"
 integration_root="$(mktemp -d "${TMPDIR:-/tmp}/rackio-two-daemon.XXXXXX")"
 viewer_pid=""
 server_pid=""
@@ -152,15 +153,19 @@ wait_for_command "monitored daemon" server status
 
 bundle="$(server pairing create | jq -r '.data')"
 imported="$(viewer pairing import "$bundle")"
-[[ "$(jq -r '.ok' <<<"$imported")" == "true" ]]
+rackio_assert_eq "the viewer imported the pairing bundle" \
+  "$(jq -r '.ok' <<<"$imported")" "true"
 fleet="$(wait_for_remote_sample)"
-[[ "$(jq -r '.data.remotes[0].path' <<<"$fleet")" == "lan_direct" ]]
+rackio_assert_eq "the first sample arrived over the direct LAN path" \
+  "$(jq -r '.data.remotes[0].path' <<<"$fleet")" "lan_direct"
 endpoint_id="$(jq -r '.data.remotes[0].endpoint_id' <<<"$fleet")"
 history="$(wait_for_remote_history "$endpoint_id")"
-[[ "$(jq -r '.data[0].timestamp_ms != null' <<<"$history")" == "true" ]]
+rackio_assert_eq "remote history carries a timestamp" \
+  "$(jq -r '.data[0].timestamp_ms != null' <<<"$history")" "true"
 server_endpoint_id="$(server status | jq -r '.data.endpoint_id')"
 local_history="$(server history "$server_endpoint_id" --hours 24)"
-[[ "$(jq -r '.data | length > 0' <<<"$local_history")" == "true" ]]
+rackio_assert_eq "the monitored machine has local history" \
+  "$(jq -r '.data | length > 0' <<<"$local_history")" "true"
 
 if viewer pairing import "$bundle" >/dev/null 2>&1; then
   echo "the same pairing bundle was accepted twice" >&2
@@ -186,8 +191,10 @@ server_pid=""
 start_viewer
 wait_for_command "restarted viewer daemon" viewer status
 restored_fleet="$(viewer fleet)"
-[[ "$(jq -r '.data.remotes[0].latest.cpu_percent != null' <<<"$restored_fleet")" == "true" ]]
-[[ "$(jq -r '.data.remotes[0].last_seen_ms != null' <<<"$restored_fleet")" == "true" ]]
+rackio_assert_eq "the restored fleet still carries the last CPU sample" \
+  "$(jq -r '.data.remotes[0].latest.cpu_percent != null' <<<"$restored_fleet")" "true"
+rackio_assert_eq "the restored fleet still carries last_seen_ms" \
+  "$(jq -r '.data.remotes[0].last_seen_ms != null' <<<"$restored_fleet")" "true"
 start_server
 wait_for_command "restarted monitored daemon" server status
 restarted_fleet="$(wait_for_remote_sample)"
