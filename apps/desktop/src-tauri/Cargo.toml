@@ -41,6 +41,7 @@ tokio = { workspace = true, features = ["test-util"] }
 # prove a build without updater configuration starts (and a keyed one refuses).
 tauri = { workspace = true, features = ["test"] }
 
+
 [target.'cfg(windows)'.dependencies]
 rackio-windows-ipc = { version = "0.1.0-rc.1", path = "../../../crates/rackio-windows-ipc" }
 
