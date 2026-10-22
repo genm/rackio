@@ -222,10 +222,12 @@ jobs:
           # failing it, and unhardened apt has no timeout to notice. See that
           # job's step for the full rationale.
           apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10)
+          # The dependency graph is large on a cold runner; allow a slow mirror
+          # to finish while keeping two tries plus apt update within the 30m job.
           attempt=1
-          max_attempts=3
+          max_attempts=2
           until sudo timeout 60s apt-get "${apt_opts[@]}" update \
-            && sudo timeout 120s apt-get "${apt_opts[@]}" install --yes libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf; do
+            && sudo timeout 600s apt-get "${apt_opts[@]}" install --no-install-recommends --yes libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf; do
             if [ "$attempt" -ge "$max_attempts" ]; then
               echo "::error::apt-get update/install of Linux desktop libraries failed after ${max_attempts} attempts"
               exit 1
