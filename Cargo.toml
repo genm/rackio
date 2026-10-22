@@ -43,7 +43,9 @@ tauri-build = "2.6.3"
 tauri-plugin-dialog = "=2.8.1"
 tauri-plugin-notification = "2.3.3"
 tauri-plugin-single-instance = "2.4.5"
-tauri-plugin-updater = "2.12.0"
+# Keep signed updater support across desktop targets without enabling the
+# optional Windows ZIP archive extractor.
+tauri-plugin-updater = { version = "2.12.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
 thiserror = "2.0.19"
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
