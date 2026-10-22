@@ -221,6 +221,13 @@ jobs:
           # azure.archive.ubuntu.com occasionally stalls a request instead of
           # failing it, and unhardened apt has no timeout to notice. See that
           # job's step for the full rationale.
+          # The Azure mirror delivered libwebkit2gtk at roughly 50 KB/s in CI,
+          # so use Ubuntu's primary archive mirror for this large dependency set.
+          if ! grep -q 'azure.archive.ubuntu.com' /etc/apt/apt-mirrors.txt; then
+            echo "::error::expected Azure Ubuntu mirror entry was not found"
+            exit 1
+          fi
+          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt
           apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10)
           # The dependency graph is large on a cold runner; allow a slow mirror
           # to finish while keeping two tries plus apt update within the 30m job.
