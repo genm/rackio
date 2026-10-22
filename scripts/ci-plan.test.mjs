@@ -225,6 +225,13 @@ test("CI-consumed configuration and templates select the jobs that read them", (
     assert.equal(classifyChangedFiles([file]).security_policy, true, file);
   }
   assert.equal(classifyChangedFiles(["scripts/test-two-daemon-cleanup.sh"]).rust_linux, true);
+  const vendoredGlib = classifyChangedFiles(["vendor/glib-0.18.5/src/variant_iter.rs"]);
+  assert.equal(vendoredGlib.rust_linux, true);
+  assert.equal(vendoredGlib.rust_macos, false);
+  assert.equal(vendoredGlib.rust_windows, false);
+  assert.equal(vendoredGlib.security_policy, true);
+  assert.equal(vendoredGlib.security_source, true);
+  assert.equal(vendoredGlib.codeql_rust, true);
   const benchmark = classifyChangedFiles(["scripts/benchmark-agent-resources.ps1"]);
   assert.equal(benchmark.rust_windows, true);
   assert.equal(benchmark.rust_linux, false);
