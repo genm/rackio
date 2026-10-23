@@ -21,6 +21,8 @@ const CROSS_PLATFORM_RUST_PATHS = [
 ];
 
 const LINUX_RUST_PATHS = [
+  // The GTK3 GLib backport is compiled only by the Linux desktop dependency graph.
+  /^vendor\/glib-0\.18\.5\//,
   /^install\.sh$/,
   /^packaging\/linux\/(?!.*\.md$)/,
   /^scripts\/(?:benchmark-agent-resources|shell-assert|test-two-daemon-cleanup|test-two-daemon-pairing|test-two-daemon-address-change|check-release-binary-cloud-independence)\.sh$/,
@@ -57,6 +59,7 @@ const SECURITY_POLICY_PATHS = [
   /^(?:packaging|relay-package)\/(?!.*\.md$)/,
   /^install\.sh$/,
   /^apps\/desktop\/(?:package\.json|src-tauri\/)/,
+  /^vendor\/glib-0\.18\.5\//,
   /^scripts\/generate-(?:javascript-licenses|third-party-licenses)\.(?:mjs|sh)$/,
   // Inputs of the Rust notice generator: the cargo-about template and the
   // deny.toml -> cargo-about policy translation with its regression tests.
@@ -64,7 +67,7 @@ const SECURITY_POLICY_PATHS = [
   /^scripts\/cargo-about-config(?:\.test)?\.mjs$/,
 ];
 
-const SECURITY_SOURCE_PATHS = [/^(?:apps|crates)\//];
+const SECURITY_SOURCE_PATHS = [/^(?:apps|crates)\//, /^vendor\/glib-0\.18\.5\/src\//];
 
 // CodeQL builds a whole-program database per language, so these sets answer
 // "does this change contain any of that language's source at all", not "which
@@ -77,6 +80,7 @@ const CODEQL_RUST_PATHS = [
   /^(?:apps\/agent|crates|proto)\//,
   /^apps\/desktop\/src-tauri\//,
   /^fuzz\/(?!corpus\/)/,
+  /^vendor\/glib-0\.18\.5\/src\//,
 ];
 
 const CODEQL_JAVASCRIPT_PATHS = [

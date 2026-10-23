@@ -8,6 +8,8 @@
 extend-exclude = [
   "THIRDPARTY.html",
   "THIRDPARTY-JAVASCRIPT.html",
+  # Preserve upstream wording in the vendored, MIT-licensed glib crate.
+  "vendor/glib-0.18.5/**",
   "Cargo.lock",
   "pnpm-lock.yaml",
   "proto/**",
