@@ -1,0 +1,7 @@
+# The vendored PtrSlice::truncate implementation writes through a pointer
+# whose validity follows the type's private length/capacity invariant and the
+# unsafe FFI constructor contracts. CodeQL's no-build Rust model cannot infer
+# that invariant and reports a false positive there. Exclude only this upstream
+# third-party file; the backported iterator and remaining source stay analyzed.
+paths-ignore:
+  - vendor/glib-0.18.5/src/collections/ptr_slice.rs
