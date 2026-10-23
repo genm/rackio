@@ -126,10 +126,10 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
-          # No `queries:` or `config:` on purpose. That reproduces exactly what
-          # the replaced default setup ran — the `default` query suite under the
-          # `remote` threat model — so this switch changes scheduling, not which
-          # alerts the repository is held to.
+          # Keep the default query suite under the `remote` threat model. The
+          # config excludes one vendored file with a documented false positive;
+          # it does not change which queries run on the backported code.
+          config-file: ./.github/codeql/codeql-config.yml
       - name: Perform CodeQL analysis
         if: env.RUN_CODEQL == 'true'
         uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
