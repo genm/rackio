@@ -899,8 +899,8 @@ impl<T: TransparentPtrType> PtrSlice<T> {
                 // `self.len` never exceeds its allocation's private `capacity` invariant,
                 // and this loop decrements it before computing `p`. CodeQL cannot
                 // infer that invariant across the unsafe FFI constructors.
-                // codeql[rust/access-invalid-pointer]
                 ptr::write(
+                    // lgtm [rust/access-invalid-pointer]
                     p,
                     Ptr::from(ptr::null_mut::<<T as GlibPtrDefault>::GlibType>()),
                 );
