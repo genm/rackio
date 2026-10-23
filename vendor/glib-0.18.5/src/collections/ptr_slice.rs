@@ -896,6 +896,10 @@ impl<T: TransparentPtrType> PtrSlice<T> {
                 self.len -= 1;
                 let p = self.ptr.as_ptr().add(self.len);
                 ptr::drop_in_place::<T>(p as *mut T);
+                // `self.len` never exceeds its allocation's private `capacity` invariant,
+                // and this loop decrements it before computing `p`. CodeQL cannot
+                // infer that invariant across the unsafe FFI constructors.
+                // codeql[rust/access-invalid-pointer]
                 ptr::write(
                     p,
                     Ptr::from(ptr::null_mut::<<T as GlibPtrDefault>::GlibType>()),
