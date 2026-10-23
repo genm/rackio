@@ -11,4 +11,9 @@ until Rackio removes the Linux GTK 0.18 dependency family; then remove this
 vendor override. The GTK4 migration and Linux desktop smoke evidence remain tracked
 in https://github.com/genm/rackio/issues/14.
 
+The only other local source annotation is a query-specific CodeQL suppression in
+src/collections/ptr_slice.rs. Its `truncate` pointer write is bounded by the
+private length/capacity invariant, which the no-build analyzer cannot infer from
+the unsafe FFI constructors. No runtime behavior is changed there.
+
 The upstream crate's LICENSE and copyright notices are preserved.
