@@ -1,6 +1,8 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 
 import type {
+  AlertListing,
+  AlertRuleEdit,
   FleetSnapshot,
   HistoryPoint,
   HistoryRange,
@@ -69,4 +71,26 @@ export function setTrayIcon(machineId: string, icon: string | null): Promise<voi
 
 export function savePairingBundle(path: string, bundle: string): Promise<void> {
   return invoke<void>("save_pairing_bundle", { path, bundle });
+}
+
+/** This machine's health rules, read back from the daemon. */
+export function fetchAlerts(): Promise<AlertListing> {
+  return invoke<AlertListing>("alerts_list");
+}
+
+export function setAlertRule(edit: AlertRuleEdit): Promise<AlertListing> {
+  return invoke<AlertListing>("alerts_set", { edit });
+}
+
+export function setAlertRuleEnabled(id: string, enabled: boolean): Promise<AlertListing> {
+  return invoke<AlertListing>("alerts_rule_enabled", { id, enabled });
+}
+
+/** Restore one rule's shipped levels, or every rule's when `id` is omitted. */
+export function resetAlerts(id?: string): Promise<AlertListing> {
+  return invoke<AlertListing>("alerts_reset", { id: id ?? null });
+}
+
+export function setAlertsEnabled(enabled: boolean): Promise<AlertListing> {
+  return invoke<AlertListing>("alerts_set_enabled", { enabled });
 }

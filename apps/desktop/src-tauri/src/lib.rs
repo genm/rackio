@@ -1,6 +1,7 @@
 mod daemon;
 mod pairing;
 mod presentation;
+mod settings;
 mod ssh_bootstrap;
 mod tray;
 mod tray_badges;
@@ -231,6 +232,11 @@ pub fn run() {
             create_pairing_share,
             pairing::save_pairing_bundle,
             machine_history,
+            settings::alerts_list,
+            settings::alerts_set,
+            settings::alerts_rule_enabled,
+            settings::alerts_reset,
+            settings::alerts_set_enabled,
             tray_badges::set_tray_icon,
             ssh_bootstrap::ssh_inspect_host,
             ssh_bootstrap::ssh_bootstrap

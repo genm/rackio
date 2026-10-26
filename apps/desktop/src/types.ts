@@ -191,3 +191,34 @@ export type SshBootstrapStatus =
   | { state: "running"; stage: string; detail: string }
   | { state: "failed"; message: string }
   | { state: "completed"; machineName: string; remotePlatform: string };
+
+export type AlertSeverity = "warning" | "critical";
+export type AlertComparison = "greater_than_or_equal" | "less_than_or_equal";
+
+/** One effective health rule as the daemon resolves it, including disabled ones. */
+export interface AlertRule {
+  id: string;
+  metric: string;
+  comparison: AlertComparison;
+  threshold: number;
+  consecutive_samples: number;
+  severity: AlertSeverity;
+  enabled: boolean;
+  source: "built_in" | "configured";
+}
+
+/** The daemon's read-back after listing or changing this machine's rules. */
+export interface AlertListing {
+  alerts_enabled: boolean;
+  rules: AlertRule[];
+}
+
+/** A partial edit; absent fields keep the rule's current value. */
+export interface AlertRuleEdit {
+  id: string;
+  metric?: string;
+  comparison?: AlertComparison;
+  threshold?: number;
+  consecutiveSamples?: number;
+  severity?: AlertSeverity;
+}
