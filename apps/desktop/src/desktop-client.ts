@@ -3,6 +3,9 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   AlertListing,
   AlertRuleEdit,
+  DesktopPreferences,
+  DesktopPreferencesView,
+  NotificationThreshold,
   FleetSnapshot,
   HistoryPoint,
   HistoryRange,
@@ -93,4 +96,25 @@ export function resetAlerts(id?: string): Promise<AlertListing> {
 
 export function setAlertsEnabled(enabled: boolean): Promise<AlertListing> {
   return invoke<AlertListing>("alerts_set_enabled", { enabled });
+}
+
+export function fetchDesktopPreferences(): Promise<DesktopPreferencesView> {
+  return invoke<DesktopPreferencesView>("get_desktop_preferences");
+}
+
+export function saveDesktopPreferences(
+  preferences: DesktopPreferences,
+): Promise<DesktopPreferencesView> {
+  return invoke<DesktopPreferencesView>("set_desktop_preferences", { preferences });
+}
+
+/** Carry the legacy localStorage choices over once; a no-op once preferences exist. */
+export function migrateLegacyPreferences(
+  notificationsEnabled: boolean,
+  threshold: NotificationThreshold,
+): Promise<DesktopPreferencesView> {
+  return invoke<DesktopPreferencesView>("migrate_legacy_preferences", {
+    notificationsEnabled,
+    threshold,
+  });
 }

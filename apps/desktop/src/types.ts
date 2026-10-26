@@ -222,3 +222,20 @@ export interface AlertRuleEdit {
   consecutiveSamples?: number;
   severity?: AlertSeverity;
 }
+
+export type Appearance = "system" | "light" | "dark";
+
+/** Versioned per-user desktop preferences, owned by the native shell. */
+export interface DesktopPreferences {
+  version: 1;
+  notificationsEnabled: boolean;
+  notificationThreshold: NotificationThreshold;
+  appearance: Appearance;
+}
+
+export interface DesktopPreferencesView extends DesktopPreferences {
+  /** Why the saved file could not be used; defaults apply (notifications off). */
+  loadError: string | null;
+  /** False until preferences have been written once; legacy values migrate only then. */
+  persisted: boolean;
+}

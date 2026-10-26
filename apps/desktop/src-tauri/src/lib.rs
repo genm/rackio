@@ -1,5 +1,6 @@
 mod daemon;
 mod pairing;
+mod preferences;
 mod presentation;
 mod settings;
 mod ssh_bootstrap;
@@ -212,6 +213,9 @@ pub fn run() {
             app.manage(tray_badges::TrayBadges::load(
                 app.path().app_config_dir().ok(),
             ));
+            app.manage(preferences::DesktopPreferences::load(
+                app.path().app_config_dir().ok(),
+            ));
             updater::start(app.handle().clone());
             #[cfg(target_os = "macos")]
             {
@@ -232,6 +236,9 @@ pub fn run() {
             create_pairing_share,
             pairing::save_pairing_bundle,
             machine_history,
+            preferences::get_desktop_preferences,
+            preferences::set_desktop_preferences,
+            preferences::migrate_legacy_preferences,
             settings::alerts_list,
             settings::alerts_set,
             settings::alerts_rule_enabled,
