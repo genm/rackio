@@ -106,3 +106,8 @@ debug = false
 [profile.debugging]
 inherits = "dev"
 debug = "full"
+
+# Backport the upstream VariantStrIter pointer fix while Tauri still requires
+# the GTK 0.18 dependency family on Linux.
+[patch.crates-io]
+glib = { path = "vendor/glib-0.18.5" }
