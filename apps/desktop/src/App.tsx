@@ -9,15 +9,24 @@ import { Dashboard } from "./components/Dashboard";
 import {
   bootstrapSsh,
   createPairingShare as requestPairingShare,
+  fetchDesktopPreferences,
   fetchFleetSnapshot,
   fetchMachineHistory,
   importPairingBundle,
   inspectSshHost as fetchSshHostIdentity,
+  migrateLegacyPreferences,
+  saveDesktopPreferences,
   setTrayIcon,
 } from "./desktop-client";
 import { machineNotificationTransitions } from "./notification-policy";
+import {
+  loadDesktopPreferences,
+  notificationStateFromPreferences,
+} from "./notification-preferences";
 import { initialDesktopState } from "./state-model";
 import type {
+  DesktopPreferences,
+  DesktopPreferencesView,
   FleetNode,
   FleetSnapshot,
   HistoryRange,
@@ -32,19 +41,12 @@ import type {
   SshTarget,
 } from "./types";
 
-const NOTIFICATION_THRESHOLD_KEY = "rackio.notification-threshold";
-const NOTIFICATIONS_ENABLED_KEY = "rackio.notifications-enabled";
-
-function initialNotificationState(): NotificationState {
-  const stored = window.localStorage.getItem(NOTIFICATION_THRESHOLD_KEY);
-  const threshold: NotificationThreshold =
-    stored === "warning" || stored === "degraded" || stored === "critical" || stored === "offline"
-      ? stored
-      : "critical";
-  return window.localStorage.getItem(NOTIFICATIONS_ENABLED_KEY) === "true"
-    ? { state: "requesting", threshold }
-    : { state: "disabled", threshold };
-}
+const DEFAULT_PREFERENCES: DesktopPreferences = {
+  version: 1,
+  notificationsEnabled: false,
+  notificationThreshold: "critical",
+  appearance: "system",
+};
 
 export default function App() {
   const [snapshot, setSnapshot] = useState<FleetSnapshot>(initialDesktopState.snapshot);
@@ -58,8 +60,13 @@ export default function App() {
   const [machineDetail, setMachineDetail] = useState<MachineDetailState>(
     initialDesktopState.machineDetail,
   );
-  const [notificationState, setNotificationState] =
-    useState<NotificationState>(initialNotificationState);
+  const [notificationState, setNotificationState] = useState<NotificationState>(
+    initialDesktopState.notificationState,
+  );
+  // The durable preferences as last read or saved by the native shell. Only the
+  // notification fields are edited here; appearance is carried through so a
+  // save never overwrites a choice made elsewhere.
+  const preferences = useRef<DesktopPreferencesView | null>(null);
   // Per machine, not per rack: a fleet-level state hides which box changed and
   // stays silent when a second machine fails while the first is still down.
   const previousMachineStates = useRef<Map<string, NodeState>>(new Map());
@@ -170,18 +177,64 @@ export default function App() {
     await viewHistory(machineDetail.node, hours);
   };
 
-  const enableNotifications = async () => {
-    const threshold = notificationState.threshold;
+  /**
+   * Persist the notification intent. Resolves to an error message when the
+   * native store could not save it; the in-memory preference is then left
+   * as it was, so the window never shows a choice that will not survive a
+   * restart.
+   */
+  const saveNotificationPreferences = async (
+    enabled: boolean,
+    threshold: NotificationThreshold,
+  ): Promise<string | undefined> => {
+    const current = preferences.current ?? { ...DEFAULT_PREFERENCES };
+    try {
+      preferences.current = await saveDesktopPreferences({
+        version: 1,
+        notificationsEnabled: enabled,
+        notificationThreshold: threshold,
+        appearance: current.appearance,
+      });
+      return undefined;
+    } catch (error: unknown) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  };
+
+  const failNotificationSave = (threshold: NotificationThreshold, message: string) =>
+    setNotificationState({
+      state: "error",
+      threshold,
+      message: `Could not save notification preferences: ${message}`,
+    });
+
+  /**
+   * Check, and if needed ask for, the operating system's permission. Only a
+   * user-initiated enable persists its outcome: a launch that merely restores a
+   * stored preference must not rewrite it because permission was revoked.
+   */
+  const enableNotifications = async (
+    threshold: NotificationThreshold = notificationState.threshold,
+    userInitiated = true,
+  ) => {
     setNotificationState({ state: "requesting", threshold });
     try {
       const granted = (await isPermissionGranted()) || (await requestPermission()) === "granted";
       if (!granted) {
+        if (userInitiated) await saveNotificationPreferences(false, threshold);
         setNotificationState({
           state: "denied",
           threshold,
           message: "Notification permission was denied by the operating system.",
         });
         return;
+      }
+      if (userInitiated) {
+        const failure = await saveNotificationPreferences(true, threshold);
+        if (failure !== undefined) {
+          failNotificationSave(threshold, failure);
+          return;
+        }
       }
       setNotificationState({ state: "enabled", threshold });
     } catch (error: unknown) {
@@ -193,28 +246,55 @@ export default function App() {
     }
   };
 
-  const setNotificationThreshold = (threshold: NotificationThreshold) => {
+  const disableNotifications = async () => {
+    const threshold = notificationState.threshold;
+    const failure = await saveNotificationPreferences(false, threshold);
+    if (failure !== undefined) {
+      failNotificationSave(threshold, failure);
+      return;
+    }
+    setNotificationState({ state: "disabled", threshold });
+  };
+
+  const setNotificationThreshold = async (threshold: NotificationThreshold) => {
+    const enabled = notificationState.state === "enabled";
+    const failure = await saveNotificationPreferences(enabled, threshold);
+    if (failure !== undefined) {
+      failNotificationSave(notificationState.threshold, failure);
+      return;
+    }
     setNotificationState((current) => ({ ...current, threshold }));
   };
 
   useEffect(() => {
-    if (notificationState.state === "requesting") {
-      void enableNotifications();
-    }
+    let active = true;
+    void loadDesktopPreferences(
+      { fetchDesktopPreferences, migrateLegacyPreferences },
+      window.localStorage,
+    )
+      .then((view) => {
+        if (!active) return;
+        preferences.current = view;
+        const restored = notificationStateFromPreferences(view);
+        setNotificationState(restored);
+        if (restored.state === "requesting") {
+          void enableNotifications(restored.threshold, false);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setNotificationState({
+          state: "error",
+          threshold: initialDesktopState.notificationState.threshold,
+          message: `Saved preferences could not be loaded: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        });
+      });
+    return () => {
+      active = false;
+    };
   }, []);
-
-  useEffect(() => {
-    window.localStorage.setItem(NOTIFICATION_THRESHOLD_KEY, notificationState.threshold);
-    if (notificationState.state === "enabled") {
-      window.localStorage.setItem(NOTIFICATIONS_ENABLED_KEY, "true");
-    } else if (
-      notificationState.state === "disabled" ||
-      notificationState.state === "denied" ||
-      notificationState.state === "error"
-    ) {
-      window.localStorage.setItem(NOTIFICATIONS_ENABLED_KEY, "false");
-    }
-  }, [notificationState]);
 
   useEffect(() => {
     let active = true;
@@ -283,14 +363,9 @@ export default function App() {
       onViewHistory={viewHistory}
       onCloseHistory={() => setMachineDetail(initialDesktopState.machineDetail)}
       onHistoryRangeChange={changeHistoryRange}
-      onEnableNotifications={enableNotifications}
-      onDisableNotifications={() =>
-        setNotificationState({
-          state: "disabled",
-          threshold: notificationState.threshold,
-        })
-      }
-      onNotificationThresholdChange={setNotificationThreshold}
+      onEnableNotifications={() => enableNotifications()}
+      onDisableNotifications={() => void disableNotifications()}
+      onNotificationThresholdChange={(threshold) => void setNotificationThreshold(threshold)}
       onTrayIconChange={changeTrayIcon}
     />
   );
