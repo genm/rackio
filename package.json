@@ -21,11 +21,11 @@
     "test:license-refresh": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/license-refresh.junit.xml scripts/refresh-pr-license-notices.test.mjs"
   },
   "devDependencies": {
-    "@commitlint/cli": "21.2.3",
-    "@commitlint/config-conventional": "21.2.3",
-    "js-yaml": "5.4.3",
-    "oxfmt": "0.72.0",
-    "oxlint": "1.87.0",
+    "@commitlint/cli": "21.2.4",
+    "@commitlint/config-conventional": "21.2.4",
+    "js-yaml": "5.5.0",
+    "oxfmt": "0.74.0",
+    "oxlint": "1.89.0",
     "smol-toml": "1.9.1"
   },
   "packageManager": "pnpm@12.5.1"
