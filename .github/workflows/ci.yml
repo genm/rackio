@@ -84,7 +84,7 @@ jobs:
           tar -xzf "$archive" -C "$install_dir" actionlint
           printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
       - name: Install pinned workflow and spelling auditors
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: zizmor@1.28.0,typos@1.48.0
           fallback: none
@@ -194,7 +194,7 @@ jobs:
         # the repository over the 10 GB Actions cache limit (#114); the
         # rustc host triple and this job's id already separate the matrix
         # entries, and `key` adds the OS explicitly for clarity.
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.os }}
       - name: Validate Windows PowerShell syntax
@@ -237,7 +237,7 @@ jobs:
           done
       - name: Install nextest
         if: env.RUN_RUST == 'true'
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-nextest@0.9.140
           fallback: none
@@ -328,7 +328,7 @@ jobs:
         if: env.RUN_RUST_WINDOWS_CROSS == 'true'
         # See the equivalent step in the `rust` job for why this replaces a
         # whole-target/ cache (#114).
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: windows-gnu-cross
       - name: Install Windows GNU cross-compile target and linker
