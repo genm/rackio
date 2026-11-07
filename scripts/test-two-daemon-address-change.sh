@@ -236,16 +236,17 @@ recovered_path="$(remote_field 'path')"
 recovered_rtt="$(remote_field 'rtt_ms')"
 recovered_last_seen="$(remote_field 'last_seen_ms')"
 recovered_sequence="$(remote_field 'latest.sequence')"
-# Name the monitored machine's advertised addresses in the path assertion so a
-# `wan_direct` result carries the candidates that could have produced it. The
-# classifier calls a selected path LAN only when its remote address is private,
-# loopback or link-local (see `rackio-iroh::transport`), so a host that also
-# holds a CGNAT (100.64.0.0/10) or other non-private interface address can have
-# two processes on one machine select a `wan_direct` path.
+# The connection must recover directly. Its classification depends on the
+# selected remote address: a host with a CGNAT (100.64.0.0/10) or another
+# non-private interface can have two processes on one machine select
+# `wan_direct` instead of `lan_direct` (see `rackio-iroh::transport`).
 recovered_direct_addresses="$(server status | jq -c '.data.direct_addresses')"
-rackio_assert_eq \
-  "the recovered path is LAN-direct (monitored direct addresses: $recovered_direct_addresses)" \
-  "$recovered_path" "lan_direct"
+if [ "$recovered_path" != "lan_direct" ] && [ "$recovered_path" != "wan_direct" ]; then
+  printf 'assertion failed: the recovered path is direct (monitored direct addresses: %s)\n' \
+    "$recovered_direct_addresses" >&2
+  printf '  expected: lan_direct or wan_direct\n  actual:   %s\n' "$recovered_path" >&2
+  exit 1
+fi
 rackio_assert_ne "the recovered path reports an RTT" "$recovered_rtt" "null"
 rackio_assert_ne "the recovered sample reports last_seen_ms" "$recovered_last_seen" "null"
 rackio_assert_eq "a restart does not change the registered identity" \
