@@ -59,6 +59,22 @@ Scope:
 - remove the `glib 0.18` path from the Linux Tauri dependency graph;
 - rerun component tests and a real Linux desktop smoke test.
 
+### Upstream status reviewed 2026-11-08
+
+- Rackio's Linux lockfile still resolves `tauri 2.12.3`,
+  `tauri-runtime-wry 2.12.1`, `wry 0.57.0`, `gtk 0.18.2`, and
+  `webkit2gtk 2.0.2`.
+- The latest stable Tauri release, [v2.12.5](https://github.com/tauri-apps/tauri/releases/tag/tauri-v2.12.5),
+  uses `tauri-runtime-wry 2.12.3`. Its GTK4/WebKitGTK 6 migration
+  [PR #14684](https://github.com/tauri-apps/tauri/pull/14684) is open and
+  unmerged against `dev`, with Linux runtime tests unchecked. The related
+  [Wry #1530](https://github.com/tauri-apps/wry/pull/1530) and
+  [Tao #1104](https://github.com/tauri-apps/tao/pull/1104) migrations remain
+  open Draft PRs.
+- No stable, supported GTK4 Tauri stack is currently available. Recheck this
+  status before choosing the migration or another maintained backend; keep
+  REL-02 and the Linux desktop release gate open.
+
 Evidence required:
 
 - `cargo tree -i glib@0.18.5` has no path;
