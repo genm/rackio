@@ -12,9 +12,10 @@ vendor override. The GTK4 migration and Linux desktop smoke evidence remain trac
 in https://github.com/genm/rackio/issues/14.
 
 The other local source change is in `src/collections/ptr_slice.rs`:
-`PtrSlice::truncate` replaces the final live item through its bounded mutable
-slice instead of computing and writing through a raw pointer. It installs the
-NULL terminator before dropping the removed item, preserving the terminator if
-the item's destructor unwinds and allowing CodeQL to verify the indexed access.
+`PtrSlice::truncate` derives the final slot from `last_mut()` on its bounded
+mutable slice, then writes the FFI NULL sentinel through the underlying GLib
+pointer type rather than materializing NULL as a potentially invalid `T`. It
+installs the terminator before dropping the removed item, preserving the
+terminator if the item's destructor unwinds.
 
 The upstream crate's LICENSE and copyright notices are preserved.

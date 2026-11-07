@@ -892,14 +892,18 @@ impl<T: TransparentPtrType> PtrSlice<T> {
         }
 
         while self.len > len {
-            // Replace the last live item through the bounded slice before dropping it.
-            // This also installs the NULL terminator if the destructor unwinds.
-            let item = mem::replace(
-                self.as_mut_slice().last_mut().unwrap(),
-                Ptr::from(ptr::null_mut::<<T as GlibPtrDefault>::GlibType>()),
-            );
-            self.len -= 1;
-            drop(item);
+            // Derive the slot from a bounds-checked slice, then move out T and write
+            // the FFI NULL sentinel without materializing it as a possibly-invalid T.
+            let slot = self.as_mut_slice().last_mut().unwrap() as *mut T;
+            unsafe {
+                let item = ptr::read(slot);
+                ptr::write(
+                    slot as *mut <T as GlibPtrDefault>::GlibType,
+                    Ptr::from(ptr::null_mut::<<T as GlibPtrDefault>::GlibType>()),
+                );
+                self.len -= 1;
+                drop(item);
+            }
         }
     }
 }
