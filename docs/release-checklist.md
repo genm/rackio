@@ -125,9 +125,12 @@ duration, packet loss and relay byte count.
         bundled with the desktop application
 - [ ] independent security review completed
 
-`cargo deny` contains one scoped exception for `RUSTSEC-2024-0429`. It is an
-upstream Linux Tauri/GTK dependency, not accepted release risk: **Linux desktop**
-artifacts must not be published while the functional blocker above remains open.
+`deny.toml` currently has no advisory exceptions. `cargo deny check` succeeds
+with the locally vendored `glib 0.18.5` backport of the `VariantStrIter`
+out-pointer fix tracked by `RUSTSEC-2024-0429`. This mitigates that specific
+unsoundness, but `glib 0.18` remains in the Linux Tauri dependency graph and the
+desktop evidence above is still missing. **Linux desktop** artifacts must not
+be published while that functional blocker remains open.
 
 The scope is the desktop application, not every Linux artifact. `glib 0.18`
 enters the graph only through `rackio-desktop`; the published headless archive

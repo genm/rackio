@@ -47,15 +47,16 @@ Evidence required:
 
 ## REL-02: Resolve the Linux Tauri/GTK security blocker
 
-Objective: remove the scoped `RUSTSEC-2024-0429` exception rather than accepting
-it as release risk.
+Objective: remove `glib 0.18` from the Linux desktop dependency graph and
+provide the required real Linux desktop evidence, rather than relying on the
+local backport as the final release solution.
 
 Scope:
 
 - evaluate an upstream Tauri/GTK upgrade or another maintained Linux desktop
   backend;
 - preserve tray fallback, notifications, pairing, SSH bootstrap, and local IPC;
-- remove the `glib 0.18` path and the corresponding `deny.toml` exception;
+- remove the `glib 0.18` path from the Linux Tauri dependency graph;
 - rerun component tests and a real Linux desktop smoke test.
 
 Evidence required:
