@@ -891,19 +891,15 @@ impl<T: TransparentPtrType> PtrSlice<T> {
             return;
         }
 
-        unsafe {
-            while self.len > len {
-                self.len -= 1;
-                let p = self.ptr.as_ptr().add(self.len);
-                ptr::drop_in_place::<T>(p as *mut T);
-                // `self.len` never exceeds its allocation's private `capacity` invariant,
-                // and this loop decrements it before computing `p`. CodeQL cannot
-                // infer that invariant across the unsafe FFI constructors.
-                ptr::write(
-                    p,
-                    Ptr::from(ptr::null_mut::<<T as GlibPtrDefault>::GlibType>()),
-                );
-            }
+        while self.len > len {
+            // Replace the last live item through the bounded slice before dropping it.
+            // This also installs the NULL terminator if the destructor unwinds.
+            let item = mem::replace(
+                self.as_mut_slice().last_mut().unwrap(),
+                Ptr::from(ptr::null_mut::<<T as GlibPtrDefault>::GlibType>()),
+            );
+            self.len -= 1;
+            drop(item);
         }
     }
 }

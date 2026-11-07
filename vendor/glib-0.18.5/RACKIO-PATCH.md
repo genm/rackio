@@ -11,10 +11,10 @@ until Rackio removes the Linux GTK 0.18 dependency family; then remove this
 vendor override. The GTK4 migration and Linux desktop smoke evidence remain tracked
 in https://github.com/genm/rackio/issues/14.
 
-The only other local source change is an explanatory comment in
-src/collections/ptr_slice.rs. Its `truncate` pointer write is bounded by the
-private length/capacity invariant, which the no-build analyzer cannot infer from
-the unsafe FFI constructors. The comment does not suppress CodeQL; the finding
-requires separate review. No runtime behavior is changed there.
+The other local source change is in `src/collections/ptr_slice.rs`:
+`PtrSlice::truncate` replaces the final live item through its bounded mutable
+slice instead of computing and writing through a raw pointer. It installs the
+NULL terminator before dropping the removed item, preserving the terminator if
+the item's destructor unwinds and allowing CodeQL to verify the indexed access.
 
 The upstream crate's LICENSE and copyright notices are preserved.
