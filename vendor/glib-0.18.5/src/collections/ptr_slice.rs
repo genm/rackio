@@ -900,7 +900,6 @@ impl<T: TransparentPtrType> PtrSlice<T> {
                 // and this loop decrements it before computing `p`. CodeQL cannot
                 // infer that invariant across the unsafe FFI constructors.
                 ptr::write(
-                    // codeql[rust/access-invalid-pointer]
                     p,
                     Ptr::from(ptr::null_mut::<<T as GlibPtrDefault>::GlibType>()),
                 );
