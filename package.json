@@ -28,5 +28,5 @@
     "oxlint": "1.87.0",
     "smol-toml": "1.9.1"
   },
-  "packageManager": "pnpm@12.5.1"
+  "packageManager": "pnpm@12.16.1"
 }
