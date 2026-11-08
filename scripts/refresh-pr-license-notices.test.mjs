@@ -147,8 +147,18 @@ test("other failures, events, and conclusions do not select the run", () => {
 });
 
 test("only existing dependency manifests and locks cross the execution boundary", () => {
-  const tracked = ["Cargo.toml", "Cargo.lock", "apps/desktop/package.json", "pnpm-lock.yaml"];
-  assert.deepEqual(dependencyPaths(["Cargo.lock", "THIRDPARTY.html"], tracked), ["Cargo.lock"]);
+  const tracked = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "fuzz/Cargo.toml",
+    "fuzz/Cargo.lock",
+    "apps/desktop/package.json",
+    "pnpm-lock.yaml",
+  ];
+  assert.deepEqual(dependencyPaths(["Cargo.lock", "fuzz/Cargo.lock", "THIRDPARTY.html"], tracked), [
+    "Cargo.lock",
+    "fuzz/Cargo.lock",
+  ]);
   for (const path of [
     "scripts/generate-third-party-licenses.sh",
     "rust-toolchain.toml",
@@ -156,6 +166,7 @@ test("only existing dependency manifests and locks cross the execution boundary"
     ".pnpmfile.cjs",
     "pnpm-workspace.yaml",
     "new/package.json",
+    "new/Cargo.lock",
   ]) {
     assert.throws(() => dependencyPaths([path], tracked));
   }
