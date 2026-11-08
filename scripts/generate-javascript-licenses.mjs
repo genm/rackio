@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const output = resolve(process.argv[2] ?? `${repoRoot}/THIRDPARTY-JAVASCRIPT.html`);
 const inventory = JSON.parse(
-  execFileSync("pnpm", ["licenses", "list", "--prod", "--json"], {
+  execFileSync("pnpm", ["licenses", "list", "--prod", "--json", "--recursive"], {
     cwd: repoRoot,
     encoding: "utf8",
   }),
