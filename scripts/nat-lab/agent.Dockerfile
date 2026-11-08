@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.7
 #
-# Build `rackio-agent` for linux/arm64 from this repository's source. Nothing is
-# vendored: the binary in the lab image is compiled from the checked-out tree so
-# a NAT report always describes the code it was produced from.
+# Build `rackio-agent` for linux/arm64 from this repository's source. Cargo
+# resolves the whole workspace even though the lab only builds the headless
+# agent, so the pinned desktop dependency backport must also be present.
 
 FROM rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
 
@@ -15,6 +15,7 @@ ENV CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0
 # `rackio-desktop` is a workspace member and must exist for resolution, but it
 # is never built here: the lab needs the headless daemon, not Tauri or GTK.
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY vendor/glib-0.18.5 vendor/glib-0.18.5
 COPY crates/rackio-core/Cargo.toml crates/rackio-core/Cargo.toml
 COPY crates/rackio-protocol/Cargo.toml crates/rackio-protocol/Cargo.toml
 COPY crates/rackio-protocol/build.rs crates/rackio-protocol/build.rs
