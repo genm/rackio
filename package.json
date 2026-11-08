@@ -17,7 +17,7 @@
     "test:governance": "pnpm check:governance && node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/governance.junit.xml scripts/governance-check.test.mjs",
     "test": "pnpm --filter @rackio/desktop test",
     "test:ct": "pnpm --filter @rackio/desktop test:ct",
-    "test:license-policy": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results/license-policy.junit.xml scripts/cargo-about-config.test.mjs",
+    "test:license-policy": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results/license-policy.junit.xml scripts/cargo-about-config.test.mjs scripts/generate-javascript-licenses.test.mjs",
     "test:license-refresh": "node -e \"require('node:fs').mkdirSync('test-results',{recursive:true})\" && node --test --test-reporter=junit --test-reporter-destination=test-results/license-refresh.junit.xml scripts/refresh-pr-license-notices.test.mjs"
   },
   "devDependencies": {
