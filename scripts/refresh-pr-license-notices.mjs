@@ -49,10 +49,8 @@ export function noticeFailure(run, jobs) {
 
 export function dependencyPaths(changed, tracked) {
   const allowed = new Set(
-    tracked.filter(
-      (path) =>
-        /(^|\/)(Cargo\.toml|package\.json)$/u.test(path) ||
-        ["Cargo.lock", "pnpm-lock.yaml"].includes(path),
+    tracked.filter((path) =>
+      /(^|\/)(Cargo\.toml|Cargo\.lock|package\.json|pnpm-lock\.yaml)$/u.test(path),
     ),
   );
   const notices = new Set(["THIRDPARTY.html", "THIRDPARTY-JAVASCRIPT.html"]);
