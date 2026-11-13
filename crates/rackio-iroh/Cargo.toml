@@ -1,0 +1,28 @@
+[package]
+name = "rackio-iroh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+iroh.workspace = true
+rand.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+subtle.workspace = true
+swarm-discovery.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+rackio-core = { version = "0.1.0-rc.1", path = "../rackio-core" }
+rackio-protocol = { version = "0.1.0-rc.1", path = "../rackio-protocol" }
+uuid.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

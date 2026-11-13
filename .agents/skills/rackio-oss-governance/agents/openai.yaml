@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rackio OSS Governance"
+  short_description: "Manage Rackio issues, milestones, and release gates"
+  default_prompt: "Use $rackio-oss-governance to organize Rackio OSS work without duplicating release status."

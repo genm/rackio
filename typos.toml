@@ -1,0 +1,30 @@
+# Spell-checking policy for prose, identifiers and comments.
+#
+# Only sources this repository authors are checked. Generated notice files and
+# lockfiles reproduce upstream crate and package names verbatim, so a "typo"
+# there is a upstream fact this repository must not rewrite.
+
+[files]
+extend-exclude = [
+  "THIRDPARTY.html",
+  "THIRDPARTY-JAVASCRIPT.html",
+  # Preserve upstream wording in the vendored, MIT-licensed glib crate.
+  "vendor/glib-0.18.5/**",
+  "Cargo.lock",
+  "pnpm-lock.yaml",
+  "proto/**",
+  # Fuzzer inputs are encoded bytes chosen for the decoder's benefit, not prose.
+  "fuzz/corpus/**",
+  # PEM bodies are base64-encoded DER. Any word the checker finds in one is an
+  # accident of the encoding, and "correcting" it would corrupt the certificate.
+  "**/*.pem",
+]
+
+[default.extend-identifiers]
+# "UPnP" is the protocol name; the checker reads its "Pn" as a misspelt "On".
+UPnP = "UPnP"
+
+[default.extend-words]
+# SDDL security-descriptor abbreviations in the Windows named-pipe ACL:
+# "BA" is BUILTIN\Administrators, not a misspelt "BY" or "BE".
+BA = "BA"

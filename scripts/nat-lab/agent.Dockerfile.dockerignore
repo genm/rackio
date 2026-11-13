@@ -1,0 +1,14 @@
+*
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!vendor
+!vendor/glib-0.18.5
+!vendor/glib-0.18.5/**
+!crates
+!apps/agent
+!apps/desktop/src-tauri/Cargo.toml
+!proto
+!scripts/nat-lab/container
+**/target
+**/node_modules

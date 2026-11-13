@@ -1,0 +1,244 @@
+import { useState } from "react";
+
+import { bytes, celsius, percent, timeOfDay, uptime } from "../format";
+import { swapDetail, temperatureDetail } from "../machine-presentation";
+import { connectionPathRegistry, isLiveNodeState, nodeStateRegistry } from "../state-model";
+import { type TrendMetric, trendLines, trendMetricRegistry, trendScale } from "../trend-series";
+import type { HistoryRange, MachineDetailState } from "../types";
+import { useModalDialog } from "../useModalDialog";
+import { TrendChart } from "./TrendChart";
+
+/**
+ * The history query reads the peer's one-minute buckets, which aggregate CPU,
+ * memory, swap, disk and temperature. Network stays out until the schema
+ * aggregates it; RTT stays out for good, being the viewer's own connection
+ * measurement and never written to the peer's storage. The card's live trend
+ * covers the full metric registry either way.
+ *
+ * A metric belongs here only once the buckets actually carry it: offering one
+ * the peer cannot aggregate would draw an empty chart, or worse, a stale spot
+ * reading presented as a minute average.
+ */
+const historyMetrics: TrendMetric[] = ["cpu", "memory", "swap", "disk", "temp"];
+
+const historyRanges: { hours: HistoryRange; label: string }[] = [
+  { hours: 1, label: "1h" },
+  { hours: 6, label: "6h" },
+  { hours: 24, label: "24h" },
+  // The agent retains one-minute buckets for seven days; a longer range would
+  // return a window the peer cannot fill.
+  { hours: 168, label: "7d" },
+];
+
+export function MachineDetail({
+  detail,
+  onClose,
+  onRangeChange,
+}: {
+  detail: MachineDetailState;
+  onClose: () => void;
+  onRangeChange?: (hours: HistoryRange) => void;
+}) {
+  if (detail.state === "closed") return null;
+  return <MachineDetailDialog detail={detail} onClose={onClose} onRangeChange={onRangeChange} />;
+}
+
+// A separate component so the modal hook mounts and unmounts with the dialog:
+// that unmount is what restores focus to the card that opened it.
+function MachineDetailDialog({
+  detail,
+  onClose,
+  onRangeChange,
+}: {
+  detail: Exclude<MachineDetailState, { state: "closed" }>;
+  onClose: () => void;
+  onRangeChange?: (hours: HistoryRange) => void;
+}) {
+  const dialogRef = useModalDialog<HTMLElement>(onClose);
+  const { node } = detail;
+  const live = isLiveNodeState(node.state);
+  const filesystems = node.filesystems ?? [];
+  const [metric, setMetric] = useState<TrendMetric>("cpu");
+  const series =
+    detail.state === "ready"
+      ? trendLines(detail.points, metric)
+      : { lines: [], values: [] as number[] };
+  const spec = trendMetricRegistry[metric];
+  const rangeLabel = historyRanges.find((range) => range.hours === detail.hours)?.label ?? "24h";
+  return (
+    <div className="dialog-backdrop">
+      <section
+        ref={dialogRef}
+        className="machine-detail"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="machine-detail-title"
+        tabIndex={-1}
+      >
+        <header>
+          <div>
+            <p className="eyebrow">{node.os}</p>
+            <h2 id="machine-detail-title">{node.name}</h2>
+          </div>
+          <button type="button" className="secondary-button" onClick={onClose}>
+            Close
+          </button>
+        </header>
+        <div className="detail-badges">
+          <span className={`badge tone-${nodeStateRegistry[node.state].tone}`}>
+            {nodeStateRegistry[node.state].label}
+          </span>
+          <span className={`badge path-${node.path}`}>
+            {connectionPathRegistry[node.path].label}
+          </span>
+          <span className="badge">
+            {!live || node.rttMs == null ? "RTT —" : `${node.rttMs} ms`}
+          </span>
+          <div className="chart-toggle detail-range" aria-label="History range">
+            {historyRanges.map((range) => (
+              <button
+                key={range.hours}
+                type="button"
+                aria-pressed={detail.hours === range.hours}
+                disabled={detail.state === "loading"}
+                onClick={() => onRangeChange?.(range.hours)}
+              >
+                {range.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {detail.state === "loading" ? (
+          <p className="progress-message" role="status">
+            <span className="spinner" aria-hidden="true" />
+            Loading {rangeLabel} history from this machine…
+          </p>
+        ) : detail.state === "error" ? (
+          <div className="history-message error-message" role="alert">
+            <strong>History unavailable</strong>
+            <p>{detail.message}</p>
+          </div>
+        ) : detail.points.length === 0 ? (
+          <div className="history-message" role="status">
+            <strong>No history in this range</strong>
+            <p>Live metrics remain available. The machine returned no one-minute buckets.</p>
+          </div>
+        ) : (
+          <>
+            <section className="history-chart" aria-label="Machine history">
+              <div className="history-heading">
+                <div>
+                  <p className="eyebrow">LAST {rangeLabel.toUpperCase()}</p>
+                  <strong>{spec.chartTitle}</strong>
+                </div>
+                <div className="chart-toggle" aria-label="History metric">
+                  {historyMetrics.map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      aria-pressed={metric === option}
+                      onClick={() => setMetric(option)}
+                    >
+                      {trendMetricRegistry[option].label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {/* The axis ends come from the readable buckets themselves, so a
+                  partial range (a machine that was off overnight) is labelled
+                  with the hours it actually covers rather than the range that
+                  was requested. */}
+              <TrendChart
+                lines={series.lines}
+                scale={trendScale(spec.scale, series.values)}
+                label={`${node.name} ${rangeLabel} ${spec.label} history`}
+                startLabel={series.firstMs === undefined ? undefined : timeOfDay(series.firstMs)}
+                endLabel={series.lastMs === undefined ? undefined : timeOfDay(series.lastMs)}
+                emptyText={`No ${spec.label} samples in this range`}
+                formatTime={timeOfDay}
+              />
+              <p className="history-buckets">{detail.points.length} one-minute buckets</p>
+            </section>
+            <dl className="detail-metrics">
+              <div>
+                <dt>Latest CPU</dt>
+                <dd>
+                  {!live || node.cpuPercent == null ? "—" : `${Math.round(node.cpuPercent)}%`}
+                </dd>
+              </div>
+              <div>
+                <dt>Memory</dt>
+                <dd>{live ? percent(node.memoryUsedBytes, node.memoryTotalBytes) : "—"}</dd>
+              </div>
+              <div>
+                <dt>Memory used</dt>
+                <dd>{live ? bytes(node.memoryUsedBytes) : "—"}</dd>
+              </div>
+              <div>
+                <dt>Swap</dt>
+                {/* A machine with no swap device has no percentage to show;
+                    the title says which kind of "—" this is. */}
+                <dd title={swapDetail(node)}>
+                  {live ? percent(node.swapUsedBytes, node.swapTotalBytes) : "—"}
+                </dd>
+              </div>
+              <div>
+                <dt>Uptime</dt>
+                {/* Not a trend line, deliberately: uptime is a rendering of one
+                    fixed instant (the boot time) rather than a sampled level,
+                    so the carve-out in `trend-series.ts` applies and plotting
+                    it would only draw a straight ramp. */}
+                <dd>{live ? uptime(node.uptimeSeconds) : "—"}</dd>
+              </div>
+              <div>
+                <dt>Temperature</dt>
+                <dd title={temperatureDetail(node.temperature)}>
+                  {live ? celsius(node.temperature?.celsius) : "—"}
+                </dd>
+              </div>
+              <div>
+                <dt>Hottest sensor</dt>
+                {/* Naming the sensor keeps the number attributable; a machine
+                    with none says so rather than showing a blank. */}
+                <dd>{node.temperature?.label ?? "No sensor readable"}</dd>
+              </div>
+              <div>
+                <dt>Connection</dt>
+                <dd>{connectionPathRegistry[node.path].label}</dd>
+              </div>
+            </dl>
+            {/* The metric tiles above report the fullest filesystem only. A
+                machine has several, an alert names one of them by mount, and
+                the answer to "which disk do I clear?" has to be readable
+                somewhere in the viewer. */}
+            <section className="detail-filesystems" aria-label="Filesystems">
+              <h3>Filesystems</h3>
+              {live && filesystems.length > 0 ? (
+                <ul>
+                  {filesystems.map((filesystem) => (
+                    <li key={filesystem.mount}>
+                      <span className="filesystem-mount">{filesystem.mount}</span>
+                      <span className="filesystem-usage">
+                        {percent(filesystem.usedBytes, filesystem.totalBytes)} ·{" "}
+                        {bytes(filesystem.usedBytes)} of {bytes(filesystem.totalBytes)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                /* Distinct facts: an unreachable machine has filesystems we
+                   cannot currently read, a live one that reported none has
+                   nothing mounted we can measure. Neither is an empty disk. */
+                <p className="filesystem-empty">
+                  {live
+                    ? "This machine reported no measurable filesystem"
+                    : "No current filesystem reading from this machine"}
+                </p>
+              )}
+            </section>
+          </>
+        )}
+      </section>
+    </div>
+  );
+}

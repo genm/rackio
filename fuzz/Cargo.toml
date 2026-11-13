@@ -1,0 +1,41 @@
+[package]
+name = "rackio-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+# Matches workspace.package.license in the root Cargo.toml. `cargo deny` audits
+# this manifest on its own (see #117), and an unlicensed crate fails that check
+# even though the crate itself is never published.
+license = "MIT OR Apache-2.0"
+
+# Deliberately detached from the root workspace. `cargo-fuzz` builds these
+# targets with a nightly toolchain and sanitizer flags that must not leak into
+# the shipped workspace, and `libfuzzer-sys` generates `unsafe` code that the
+# workspace lint policy denies.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.11"
+tokio = { version = "1.53.1", features = ["io-util", "rt"] }
+# Pinned to the workspace version like every other internal path dependency
+# (see crates/rackio-iroh/Cargo.toml) so `cargo deny`'s wildcard-dependency ban
+# applies here too.
+rackio-iroh = { version = "0.1.0-rc.1", path = "../crates/rackio-iroh" }
+rackio-protocol = { version = "0.1.0-rc.1", path = "../crates/rackio-protocol" }
+
+[[bin]]
+name = "pairing_bundle"
+path = "fuzz_targets/pairing_bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "metric_frame"
+path = "fuzz_targets/metric_frame.rs"
+test = false
+doc = false
+bench = false

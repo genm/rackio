@@ -1,0 +1,43 @@
+[graph]
+# Every target that a release actually ships. scripts/generate-third-party-licenses.sh
+# derives cargo-about's target list from here, so an omission silently excludes a
+# shipped target from both the advisory scan and the bundled license notices.
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-unknown-linux-gnu",
+]
+
+[advisories]
+unmaintained = "workspace"
+yanked = "deny"
+ignore = []
+
+[licenses]
+confidence-threshold = 0.93
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  # libfuzzer-sys bundles LLVM's compiler-rt under this permissive license; it
+  # only ever reaches the detached fuzz/Cargo.lock (see #117).
+  "NCSA",
+  "Unlicense",
+  "Unicode-3.0",
+  "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -1,0 +1,216 @@
+[tools]
+node = "26.12.1"
+"github:pnpm/pnpm" = "12.16.1"
+rust = "1.97.1"
+just = "1.57.0"
+"aqua:evilmartians/lefthook" = "2.1.10"
+"aqua:gitleaks/gitleaks" = "8.30.1"
+"cargo:cargo-deny" = "0.20.2"
+"cargo:cargo-about" = { version = "0.9.1", features = "cli" }
+"cargo:cargo-llvm-cov" = "0.8.7"
+"cargo:cargo-machete" = "0.9.2"
+"cargo:cargo-mutants" = "27.1.0"
+"cargo:cargo-nextest" = "0.9.140"
+"aqua:zizmorcore/zizmor" = "1.28.0"
+"aqua:crate-ci/typos" = "1.48.0"
+# The aqua registry has no macOS-arm64 asset mapping for lychee, so this one
+# tool resolves through the GitHub release directly.
+"github:lycheeverse/lychee" = "lychee-v0.24.2"
+actionlint = "1.7.12"
+trivy = "0.72.0"
+
+[env]
+# One build directory for every checkout of this repository, rather than one
+# per checkout. A full `mise run check` leaves roughly 5 GB in `target/`, so a
+# handful of Git worktrees recompiles and re-stores the same dependency graph
+# several times over. It also covers the nested `fuzz/` workspace, which would
+# otherwise build the same graph a second time into `fuzz/target/`.
+#
+# Cargo takes an exclusive lock on this directory, so builds started from two
+# worktrees at the same time run one after the other instead of in parallel.
+#
+# The fallback chain resolves without `$HOME`, which Windows hosts do not set.
+# An explicit `CARGO_TARGET_DIR` still wins, so a caller that needs an isolated
+# build directory — `measure:desktop-build` does — can still ask for one.
+CARGO_TARGET_DIR = "{{ get_env(name='CARGO_TARGET_DIR', default=get_env(name='XDG_CACHE_HOME', default=get_env(name='HOME', default=get_env(name='LOCALAPPDATA', default='.')) ~ '/.cache') ~ '/rackio/target') }}"
+# Cargo's intermediate output (`deps/`, `incremental/`, build-script `build/`,
+# fingerprints) goes to a sibling `build/` directory, so `target/` holds only
+# the final artifacts and `mise run cache:report` can tell them apart.
+# `mise run cache:clean` goes through `cargo clean`, which covers both.
+#
+# A caller that exports only `CARGO_TARGET_DIR` gets its intermediates in that
+# same directory, which is Cargo's own default, so an isolated build stays
+# isolated instead of writing into the shared cache. `get_env` reads the
+# caller's environment, not the value assigned above, which is what makes that
+# distinction possible. Nested `mise` invocations inherit both values unchanged.
+CARGO_BUILD_BUILD_DIR = "{{ get_env(name='CARGO_BUILD_BUILD_DIR', default=get_env(name='CARGO_TARGET_DIR', default=get_env(name='XDG_CACHE_HOME', default=get_env(name='HOME', default=get_env(name='LOCALAPPDATA', default='.')) ~ '/.cache') ~ '/rackio/build')) }}"
+
+[tasks.check]
+description = "Run repository quality gates"
+env = { CARGO_INCREMENTAL = "0", RUSTDOCFLAGS = "-D warnings" }
+run = [
+  "actionlint",
+  "zizmor --no-progress .github/workflows/",
+  "typos",
+  "cargo fmt --all -- --check",
+  "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+  "cargo doc --workspace --all-features --no-deps",
+  "cargo nextest run --workspace",
+  "cargo check --manifest-path fuzz/Cargo.toml --all-targets --locked",
+  "scripts/test-two-daemon-cleanup.sh",
+  "scripts/test-two-daemon-pairing.sh",
+  "scripts/test-two-daemon-address-change.sh",
+  "packaging/linux/install.test.sh",
+  "pnpm format:check",
+  "pnpm typecheck",
+  "pnpm lint",
+  "pnpm test:env",
+  "pnpm test:ci-plan",
+  "pnpm test:governance",
+  "pnpm test:desktop-updater",
+  "pnpm test:license-policy",
+  "pnpm test",
+  "pnpm test:ct",
+  "pnpm build",
+]
+
+[tasks.bootstrap]
+description = "Install locked dependencies, browser and Git hooks"
+run = "node scripts/bootstrap.mjs"
+
+[tasks.doctor]
+description = "Report local development environment readiness as JSON"
+run = "node scripts/environment-doctor.mjs --json"
+
+[tasks."doctor:relay"]
+description = "Require both development and self-hosted relay environments"
+run = "node scripts/environment-doctor.mjs --json --require-relay"
+
+[tasks."agent:daemon"]
+description = "Run the monitoring agent in the foreground"
+run = "cargo run -p rackio-agent -- daemon"
+
+[tasks."desktop:dev"]
+description = "Run the Tauri desktop application in development mode"
+run = "pnpm --filter @rackio/desktop tauri dev"
+
+[tasks."frontend:dev"]
+description = "Run only the browser frontend in development mode"
+run = "pnpm --filter @rackio/desktop dev"
+
+[tasks."measure:desktop-build"]
+description = "Measure a clean desktop debug build and enforce its disk budget"
+run = "node scripts/measure-desktop-build.mjs"
+
+[tasks."cache:report"]
+description = "Report the local Cargo build cache size by directory, profile and category (read-only)"
+run = "node scripts/build-cache.mjs report"
+
+[tasks."cache:clean"]
+description = "Reclaim development build output via cargo clean; pass --dry-run to preview, --all for everything"
+# Refuses to run while a process executes from the cache, and never stops one.
+run = "node scripts/build-cache.mjs clean"
+
+[tasks."test:nat-lab"]
+description = "Run the container NAT matrix and write per-scenario evidence to test-results/nat-matrix"
+# Deliberately absent from `tasks.check`: this builds a container image and runs
+# real daemons for minutes. It is opt-in release evidence, not a per-change gate.
+# Needs Docker with the compose plugin. Pass scenario ids to run a subset.
+run = "scripts/nat-lab/run.sh"
+
+[tasks."test:installer"]
+description = "Verify Linux release packaging, install, and checksum rejection"
+run = "packaging/linux/install.test.sh"
+
+[tasks."test:pairing"]
+description = "Verify two-daemon pairing, live metrics, reuse rejection, reconnect, and address-change recovery"
+run = [
+  "scripts/test-two-daemon-cleanup.sh",
+  "scripts/test-two-daemon-pairing.sh",
+  "scripts/test-two-daemon-address-change.sh",
+]
+
+[tasks."check:windows-cross"]
+description = "Cross-compile-check the Windows-only code paths on a non-Windows host"
+# Needs a mingw-w64 linker (`brew install mingw-w64`, `apt install mingw-w64`).
+# `rackio-desktop` is excluded: Tauri needs a Windows webview SDK that cannot be
+# cross-linked from Linux or macOS.
+run = [
+  "rustup target add x86_64-pc-windows-gnu",
+  # Clippy type-checks the same scope as `cargo check`, plus every target; see
+  # the rust-windows-cross-check job in .github/workflows/ci.yml.
+  "cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features -p rackio-windows-ipc -p rackio-core -p rackio-protocol -p rackio-iroh -p rackio-agent -- -D warnings",
+]
+
+[tasks."benchmark:agent"]
+description = "Enforce the release agent CPU and RSS budgets while idle and direct-only"
+run = [
+  "cargo build --release -p rackio-agent",
+  "scripts/benchmark-agent-resources.sh",
+]
+# scripts/benchmark-agent-resources.sh needs bash, ps, awk and jq, none of
+# which Windows ships natively, so this OS gets its own implementation
+# instead of trying to run the same script under a POSIX-compatibility
+# layer (WSL, MSYS/Git-Bash) whose `ps` output for a native Win32 process is
+# unverified. `run_windows` is mise's own mechanism for this: it replaces
+# `run` on a Windows host and is ignored elsewhere, so `mise run
+# benchmark:agent` stays the one entrypoint the release checklist references
+# on every OS. See scripts/benchmark-agent-resources.ps1's header for what
+# it does and does not measure.
+run_windows = [
+  "cargo build --release -p rackio-agent",
+  "pwsh -NoProfile -File scripts/benchmark-agent-resources.ps1",
+]
+
+[tasks."benchmark:agent-active-peer"]
+description = "Enforce the release agent CPU, RSS and per-peer traffic budgets with a peer actively streaming"
+run = [
+  "cargo build --release -p rackio-agent",
+  "RACKIO_BENCHMARK_PROFILE=active_peer scripts/benchmark-agent-resources.sh",
+]
+# No `run_windows` here on purpose: the traffic figure this profile exists
+# for is measured with `nettop -P`, which is macOS-only, and Windows has no
+# equivalent per-process UDP byte counter without a packet capture. Running
+# this task on Windows falls back to `run` above and fails closed with the
+# script's own missing_command error rather than reporting an unmeasured
+# number. See docs/release-checklist.md for how that gap is tracked.
+
+[tasks."licenses:check"]
+description = "Verify bundled Rust third-party license notices match the locked dependency graph"
+run = [
+  "scripts/generate-third-party-licenses.sh /tmp/rackio-THIRDPARTY.html",
+  "cmp THIRDPARTY.html /tmp/rackio-THIRDPARTY.html",
+  "node scripts/generate-javascript-licenses.mjs /tmp/rackio-THIRDPARTY-JAVASCRIPT.html",
+  "cmp THIRDPARTY-JAVASCRIPT.html /tmp/rackio-THIRDPARTY-JAVASCRIPT.html",
+]
+
+[tasks."mutants"]
+description = "Re-test every library crate against injected behaviour changes"
+env = { CARGO_INCREMENTAL = "0" }
+# Mirrors the scheduled deep-verification job. A surviving mutant is a test that
+# passes with the behaviour changed, which coverage percentage cannot reveal.
+run = "cargo mutants --package rackio-core --package rackio-protocol --package rackio-iroh --test-tool=nextest --timeout-multiplier 5 --output test-results/mutants"
+
+[tasks."fuzz"]
+description = "Fuzz every attacker-reachable decoder for a short local budget"
+# libFuzzer needs nightly instrumentation, so this is the only task that steps
+# outside the pinned stable toolchain. Install it with:
+#   rustup toolchain install nightly --profile minimal --component rust-src
+#   cargo +nightly install cargo-fuzz --version 0.13.2 --locked
+# Run a single target for longer with the underlying command, for example:
+#   cargo +nightly fuzz run pairing_bundle -- -max_total_time=900
+run = [
+  "cargo +nightly fuzz run pairing_bundle -- -max_total_time=60",
+  "cargo +nightly fuzz run metric_frame -- -max_total_time=60",
+]
+
+[tasks."links:check"]
+description = "Verify every documented link still resolves"
+run = 'lychee --no-progress --max-concurrency 4 --accept 200,204,206,429 "*.md" "docs/**/*.md" "packaging/**/*.md"'
+
+[tasks."secrets:history"]
+description = "Scan the complete Git history for committed secrets"
+run = [
+  "mkdir -p test-results",
+  "gitleaks git . --redact=100 --report-format json --report-path test-results/gitleaks.json --exit-code 1 --no-banner",
+]

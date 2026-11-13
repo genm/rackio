@@ -1,0 +1,113 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/rackio-core",
+  "crates/rackio-protocol",
+  "crates/rackio-iroh",
+  "crates/rackio-windows-ipc",
+  "apps/agent",
+  "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0-rc.1"
+edition = "2024"
+# Matches rust-toolchain.toml, the only Rust version ever built or verified.
+# Bump both together; see "Minimum supported Rust version" in
+# docs/development.md for why they must stay in lockstep (#116).
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+base64 = "0.23.0"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.6.4", features = ["derive"] }
+directories = "6.0.0"
+iroh = { version = "=1.4.1", default-features = false, features = ["tls-ring"] }
+prost = "0.14.4"
+qrcode = { version = "=0.14.1", default-features = false, features = ["svg"] }
+rand = "0.10.2"
+rusqlite = { version = "=0.41.0", features = ["bundled"] }
+# The certificate type `iroh`'s `CaTlsConfig` accepts. Deliberately not pinned
+# with `=`: it must unify with the copy `iroh` itself resolves, or the two
+# `CertificateDer` types would not be the same type.
+rustls-pki-types = "1.15.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+subtle = "2.6.1"
+swarm-discovery = "=0.6.5"
+sysinfo = { version = "=0.39.6", default-features = false, features = ["component", "disk", "network", "system"] }
+tauri = { version = "2.11.5", features = ["tray-icon"] }
+tauri-build = "2.6.3"
+tauri-plugin-dialog = "=2.8.4"
+tauri-plugin-notification = "2.3.3"
+tauri-plugin-single-instance = "2.4.5"
+# Keep signed updater support across desktop targets without enabling the
+# optional Windows ZIP archive extractor.
+tauri-plugin-updater = { version = "2.12.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
+thiserror = "2.0.19"
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+unicode-segmentation = "1.13.3"
+uuid = { version = "1.24.0", features = ["serde", "v4"] }
+zeroize = { version = "1.9.0", features = ["derive"] }
+
+[workspace.dependencies.windows-sys]
+version = "=0.61.2"
+features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+]
+
+[workspace.lints.rust]
+# `deny` rather than `forbid` so `rackio-windows-ipc` — the only crate that must
+# call Win32 directly — can opt into the rest of this policy while relaxing this
+# one lint visibly at its crate root. `forbid` cannot be overridden, which had
+# left that crate outside the whole lint policy, including the unwrap/expect
+# denials, despite being the only member containing `unsafe`.
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+strip = "symbols"
+
+# Keep line-number backtraces without duplicating full dependency debug data in
+# every worktree. Use `--profile debugging` when source-level debugging is needed.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
+
+[profile.test.package."*"]
+debug = false
+
+[profile.debugging]
+inherits = "dev"
+debug = "full"
+
+# Backport the upstream VariantStrIter pointer fix while Tauri still requires
+# the GTK 0.18 dependency family on Linux.
+[patch.crates-io]
+glib = { path = "vendor/glib-0.18.5" }

@@ -1,0 +1,43 @@
+name: Feature proposal
+description: Propose a user outcome or product capability for Rackio.
+title: "[Feature] "
+labels:
+  - type:feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem before prescribing an implementation. Keep proposals consistent with Rackio's cloud-independent, peer-to-peer, fail-closed product contract.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Who is affected, in what situation, and why is the current behavior insufficient?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable user behavior and success criteria.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Optional implementation or interaction design, including alternatives considered.
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Security, privacy, and operational boundaries
+      description: Explain effects on identity, authorization, network access, stored data, resource use, and failure visibility.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance evidence
+      description: List realistic success and failure/degraded cases that would prove the feature complete.
+    validations:
+      required: true

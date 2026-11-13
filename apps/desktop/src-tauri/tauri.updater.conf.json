@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE3QTc0NTdDQUJCMENCNUUKUldSZXk3Q3JmRVducHh5NklQTExFRUVPL2hhZDJrOTR6bUh3LzA1VGRJTk5WWitlTmdmdktmRjMK",
+      "endpoints": ["https://github.com/genm/rackio/releases/latest/download/latest.json"]
+    }
+  }
+}

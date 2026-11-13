@@ -1,0 +1,135 @@
+version: 2
+updates:
+  # fuzz/ is a detached Cargo workspace, but its manifests share the root
+  # [workspace.dependencies] requirements through path dependencies. A single
+  # Dependabot entry keeps both lockfiles in one PR: separate entries leave the
+  # other workspace's lockfile stale and fail every --locked check (#259, #266).
+  - package-ecosystem: cargo
+    directories:
+      - "/"
+      - "/fuzz"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+      semver-minor-days: 7
+      semver-major-days: 14
+    labels:
+      - dependencies
+      - rust
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # Tauri crates share one release train: tauri-build emits code the
+      # matching tauri runtime must compile, so a lone minor bump fails to
+      # build. Group them ahead of the catch-all patch group.
+      tauri:
+        patterns:
+          - "tauri*"
+        update-types:
+          - minor
+          - patch
+      cargo-patches:
+        patterns:
+          - "*"
+        update-types:
+          - patch
+
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: wednesday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 5
+    # Cooldown applies only to routine version updates. Dependabot security
+    # updates remain event-driven and are not delayed by this schedule.
+    cooldown:
+      default-days: 3
+      semver-minor-days: 7
+      semver-major-days: 14
+    labels:
+      - dependencies
+      - javascript
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      npm-non-major:
+        patterns:
+          - "*"
+        # Group routine non-major updates to reduce lockfile contention.
+        update-types:
+          - minor
+          - patch
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: thursday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 3
+    # Dependabot supports only default-days for github-actions cooldowns;
+    # the semver-scoped keys are rejected by its config validator.
+    cooldown:
+      default-days: 3
+    labels:
+      - dependencies
+      - github_actions
+      - area:ci
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+        # Major action upgrades can change runtime and input contracts.
+        update-types:
+          - minor
+          - patch
+
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  # The relay package pins both image tags and digests. Keep these updates
+  # visible, but the auto-merge policy requires manual review for Docker.
+  - package-ecosystem: docker
+    directory: /relay-package
+    schedule:
+      interval: weekly
+      day: friday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 2
+    cooldown:
+      default-days: 3
+    labels:
+      - dependencies
+      - area:packaging
+    commit-message:
+      prefix: chore
+      include: scope
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"

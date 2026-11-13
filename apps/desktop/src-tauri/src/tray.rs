@@ -1,0 +1,1122 @@
+//! Tray state, menus, main-thread updates, and daemon polling.
+
+use crate::{load_fleet_snapshot, tray_badges::TrayBadges};
+use serde::Deserialize;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Mutex,
+    time::Duration,
+};
+use tauri::{
+    AppHandle, Manager, Runtime,
+    image::Image,
+    menu::{IconMenuItem, Menu, MenuBuilder, MenuItem, Submenu},
+    tray::TrayIconBuilder,
+};
+
+pub(crate) struct TrayRegistry<R: Runtime = tauri::Wry> {
+    machine_ids: Mutex<HashSet<String>>,
+    menus: Mutex<HashMap<String, TrayMenuState<R>>>,
+}
+
+impl<R: Runtime> Default for TrayRegistry<R> {
+    fn default() -> Self {
+        Self {
+            machine_ids: Mutex::default(),
+            menus: Mutex::default(),
+        }
+    }
+}
+
+struct TraySectionItems<R: Runtime> {
+    submenu: Submenu<R>,
+    gauges: Vec<IconMenuItem<R>>,
+    link: MenuItem<R>,
+}
+
+impl<R: Runtime> Clone for TraySectionItems<R> {
+    fn clone(&self) -> Self {
+        Self {
+            submenu: self.submenu.clone(),
+            gauges: self.gauges.clone(),
+            link: self.link.clone(),
+        }
+    }
+}
+
+struct TrayMenuState<R: Runtime> {
+    sections: Vec<TraySectionItems<R>>,
+}
+
+impl<R: Runtime> Clone for TrayMenuState<R> {
+    fn clone(&self) -> Self {
+        Self {
+            sections: self.sections.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TrayFleetSnapshot {
+    daemon: String,
+    nodes: Vec<TrayNodeSnapshot>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrayNodeSnapshot {
+    id: String,
+    name: String,
+    /// The one glyph this machine's status item shows, resolved by
+    /// `tray_badges` (the operator's icon, or the name's initial).
+    #[serde(rename = "trayLabel")]
+    tray_label: String,
+    state: String,
+    path: String,
+    #[serde(rename = "cpuPercent")]
+    cpu_percent: Option<f64>,
+    #[serde(rename = "memoryUsedBytes")]
+    memory_used_bytes: Option<u64>,
+    #[serde(rename = "memoryTotalBytes")]
+    memory_total_bytes: Option<u64>,
+    #[serde(rename = "swapUsedBytes")]
+    swap_used_bytes: Option<u64>,
+    #[serde(rename = "swapTotalBytes")]
+    swap_total_bytes: Option<u64>,
+    #[serde(rename = "diskUsedBytes")]
+    disk_used_bytes: Option<u64>,
+    #[serde(rename = "diskTotalBytes")]
+    disk_total_bytes: Option<u64>,
+    /// Which filesystem the disk figure belongs to; absent on a machine that
+    /// reported none.
+    #[serde(rename = "diskMount")]
+    disk_mount: Option<String>,
+    #[serde(rename = "networkReceivedBytesPerSecond")]
+    network_received_bytes_per_second: Option<u64>,
+    #[serde(rename = "networkSentBytesPerSecond")]
+    network_sent_bytes_per_second: Option<u64>,
+    #[serde(rename = "uptimeSeconds")]
+    uptime_seconds: Option<u64>,
+    temperature: Option<TrayTemperature>,
+    #[serde(rename = "rttMs")]
+    rtt_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrayTemperature {
+    label: String,
+    celsius: f64,
+}
+
+/// One metric row inside a machine's hover submenu: a text label and, when the
+/// reading exists, a horizontal bar gauge rendered as the row's icon. The fill
+/// is stored in basis points (0..=10 000) so the model stays `Eq`-comparable in
+/// tests; the pixel rendering happens only at menu-build time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrayGauge {
+    text: String,
+    fill_basis_points: Option<u16>,
+}
+
+/// One machine's entry in the click menu: a hover submenu (`▸`) whose title
+/// carries the at-a-glance identity (`● Mac — Healthy`) and whose rows carry
+/// the bar-gauge metrics. The top-level menu therefore stays one row per
+/// machine no matter how large the fleet is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TraySection {
+    header: String,
+    /// Gauge fills reuse the machine's state colour rather than inventing
+    /// per-metric warning thresholds here: severity is owned by the
+    /// user-configurable alert rules (rackio-core), which already drive
+    /// `state`. A second, hard-coded threshold set in the tray would drift
+    /// from — and contradict — what the user configured.
+    color: [u8; 4],
+    gauges: Vec<TrayGauge>,
+    link: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TrayMachineMenu {
+    title: String,
+    section: TraySection,
+}
+
+fn machine_tray_id(node: &TrayNodeSnapshot) -> String {
+    format!("machine-{}", node.id)
+}
+
+/// Neutral fill for sections that have no live machine behind them (daemon
+/// fallback, unknown state). Matches the `stale` grey.
+const NEUTRAL_COLOR: [u8; 4] = [164, 173, 168, 255];
+
+fn tray_state_color(state: &str) -> Result<[u8; 4], String> {
+    match state {
+        "healthy" => Ok([84, 217, 139, 255]),
+        "warning" | "degraded" => Ok([230, 189, 89, 255]),
+        "stale" => Ok(NEUTRAL_COLOR),
+        "critical" | "offline" | "auth_error" | "incompatible" | "daemon_unavailable" => {
+            Ok([255, 111, 103, 255])
+        }
+        _ => Err(String::from("Unknown fleet state for tray icon.")),
+    }
+}
+
+pub(crate) fn show_dashboard<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn tray_event_handler<R: Runtime>(app: &AppHandle<R>, event: &tauri::menu::MenuEvent) {
+    match event.id().as_ref() {
+        "show" => show_dashboard(app),
+        "quit" => app.exit(0),
+        _ => {}
+    }
+}
+
+fn tray_menu<R: Runtime, M: Manager<R>>(
+    app: &M,
+    sections: &[TraySection],
+) -> Result<(Menu<R>, TrayMenuState<R>), tauri::Error> {
+    let mut builder = MenuBuilder::new(app);
+    let mut section_items = Vec::with_capacity(sections.len());
+    for (section_index, section) in sections.iter().enumerate() {
+        let submenu = Submenu::with_id(
+            app,
+            format!("machine-section-{section_index}"),
+            &section.header,
+            true,
+        )?;
+        let mut gauge_items = Vec::with_capacity(section.gauges.len());
+        for (gauge_index, gauge) in section.gauges.iter().enumerate() {
+            let item = IconMenuItem::with_id(
+                app,
+                format!("machine-gauge-{section_index}-{gauge_index}"),
+                &gauge.text,
+                false,
+                gauge_image(gauge, section.color),
+                None::<&str>,
+            )?;
+            submenu.append(&item)?;
+            gauge_items.push(item);
+        }
+        let link = MenuItem::with_id(
+            app,
+            format!("machine-link-{section_index}"),
+            &section.link,
+            false,
+            None::<&str>,
+        )?;
+        submenu.append(&link)?;
+        builder = builder.item(&submenu);
+        section_items.push(TraySectionItems {
+            submenu,
+            gauges: gauge_items,
+            link,
+        });
+    }
+    let show = MenuItem::with_id(app, "show", "Open dashboard", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = builder.separator().item(&show).item(&quit).build()?;
+    Ok((
+        menu,
+        TrayMenuState {
+            sections: section_items,
+        },
+    ))
+}
+
+fn status_section(message: &str) -> TraySection {
+    TraySection {
+        header: message.to_owned(),
+        color: NEUTRAL_COLOR,
+        gauges: vec![
+            TrayGauge {
+                text: String::from("CPU —"),
+                fill_basis_points: None,
+            },
+            TrayGauge {
+                text: String::from("Memory —"),
+                fill_basis_points: None,
+            },
+            TrayGauge {
+                text: String::from("Disk —"),
+                fill_basis_points: None,
+            },
+            TrayGauge {
+                text: String::from("Temperature —"),
+                fill_basis_points: None,
+            },
+        ],
+        link: String::from("—"),
+    }
+}
+
+/// Refresh the existing menu items in place. Returns `false` when the new
+/// sections do not match the shape of the menu that was built, so the caller
+/// rebuilds instead of writing one machine's metrics onto another's rows.
+fn update_tray_menu<R: Runtime>(menu: &TrayMenuState<R>, sections: &[TraySection]) -> bool {
+    if menu.sections.len() != sections.len()
+        || menu
+            .sections
+            .iter()
+            .zip(sections)
+            .any(|(items, section)| items.gauges.len() != section.gauges.len())
+    {
+        return false;
+    }
+    for (items, section) in menu.sections.iter().zip(sections) {
+        let _ = items.submenu.set_text(&section.header);
+        for (item, gauge) in items.gauges.iter().zip(&section.gauges) {
+            let _ = item.set_text(&gauge.text);
+            let _ = item.set_icon(gauge_image(gauge, section.color));
+        }
+        let _ = items.link.set_text(&section.link);
+    }
+    true
+}
+
+fn upsert_tray<R: Runtime, F>(
+    app: &AppHandle<R>,
+    id: &str,
+    state: &str,
+    title: &str,
+    tooltip: &str,
+    sections: &[TraySection],
+    menu_builder: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Result<(Menu<R>, TrayMenuState<R>), String>,
+{
+    let color = tray_state_color(state)?;
+    if let Some(tray) = app.tray_by_id(id) {
+        tray.set_icon(Some(state_icon(color)))
+            .map_err(|error| format!("Could not update the tray icon: {error}"))?;
+        tray.set_title(Some(title.to_owned()))
+            .map_err(|error| format!("Could not update the tray title: {error}"))?;
+        tray.set_tooltip(Some(tooltip.to_owned()))
+            .map_err(|error| format!("Could not update the tray tooltip: {error}"))?;
+        #[cfg(target_os = "macos")]
+        tray.set_icon_as_template(false)
+            .map_err(|error| format!("Could not configure the tray icon: {error}"))?;
+        let registry = app.state::<TrayRegistry<R>>();
+        let existing_menu = registry
+            .menus
+            .lock()
+            .ok()
+            .and_then(|menus| menus.get(id).cloned());
+        // Updating menu items in place keeps an open macOS NSMenu alive.
+        // Replacing the menu causes AppKit to dismiss it on the next poll, so
+        // only rebuild when the section shape no longer matches.
+        let updated_in_place = existing_menu.is_some_and(|menu| update_tray_menu(&menu, sections));
+        if !updated_in_place {
+            let (menu, menu_state) = menu_builder()?;
+            tray.set_menu(Some(menu))
+                .map_err(|error| format!("Could not update the tray menu: {error}"))?;
+            if let Ok(mut menus) = registry.menus.lock() {
+                menus.insert(id.to_owned(), menu_state);
+            }
+        }
+        return Ok(());
+    }
+
+    let (menu, menu_state) = menu_builder()?;
+    let builder = TrayIconBuilder::with_id(id)
+        .icon(state_icon(color))
+        .icon_as_template(false)
+        .title(title)
+        .tooltip(tooltip)
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| tray_event_handler(app, &event));
+    builder
+        .build(app)
+        .map(|_| {
+            if let Ok(mut menus) = app.state::<TrayRegistry<R>>().menus.lock() {
+                menus.insert(id.to_owned(), menu_state);
+            }
+        })
+        .map_err(|error| format!("Could not create tray icon {id}: {error}"))
+}
+
+fn update_status_tray(app: &AppHandle, state: &str, message: &str) {
+    let registry = app.state::<TrayRegistry>();
+    let ids = registry
+        .machine_ids
+        .lock()
+        .map(|ids| ids.iter().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    if ids.is_empty() {
+        let sections = vec![status_section(message)];
+        if upsert_tray(
+            app,
+            "rackio-status",
+            state,
+            message,
+            message,
+            &sections,
+            || {
+                tray_menu(app, &sections)
+                    .map_err(|error| format!("Could not build tray menu: {error}"))
+            },
+        )
+        .is_ok()
+            && let Ok(mut ids) = registry.machine_ids.lock()
+        {
+            ids.insert(String::from("rackio-status"));
+        }
+        return;
+    }
+
+    // Keep existing status items alive on macOS. Removing an NSStatusItem while
+    // AppKit is processing a daemon transition can block the event loop, so a
+    // degraded state is rendered in-place and remains observable.
+    for id in ids {
+        let sections = vec![status_section(message)];
+        let _ = upsert_tray(app, &id, state, message, message, &sections, || {
+            tray_menu(app, &sections).map_err(|error| format!("Could not build tray menu: {error}"))
+        });
+    }
+}
+
+fn update_machine_trays(app: &AppHandle, snapshot: &TrayFleetSnapshot) {
+    let registry = app.state::<TrayRegistry>();
+    let registered_ids = registry
+        .machine_ids
+        .lock()
+        .map(|ids| ids.clone())
+        .unwrap_or_default();
+    let status_slot =
+        registered_ids.contains("rackio-status") && app.tray_by_id("rackio-status").is_some();
+    let fleet_sections = fleet_tray_sections(&snapshot.nodes);
+    let mut active_ids = HashSet::new();
+    for (index, node) in snapshot.nodes.iter().enumerate() {
+        let id = if index == 0 && status_slot {
+            String::from("rackio-status")
+        } else {
+            machine_tray_id(node)
+        };
+        let machine = tray_machine_menu(node);
+        let is_primary_machine = index == 0;
+        // Every item, the primary included, titles only its own machine: each
+        // machine already has an item, so repeating the whole rack in the
+        // primary's title only doubled the menu-bar width.
+        let title = tray_node_status(node);
+        let sections = if is_primary_machine {
+            fleet_sections.clone()
+        } else {
+            vec![machine.section.clone()]
+        };
+        let _ = upsert_tray(
+            app,
+            &id,
+            &node.state,
+            &title,
+            &machine.title,
+            &sections,
+            || {
+                tray_menu(app, &sections)
+                    .map_err(|error| format!("Could not build tray menu: {error}"))
+            },
+        );
+        active_ids.insert(id);
+    }
+
+    // This runs on Tauri's main thread (see `dispatch_tray_update`), which is
+    // where AppKit requires status-item mutation. Retiring an item is a
+    // response to a deliberate fleet change, not to a poll-to-poll wobble, so
+    // it does not churn an open NSMenu the way a periodic rebuild would.
+    for id in retired_tray_ids(&registered_ids, &active_ids) {
+        app.remove_tray_by_id(&id);
+        if let Ok(mut menus) = registry.menus.lock() {
+            menus.remove(&id);
+        }
+    }
+    if let Ok(mut ids) = registry.machine_ids.lock() {
+        *ids = active_ids;
+    }
+}
+
+/// Tray ids to drop because the machine left the fleet.
+///
+/// A connected agent reports every paired machine, including unreachable ones,
+/// which keep their tray item and degrade in place through their own `state`
+/// (and, when the agent itself is gone, through `update_status_tray`). An id
+/// that disappears from a connected agent's snapshot therefore means explicit
+/// removal — an unpaired machine. Relabelling it "Unavailable" and re-adding it
+/// to the registry, as this once did, made a removal indistinguishable from an
+/// outage and kept the item for the process lifetime.
+fn retired_tray_ids(registered: &HashSet<String>, active: &HashSet<String>) -> Vec<String> {
+    registered.difference(active).cloned().collect()
+}
+
+fn fleet_tray_sections(nodes: &[TrayNodeSnapshot]) -> Vec<TraySection> {
+    nodes
+        .iter()
+        .map(|node| tray_machine_menu(node).section)
+        .collect()
+}
+
+fn tray_node_status(node: &TrayNodeSnapshot) -> String {
+    // Keep the status item narrow enough that multiple machines remain visible
+    // beside other menu-bar extras: one glyph for the machine, one for its
+    // state. The tooltip and the click menu carry the full name and metrics.
+    format!("{} {}", node.tray_label, tray_state_symbol(&node.state))
+}
+
+fn tray_machine_menu(node: &TrayNodeSnapshot) -> TrayMachineMenu {
+    TrayMachineMenu {
+        title: format!(
+            "{} · {} · CPU {} · Memory {}",
+            node.name,
+            tray_state_label(&node.state),
+            percentage_label(node.cpu_percent),
+            memory_percentage_label(node)
+        ),
+        section: TraySection {
+            header: format!(
+                "{} {} — {}",
+                tray_state_symbol(&node.state),
+                node.name,
+                tray_state_label(&node.state)
+            ),
+            // An unknown state fails closed in `upsert_tray` before this
+            // section ever renders, so the fallback colour is unreachable in
+            // practice and only keeps this constructor infallible.
+            color: tray_state_color(&node.state).unwrap_or(NEUTRAL_COLOR),
+            gauges: vec![
+                TrayGauge {
+                    text: format!("CPU {}", percentage_label(node.cpu_percent)),
+                    fill_basis_points: percent_basis_points(node.cpu_percent),
+                },
+                TrayGauge {
+                    text: format!("Memory {}", memory_percentage_label(node)),
+                    fill_basis_points: ratio_basis_points(
+                        node.memory_used_bytes,
+                        node.memory_total_bytes,
+                    ),
+                },
+                swap_gauge(node),
+                TrayGauge {
+                    // Named, because the figure is the fullest filesystem out
+                    // of several and the alert an operator saw names a mount.
+                    text: match node.disk_mount.as_deref() {
+                        Some(mount) => format!("Disk {} {mount}", disk_percentage_label(node)),
+                        None => format!("Disk {}", disk_percentage_label(node)),
+                    },
+                    fill_basis_points: ratio_basis_points(
+                        node.disk_used_bytes,
+                        node.disk_total_bytes,
+                    ),
+                },
+                temperature_gauge(node),
+                // No bar: a transfer rate and a boot time have no ceiling to
+                // fill against, and inventing one would imply a limit the
+                // machine never reported. They are here because the tray is
+                // where an operator looks first, and "is it moving traffic?"
+                // and "did it reboot?" are read at a glance.
+                TrayGauge {
+                    text: format!("Net {}", network_label(node)),
+                    fill_basis_points: None,
+                },
+                TrayGauge {
+                    text: format!("Uptime {}", uptime_label(node.uptime_seconds)),
+                    fill_basis_points: None,
+                },
+            ],
+            link: link_label(node),
+        },
+    }
+}
+
+/// Received and sent rates, or an em dash for a machine that reported neither.
+fn network_label(node: &TrayNodeSnapshot) -> String {
+    match (
+        node.network_received_bytes_per_second,
+        node.network_sent_bytes_per_second,
+    ) {
+        (None, None) => String::from("—"),
+        (received, sent) => format!("↓{} ↑{}", rate_label(received), rate_label(sent)),
+    }
+}
+
+fn rate_label(bytes_per_second: Option<u64>) -> String {
+    bytes_per_second.map_or_else(
+        || String::from("—"),
+        |rate| format!("{}/s", byte_label(rate)),
+    )
+}
+
+/// Binary units, matching `format.ts` exactly — one decimal from MiB up, whole
+/// units below — so the tray and the dashboard cannot disagree about the same
+/// machine. Integer arithmetic throughout: a float conversion would lose
+/// precision on a large enough byte count.
+fn byte_label(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes;
+    let mut remainder = 0;
+    let mut unit = 0;
+    while value >= 1024 && unit + 1 < UNITS.len() {
+        remainder = value % 1024;
+        value /= 1024;
+        unit += 1;
+    }
+    if unit > 1 {
+        let mut tenths = (remainder * 10 + 512) / 1024;
+        if tenths >= 10 {
+            value += 1;
+            tenths = 0;
+        }
+        return format!("{value}.{tenths} {}", UNITS[unit]);
+    }
+    if remainder * 2 >= 1024 {
+        value += 1;
+    }
+    format!("{value} {}", UNITS[unit])
+}
+
+/// Two units at most, matching the dashboard: an operator reads uptime to tell
+/// a machine that recovered from one that never restarted, and seconds of
+/// precision serve neither. An unknown uptime is an em dash, never a zero that
+/// would read as a machine that just booted.
+fn uptime_label(seconds: Option<u64>) -> String {
+    let Some(seconds) = seconds else {
+        return String::from("—");
+    };
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if days > 0 {
+        return format!("{days}d {hours}h");
+    }
+    if hours > 0 {
+        return format!("{hours}h {minutes}m");
+    }
+    if minutes > 0 {
+        return format!("{minutes}m {}s", seconds % 60);
+    }
+    format!("{seconds}s")
+}
+
+/// Swap, distinguishing the two machines that both have no percentage: one has
+/// no swap device at all, the other did not report a reading. An operator acts
+/// differently on each, and a bar drawn at zero would claim idle swap on a
+/// machine that has none.
+fn swap_gauge(node: &TrayNodeSnapshot) -> TrayGauge {
+    let text = match (node.swap_used_bytes, node.swap_total_bytes) {
+        (_, Some(0)) => String::from("Swap none"),
+        (Some(_), Some(_)) => format!("Swap {}", swap_percentage_label(node)),
+        _ => String::from("Swap —"),
+    };
+    TrayGauge {
+        text,
+        fill_basis_points: ratio_basis_points(node.swap_used_bytes, node.swap_total_bytes),
+    }
+}
+
+/// The hottest sensor, named: an unattributed number would leave the operator
+/// unable to tell a battery reading from a CPU package one. The gauge fill
+/// maps 0–100 °C onto the bar, matching the dashboard's temperature axis; a
+/// machine with no readable sensor shows an em dash and no bar rather than a
+/// plausible zero.
+fn temperature_gauge(node: &TrayNodeSnapshot) -> TrayGauge {
+    node.temperature.as_ref().map_or_else(
+        || TrayGauge {
+            text: String::from("Temperature —"),
+            fill_basis_points: None,
+        },
+        |temperature| TrayGauge {
+            text: format!(
+                "Temperature {:.0} °C {}",
+                temperature.celsius, temperature.label
+            ),
+            fill_basis_points: Some(scale_basis_points(temperature.celsius)),
+        },
+    )
+}
+
+/// Network path and RTT for the submenu's connectivity row, omitting the
+/// readings a machine simply does not have; a machine with nothing to report
+/// keeps an em-dash row so the section shape stays stable across polls (a
+/// shape change forces a menu rebuild, which dismisses an open `NSMenu`).
+fn link_label(node: &TrayNodeSnapshot) -> String {
+    let mut parts = Vec::new();
+    if let Some(path) = known_path_label(&node.path) {
+        parts.push(path.to_owned());
+    }
+    if let Some(rtt) = node.rtt_ms {
+        parts.push(format!("RTT {rtt} ms"));
+    }
+    if parts.is_empty() {
+        String::from("—")
+    } else {
+        parts.join(" · ")
+    }
+}
+
+/// An unknown path (typically the local machine, which has no network path to
+/// itself) is omitted rather than labelled: health problems surface through
+/// `state`, not through the path field.
+fn known_path_label(path: &str) -> Option<&'static str> {
+    match path {
+        "lan_direct" => Some("LAN direct"),
+        "wan_direct" => Some("WAN direct"),
+        "relayed" => Some("Relayed"),
+        _ => None,
+    }
+}
+
+fn tray_state_symbol(state: &str) -> &str {
+    match state {
+        "healthy" => "●",
+        "warning" | "degraded" => "▲",
+        "stale" => "◌",
+        "critical" | "offline" | "auth_error" | "incompatible" => "✕",
+        _ => "?",
+    }
+}
+
+fn percentage_label(value: Option<f64>) -> String {
+    value.map_or_else(|| String::from("—"), |value| format!("{value:.0}%"))
+}
+
+fn percent_basis_points(value: Option<f64>) -> Option<u16> {
+    value.map(scale_basis_points)
+}
+
+/// Maps a 0–100 scale reading (a percentage, or degrees Celsius for the
+/// temperature gauge) onto gauge basis points.
+// The clamp bounds the value to 0..=10 000 before the cast, so it can neither
+// truncate nor go negative; a NaN clamps to the lower bound and yields 0.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn scale_basis_points(value: f64) -> u16 {
+    (value.clamp(0.0, 100.0) * 100.0).round() as u16
+}
+
+fn disk_percentage_label(node: &TrayNodeSnapshot) -> String {
+    basis_points_label(ratio_basis_points(
+        node.disk_used_bytes,
+        node.disk_total_bytes,
+    ))
+}
+
+fn swap_percentage_label(node: &TrayNodeSnapshot) -> String {
+    basis_points_label(ratio_basis_points(
+        node.swap_used_bytes,
+        node.swap_total_bytes,
+    ))
+}
+
+fn memory_percentage_label(node: &TrayNodeSnapshot) -> String {
+    basis_points_label(ratio_basis_points(
+        node.memory_used_bytes,
+        node.memory_total_bytes,
+    ))
+}
+
+fn ratio_basis_points(used: Option<u64>, total: Option<u64>) -> Option<u16> {
+    match (used, total) {
+        (Some(used), Some(total)) if total > 0 => {
+            let basis_points = used
+                .saturating_mul(10_000)
+                .checked_div(total)
+                .unwrap_or_default()
+                .min(10_000);
+            Some(u16::try_from(basis_points).unwrap_or(10_000))
+        }
+        _ => None,
+    }
+}
+
+fn basis_points_label(basis_points: Option<u16>) -> String {
+    basis_points.map_or_else(
+        || String::from("—"),
+        |basis_points| format!("{:.0}%", f64::from(basis_points) / 100.0),
+    )
+}
+
+fn tray_state_label(state: &str) -> &str {
+    match state {
+        "healthy" => "Healthy",
+        "warning" => "Warning",
+        "stale" => "Stale",
+        "critical" => "Critical",
+        "offline" => "Offline",
+        "auth_error" => "Authentication error",
+        "incompatible" => "Incompatible agent",
+        "daemon_unavailable" => "Agent unavailable",
+        _ => "Degraded",
+    }
+}
+
+async fn update_tray_from_daemon(app: &AppHandle) {
+    let badges = app.state::<TrayBadges>();
+    let Ok(value) = load_fleet_snapshot(badges.inner()).await else {
+        dispatch_tray_update(app, |app| {
+            update_status_tray(app, "daemon_unavailable", "Agent unavailable");
+        });
+        return;
+    };
+    let Ok(snapshot) = serde_json::from_value::<TrayFleetSnapshot>(value) else {
+        dispatch_tray_update(app, |app| {
+            update_status_tray(app, "degraded", "Invalid agent snapshot");
+        });
+        return;
+    };
+    if snapshot.daemon == "connected" && !snapshot.nodes.is_empty() {
+        dispatch_tray_update(app, move |app| {
+            // AppKit status items must be mutated on Tauri's main thread;
+            // keeping the IPC poll off-thread prevents multi-machine tray updates from deadlocking.
+            update_machine_trays(app, &snapshot);
+        });
+    } else if snapshot.daemon == "connected" {
+        dispatch_tray_update(app, |app| {
+            update_status_tray(app, "warning", "No paired machines");
+        });
+    } else {
+        dispatch_tray_update(app, |app| {
+            update_status_tray(app, "degraded", "Invalid agent snapshot");
+        });
+    }
+}
+
+fn dispatch_tray_update<F>(app: &AppHandle, update: F)
+where
+    F: FnOnce(&AppHandle) + Send + 'static,
+{
+    let app_handle = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || update(&app_handle)) {
+        tracing::error!(%error, "Could not dispatch tray update to the main thread");
+    }
+}
+
+pub(crate) async fn run_tray_monitor(app: AppHandle) {
+    let mut ticker = tokio::time::interval(Duration::from_secs(2));
+    loop {
+        ticker.tick().await;
+        update_tray_from_daemon(&app).await;
+    }
+}
+
+fn state_icon(color: [u8; 4]) -> Image<'static> {
+    const SIZE: usize = 22;
+    const SIZE_U32: u32 = 22;
+    const CENTER: isize = 10;
+    const RADIUS_SQUARED: isize = 49;
+    let mut rgba = vec![0_u8; SIZE * SIZE * 4];
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = isize::try_from(x).unwrap_or_default() - CENTER;
+            let dy = isize::try_from(y).unwrap_or_default() - CENTER;
+            if dx * dx + dy * dy <= RADIUS_SQUARED {
+                let offset = (y * SIZE + x) * 4;
+                rgba[offset..offset + 4].copy_from_slice(&color);
+            }
+        }
+    }
+    Image::new_owned(rgba, SIZE_U32, SIZE_U32)
+}
+
+const GAUGE_WIDTH: usize = 56;
+const GAUGE_HEIGHT: usize = 10;
+
+fn gauge_fill_width(basis_points: u16) -> usize {
+    usize::from(basis_points.min(10_000)) * GAUGE_WIDTH / 10_000
+}
+
+fn gauge_image(gauge: &TrayGauge, color: [u8; 4]) -> Option<Image<'static>> {
+    gauge
+        .fill_basis_points
+        .map(|basis_points| gauge_icon(basis_points, color))
+}
+
+/// A horizontal bar gauge rendered as a menu-item icon: a translucent grey
+/// track with the filled portion in the machine's state colour, so the metric
+/// magnitudes can be compared at a glance across rows and machines.
+fn gauge_icon(basis_points: u16, color: [u8; 4]) -> Image<'static> {
+    const TRACK: [u8; 4] = [127, 127, 127, 56];
+    let fill_width = gauge_fill_width(basis_points);
+    let mut rgba = vec![0_u8; GAUGE_WIDTH * GAUGE_HEIGHT * 4];
+    for y in 0..GAUGE_HEIGHT {
+        for x in 0..GAUGE_WIDTH {
+            let pixel = if x < fill_width { color } else { TRACK };
+            let offset = (y * GAUGE_WIDTH + x) * 4;
+            rgba[offset..offset + 4].copy_from_slice(&pixel);
+        }
+    }
+    Image::new_owned(
+        rgba,
+        u32::try_from(GAUGE_WIDTH).unwrap_or_default(),
+        u32::try_from(GAUGE_HEIGHT).unwrap_or_default(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::{
+        GAUGE_WIDTH, TrayGauge, TrayMachineMenu, TrayNodeSnapshot, TraySection, TrayTemperature,
+        gauge_fill_width, link_label, machine_tray_id, retired_tray_ids, status_section,
+        tray_machine_menu, tray_node_status, tray_state_color,
+    };
+
+    fn ids(values: &[&str]) -> HashSet<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    fn gauge(text: &str, fill_basis_points: Option<u16>) -> TrayGauge {
+        TrayGauge {
+            text: text.to_owned(),
+            fill_basis_points,
+        }
+    }
+
+    #[test]
+    fn a_machine_removed_from_the_fleet_loses_its_tray_item() {
+        let registered = ids(&["rackio-status", "machine-a", "machine-b"]);
+        let active = ids(&["rackio-status", "machine-a"]);
+        assert_eq!(
+            retired_tray_ids(&registered, &active),
+            vec![String::from("machine-b")]
+        );
+        // An unreachable machine still appears in the snapshot, so it keeps its
+        // item and degrades in place rather than disappearing silently.
+        assert!(retired_tray_ids(&registered, &registered).is_empty());
+    }
+
+    #[test]
+    fn each_machine_gets_a_distinct_tray_tab_and_a_gauge_submenu() {
+        let node = TrayNodeSnapshot {
+            id: String::from("server-id"),
+            name: String::from("Server"),
+            tray_label: String::from("S"),
+            state: String::from("warning"),
+            path: String::from("relayed"),
+            cpu_percent: Some(60.0),
+            memory_used_bytes: Some(30),
+            memory_total_bytes: Some(100),
+            swap_used_bytes: Some(10),
+            swap_total_bytes: Some(100),
+            disk_used_bytes: Some(45),
+            disk_total_bytes: Some(100),
+            disk_mount: Some(String::from("/data")),
+            network_received_bytes_per_second: Some(6_144),
+            network_sent_bytes_per_second: Some(1_536),
+            uptime_seconds: Some(12 * 86_400 + 4 * 3_600),
+            temperature: Some(TrayTemperature {
+                label: String::from("CPU die"),
+                celsius: 72.4,
+            }),
+            rtt_ms: None,
+        };
+
+        assert_eq!(machine_tray_id(&node), "machine-server-id");
+        // The status item carries the machine's badge, not its full name; the
+        // tooltip (the menu title) keeps the name.
+        assert_eq!(tray_node_status(&node), "S ▲");
+        assert_eq!(
+            tray_machine_menu(&node),
+            TrayMachineMenu {
+                title: String::from("Server · Warning · CPU 60% · Memory 30%"),
+                section: TraySection {
+                    header: String::from("▲ Server — Warning"),
+                    // The gauge colour tracks the machine's state (owned by the
+                    // user's alert rules), not a tray-local threshold set.
+                    color: [230, 189, 89, 255],
+                    gauges: vec![
+                        gauge("CPU 60%", Some(6_000)),
+                        gauge("Memory 30%", Some(3_000)),
+                        gauge("Swap 10%", Some(1_000)),
+                        gauge("Disk 45% /data", Some(4_500)),
+                        gauge("Temperature 72 °C CPU die", Some(7_240)),
+                        gauge("Net ↓6 KiB/s ↑2 KiB/s", None),
+                        gauge("Uptime 12d 4h", None),
+                    ],
+                    link: String::from("Relayed"),
+                },
+            }
+        );
+
+        let steamdeck = TrayNodeSnapshot {
+            id: String::from("steamdeck-id"),
+            name: String::from("steamdeck"),
+            tray_label: String::from("🎮"),
+            state: String::from("healthy"),
+            path: String::from("lan_direct"),
+            cpu_percent: None,
+            memory_used_bytes: None,
+            memory_total_bytes: None,
+            swap_used_bytes: None,
+            swap_total_bytes: None,
+            disk_used_bytes: None,
+            disk_total_bytes: None,
+            disk_mount: None,
+            network_received_bytes_per_second: None,
+            network_sent_bytes_per_second: None,
+            uptime_seconds: None,
+            temperature: None,
+            rtt_ms: Some(8),
+        };
+        assert_eq!(link_label(&steamdeck), "LAN direct · RTT 8 ms");
+        // Missing readings render an em dash and no bar, never a plausible
+        // zero-length gauge.
+        assert_eq!(
+            tray_machine_menu(&steamdeck).section.gauges,
+            vec![
+                gauge("CPU —", None),
+                gauge("Memory —", None),
+                gauge("Swap —", None),
+                gauge("Disk —", None),
+                gauge("Temperature —", None),
+                gauge("Net —", None),
+                gauge("Uptime —", None),
+            ]
+        );
+        assert_eq!(tray_node_status(&steamdeck), "🎮 ●");
+    }
+
+    #[test]
+    fn byte_labels_match_the_dashboards_own_rounding() {
+        // `format.ts` shows whole units through KiB and one decimal from MiB
+        // up. Two surfaces reporting the same machine differently is a bug an
+        // operator has no way to resolve.
+        assert_eq!(super::byte_label(0), "0 B");
+        assert_eq!(super::byte_label(6_144), "6 KiB");
+        assert_eq!(super::byte_label(1_536), "2 KiB");
+        assert_eq!(super::byte_label(2_097_152), "2.0 MiB");
+        assert_eq!(super::byte_label(3_355_443), "3.2 MiB");
+        // A remainder that rounds to a full unit carries instead of printing
+        // the impossible "x.10".
+        assert_eq!(super::byte_label(2_097_152 - 20), "2.0 MiB");
+        // TiB is the largest unit either surface uses, so a huge count keeps
+        // growing the number rather than inventing a PiB label.
+        assert_eq!(super::byte_label(u64::MAX), "16777216.0 TiB");
+    }
+
+    #[test]
+    fn the_tray_reports_the_same_metrics_the_dashboard_card_does() {
+        // The tray is where an operator looks first. A metric the card shows
+        // and the tray withholds is a metric they only find by opening the
+        // window, which is the trip the tray exists to save.
+        let node = TrayNodeSnapshot {
+            id: String::from("id"),
+            name: String::from("Server"),
+            tray_label: String::from("S"),
+            state: String::from("healthy"),
+            path: String::from("lan_direct"),
+            cpu_percent: Some(10.0),
+            memory_used_bytes: Some(1),
+            memory_total_bytes: Some(4),
+            swap_used_bytes: Some(1),
+            swap_total_bytes: Some(2),
+            disk_used_bytes: Some(1),
+            disk_total_bytes: Some(4),
+            disk_mount: Some(String::from("/")),
+            network_received_bytes_per_second: Some(0),
+            network_sent_bytes_per_second: Some(2_097_152),
+            uptime_seconds: Some(3_600 * 5 + 120),
+            temperature: None,
+            rtt_ms: None,
+        };
+
+        let gauges = tray_machine_menu(&node).section.gauges;
+        let labels: Vec<&str> = gauges
+            .iter()
+            .map(|gauge| gauge.text.split_whitespace().next().unwrap_or_default())
+            .collect();
+
+        assert_eq!(
+            labels,
+            vec![
+                "CPU",
+                "Memory",
+                "Swap",
+                "Disk",
+                "Temperature",
+                "Net",
+                "Uptime"
+            ]
+        );
+        // A genuine zero rate is a reading, not a missing one.
+        assert_eq!(gauges[5], gauge("Net ↓0 B/s ↑2.0 MiB/s", None));
+        assert_eq!(gauges[6], gauge("Uptime 5h 2m", None));
+    }
+
+    #[test]
+    fn a_machine_with_no_connectivity_readings_keeps_a_stable_placeholder_row() {
+        // The local machine has no network path to itself; the link row must
+        // stay present (section shape stability keeps an open NSMenu alive)
+        // but collapse to a single em dash.
+        let local = TrayNodeSnapshot {
+            id: String::from("local-id"),
+            name: String::from("Mac"),
+            tray_label: String::from("M"),
+            state: String::from("healthy"),
+            path: String::from("unknown"),
+            cpu_percent: Some(51.0),
+            memory_used_bytes: Some(88),
+            memory_total_bytes: Some(100),
+            swap_used_bytes: Some(0),
+            swap_total_bytes: Some(0),
+            disk_used_bytes: Some(94),
+            disk_total_bytes: Some(100),
+            disk_mount: Some(String::from("/")),
+            network_received_bytes_per_second: None,
+            network_sent_bytes_per_second: None,
+            uptime_seconds: Some(90),
+            temperature: None,
+            rtt_ms: None,
+        };
+        assert_eq!(link_label(&local), "—");
+        assert_eq!(tray_machine_menu(&local).section.header, "● Mac — Healthy");
+        // A machine with no swap device is not a machine with idle swap: it
+        // says so in words and draws no bar.
+        assert_eq!(
+            tray_machine_menu(&local).section.gauges[2],
+            gauge("Swap none", None)
+        );
+        // Under a day, uptime keeps its minutes: a machine that rebooted 90
+        // seconds ago must be distinguishable from one that has been up a week.
+        assert_eq!(
+            tray_machine_menu(&local).section.gauges[6],
+            gauge("Uptime 1m 30s", None)
+        );
+    }
+
+    #[test]
+    fn a_degraded_daemon_renders_a_status_section_with_the_same_shape() {
+        // The status fallback keeps the four-gauge shape of a machine section
+        // so a daemon outage updates the open menu in place instead of
+        // rebuilding (and dismissing) it.
+        let section = status_section("Agent unavailable");
+        assert_eq!(section.header, "Agent unavailable");
+        assert_eq!(section.gauges.len(), 4);
+        assert!(
+            section
+                .gauges
+                .iter()
+                .all(|gauge| gauge.fill_basis_points.is_none())
+        );
+        assert_eq!(section.link, "—");
+    }
+
+    #[test]
+    fn gauge_fill_spans_the_bar_proportionally_and_saturates() {
+        assert_eq!(gauge_fill_width(0), 0);
+        assert_eq!(gauge_fill_width(5_000), GAUGE_WIDTH / 2);
+        assert_eq!(gauge_fill_width(10_000), GAUGE_WIDTH);
+        // An over-range reading must not overrun the icon buffer.
+        assert_eq!(gauge_fill_width(u16::MAX), GAUGE_WIDTH);
+    }
+
+    #[test]
+    fn tray_state_color_fails_closed_for_unknown_states() {
+        assert!(tray_state_color("unknown").is_err());
+        assert_eq!(
+            tray_state_color("offline").unwrap_or_default(),
+            [255, 111, 103, 255]
+        );
+    }
+}
