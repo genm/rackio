@@ -681,20 +681,19 @@ mod tests {
         let disk_before = collector.last_disk_refresh();
         let temperature_before = collector.last_temperature_refresh();
 
-        for _ in 0..20 {
+        for iteration in 0..20 {
             let _ = collector.sample();
+            assert_eq!(
+                collector.last_disk_refresh(),
+                disk_before,
+                "back-to-back sample {iteration} must not re-run the disk refresh"
+            );
+            assert_eq!(
+                collector.last_temperature_refresh(),
+                temperature_before,
+                "back-to-back sample {iteration} must not re-run the sensor refresh"
+            );
         }
-
-        assert_eq!(
-            collector.last_disk_refresh(),
-            disk_before,
-            "20 back-to-back samples must not each re-run the disk refresh"
-        );
-        assert_eq!(
-            collector.last_temperature_refresh(),
-            temperature_before,
-            "20 back-to-back samples must not each re-run the sensor refresh"
-        );
 
         collector.force_refreshes_due();
         let _ = collector.sample();
